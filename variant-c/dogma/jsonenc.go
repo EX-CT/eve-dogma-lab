@@ -172,6 +172,18 @@ const hexDigits = "0123456789abcdef"
 
 // appendJSONString escapes like encoding/json with SetEscapeHTML(false).
 func appendJSONString(b []byte, s string) []byte {
+	plain := true
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c == '"' || c == '\\' || c >= utf8.RuneSelf {
+			plain = false
+			break
+		}
+	}
+	if plain { // fast path: printable ASCII (all keys, most values)
+		b = append(b, '"')
+		b = append(b, s...)
+		return append(b, '"')
+	}
 	b = append(b, '"')
 	start := 0
 	for i := 0; i < len(s); {
