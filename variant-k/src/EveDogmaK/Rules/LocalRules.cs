@@ -131,10 +131,14 @@ public static class LocalSpecialRule
         "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente", "superWeaponMinmatar", "doomsdaySlash",
         "doomsdayBeamDOT", "doomsdayConeDOT", "doomsdayHOG", "debuffLance",
         "emergencyHullEnergizer", "entosisLink", "microJumpPortalDrive", "microJumpPortalDriveCapital", "warpDisruptSphere",
+        "moduleBonusBreacherPodDamageControl",
     };
 
     public static bool TryApply(Fit fit, Item it, EffectInfo e, ModuleState state)
     {
+        // incursion system effects stay engine-side even when a dataset revision ships modifiers for them (pipeline r4
+        // patch 0102): Pyfa applies them unpenalised
+        if (it.Kind == ItemKind.Beacon && e.Name == "OffensiveDefensiveReduction") { IncursionEffect(fit, it.Index); return true; }
         if (e.Modifiers.Length != 0 || it.Kind != ItemKind.Module || state < ModuleState.Active || !Names.Contains(e.Name)) return false;
         var ds = fit.Ds;
         int i = it.Index, ship = fit.Ship, cat = it.Category, shipCat = Fit.ShipCategory;
@@ -151,6 +155,9 @@ public static class LocalSpecialRule
                 On(ship, "disallowAssistance", Op.PostAssign, Self("disallowAssistance"), shipCat);
                 foreach (var t in new[] { "Gravimetric", "Magnetometric", "Radar", "Ladar" })
                     On(ship, $"scan{t}Strength", Op.PostPercent, Self($"scan{t}StrengthPercent"), cat);
+                break;
+            case "moduleBonusBreacherPodDamageControl":
+                On(ship, "breacherPodDamageResistance", Op.PostPercent, Self("breacherPodActivatedDamageReceivedPercentage"), shipCat);
                 break;
             case "microJumpPortalDrive":
             case "microJumpPortalDriveCapital":
@@ -176,5 +183,40 @@ public static class LocalSpecialRule
                 break;
         }
         return true;
+    }
+
+    /// <summary>
+    /// Sansha / Drifter incursion system effects (Pyfa Effect4728 OffensiveDefensiveReduction, LGPL; re-expressed via the
+    /// reference): unpenalised PostPercent of missile-charge and smartbomb damage, turret and drone damageMultiplier by
+    /// systemEffectDamageReduction, and of the ship's armor/shield resonances by the beacon's resistance bonuses.
+    /// </summary>
+    private static void IncursionEffect(Fit fit, int b)
+    {
+        var ds = fit.Ds;
+        AttrId A(string n) => ds.AttrIdOf(n);
+        int ship = fit.Ship, shipCat = Fit.ShipCategory;
+        var red = ModSource.FromAttr(b, A("systemEffectDamageReduction"));
+        int mls = ds.TypeByNameLookup("Missile Launcher Operation") ?? 0, gunnery = ds.TypeByNameLookup("Gunnery") ?? 0;
+        foreach (var t in fit.Items.ToList())
+        {
+            if (!t.Owned || (t.Location != ItemLocation.Ship && t.Kind != ItemKind.Drone)) continue;
+            bool dmg = false, mult = false;
+            switch (t.Kind)
+            {
+                case ItemKind.Charge: dmg = t.RequiresSkill(mls); break;
+                case ItemKind.Module:
+                    dmg = ds.Groups.TryGetValue(t.Group, out var g) && g.Name == "Smart Bomb";
+                    mult = t.RequiresSkill(gunnery);
+                    break;
+                case ItemKind.Drone: mult = true; break;
+            }
+            if (dmg)
+                foreach (var d in new[] { "em", "thermal", "kinetic", "explosive" })
+                    fit.AddModifier(t.Index, A(d + "Damage"), Op.PostPercent, red, b, shipCat);
+            if (mult) fit.AddModifier(t.Index, A("damageMultiplier"), Op.PostPercent, red, b, shipCat);
+        }
+        foreach (var d in new[] { "Em", "Thermal", "Kinetic", "Explosive" })
+            foreach (var l in new[] { "armor", "shield" })
+                fit.AddModifier(ship, A($"{l}{d}DamageResonance"), Op.PostPercent, ModSource.FromAttr(b, A($"{l}{d}DamageResistanceBonus")), b, shipCat);
     }
 }

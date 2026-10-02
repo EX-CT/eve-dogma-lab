@@ -56,7 +56,8 @@ public static partial class ProjectedRegistration
         foreach (var eref in it.Effects)
         {
             var e = fit.Ds.Effect(eref.Id);
-            if (e == null || (e.Category is not (EffectCategory.Target or EffectCategory.Area) && e.Name != "ECMBurstJammer")) continue;
+            if (e == null || (e.Category is not (EffectCategory.Target or EffectCategory.Area) && e.Name != "ECMBurstJammer"
+                              && !e.Name.StartsWith("doomsdayAOE", StringComparison.Ordinal))) continue;
             bool isFighterAbility = e.Name.StartsWith("fighterAbility", StringComparison.Ordinal);
             if (isFighterAbility && it.FighterAbilities is { } on && Array.IndexOf(on, eref.Id.Value) < 0) continue;
             if (it.State < ModuleState.Active) continue;
@@ -64,6 +65,9 @@ public static partial class ProjectedRegistration
             double fo = e.FalloffAttr is { } fa && fit.Has(i, fa) ? fit.Base(i, fa) : 0.0;
             double factor = Formulas.RangeFactor(opt, fo, it.DistanceM, restricted: true);
             AttrId resist = e.ResistanceAttr ?? ResistanceOf(fit, i, e, isFighterAbility);
+            // burst projectors and the Standup weapon disruptor stay engine-side even if a dataset revision gives them
+            // modifiers (pipeline r4 patch 0101): the generic path has no AoE full-strength rule
+            if (BurstProjectors.TryApply(fit, i, e.Name, resist)) continue;
             if (e.Modifiers.Length == 0 && (FighterProjectedAbilities.TryApply(fit, i, e.Name, resist) || WeaponDisruption.TryApply(fit, i, e.Name, resist))) continue;
             var rule = rules.FirstOrDefault(r => r.Matches(e));
             if (rule == null)
@@ -146,6 +150,26 @@ public static class WeaponDisruption
     private static readonly (string Source, string Target)[] Guidance =
         { ("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"), ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay") };
 
+    /// <summary>
+    /// AoE weapon disruption burst (full strength) and Standup weapon disruptor (range factor from maxRange /
+    /// falloffEffectiveness): both turrets (tracking/range/falloff) and missiles (guidance) of the target.
+    /// </summary>
+    public static void ApplyBoth(Fit fit, int i, double factor, AttrId resist)
+    {
+        if (!ProjectedRegistration.OffensiveAllowed(fit)) return;
+        var ds = fit.Ds;
+        var it = fit[i];
+        int gun = ds.TypeByNameLookup("Gunnery") ?? 0, mls = ds.TypeByNameLookup("Missile Launcher Operation") ?? 0;
+        foreach (var t in fit.Items.Where(t => t.Location == ItemLocation.Ship && t.Owned).ToList())
+        {
+            var pairs = t.Kind == ItemKind.Module && t.RequiresSkill(gun) ? Tracking
+                : t.Kind == ItemKind.Charge && t.RequiresSkill(mls) ? Guidance : null;
+            if (pairs == null) continue;
+            foreach (var (src, tgt) in pairs)
+                fit.AddModifier(t.Index, ds.AttrIdOf(tgt), Op.PostPercent, ModSource.Projected(i, ds.AttrIdOf(src), factor, fit.Ship, resist, false), i, it.Category);
+        }
+    }
+
     public static bool TryApply(Fit fit, int i, string effectName, AttrId resist)
     {
         (string Skill, ItemKind Kind, (string Source, string Target)[] Pairs) spec;
@@ -172,6 +196,47 @@ public static class WeaponDisruption
             foreach (var (src, tgt) in spec.Pairs)
                 fit.AddModifier(t, ds.AttrIdOf(tgt), Op.PostPercent, ModSource.Projected(i, ds.AttrIdOf(src), factor, fit.Ship, resist, false), i, it.Category);
         return true;
+    }
+}
+
+/// <summary>
+/// Burst projectors (Pyfa Effect6476-6482/6513, eos LGPL; re-expressed via the reference): full strength on every ship
+/// in the AoE (no range factor). Web / paint / damp / weapon disruption are offensive modifiers, the neut burst is a cap
+/// drain and the ECM burst a jam source. The Standup weapon disruptor uses the normal range factor.
+/// </summary>
+public static class BurstProjectors
+{
+    public static bool TryApply(Fit fit, int i, string name, AttrId resist)
+    {
+        var k = fit.K;
+        int ship = fit.Ship;
+        var it = fit[i];
+        void Full(AttrId target, AttrId source) =>
+            fit.AddModifier(ship, target, Op.PostPercent, ModSource.Projected(i, source, 1.0, ship, resist, false), i, it.Category);
+        bool offense = ProjectedRegistration.OffensiveAllowed(fit);
+        switch (name)
+        {
+            case "doomsdayAOEWeb": if (offense) Full(k.MaxVelocity, k.SpeedFactor); return true;
+            case "doomsdayAOEPaint": if (offense) Full(k.SignatureRadius, k.SignatureRadiusBonus); return true;
+            case "doomsdayAOEDamp":
+                if (offense) { Full(k.MaxTargetRange, k.MaxTargetRangeBonus); Full(k.ScanResolution, k.ScanResolutionBonus); }
+                return true;
+            case "doomsdayAOENeut":
+                fit.Incoming.Add(new IncomingCapacitor(i, fit.Ds.AttrIdOf("energyNeutralizerAmount"), fit.Ds.AttrIdOf("duration"), 1.0, resist, 1.0));
+                return true;
+            case "doomsdayAOEECM":
+                if (offense) fit.Incoming.Add(new IncomingEcm(i, false, 1.0, resist));
+                return true;
+            case "doomsdayAOEBubble": case "doomsdayAOEGuide": return true;
+            case "doomsdayAOETrack": WeaponDisruption.ApplyBoth(fit, i, 1.0, resist); return true;
+            case "structureModuleEffectWeaponDisruption":
+            {
+                double Base(string n) { var a = fit.Ds.AttrIdOf(n); return fit.Has(i, a) ? fit.Base(i, a) : 0.0; }
+                WeaponDisruption.ApplyBoth(fit, i, Formulas.RangeFactor(Base("maxRange"), Base("falloffEffectiveness"), it.DistanceM, restricted: true), resist);
+                return true;
+            }
+            default: return false;
+        }
     }
 }
 

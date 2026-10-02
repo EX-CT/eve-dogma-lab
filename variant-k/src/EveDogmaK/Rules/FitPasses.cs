@@ -10,10 +10,35 @@ public static class WarfareBuffs
     public static void Apply(Fit fit, int buffId, ModSource src, int sourceItem)
     {
         if (!fit.Ds.Dbuffs.TryGetValue(buffId, out var info)) return;
-        const int neverExempt = 0;
+        // Pyfa applies buffs stacking-penalised, except the abyssal weather resistance / HP / velocity buffs
+        int neverExempt = buffId is 90 or 93 or 94 or 95 or 96 or 98 or 99 ? Fit.ShipCategory : 0;
         int ship = fit.Ship;
         var t = new List<int>();
         foreach (var a in info.Item) fit.AddModifier(ship, a, info.Op, src, sourceItem, neverExempt);
+        // AoE cloud / weather buffs also hit drones that require the Drones skill (Pyfa fit.py commandBonus)
+        string[] droneAttrs = buffId switch
+        {
+            79 => new[] { "signatureRadius" },
+            90 => new[] { "shieldEmDamageResonance", "armorEmDamageResonance", "emDamageResonance" },
+            93 => new[] { "shieldExplosiveDamageResonance", "armorExplosiveDamageResonance", "explosiveDamageResonance" },
+            95 => new[] { "shieldThermalDamageResonance", "armorThermalDamageResonance", "thermalDamageResonance" },
+            99 => new[] { "shieldKineticDamageResonance", "armorKineticDamageResonance", "kineticDamageResonance" },
+            94 => new[] { "shieldCapacity" },
+            96 => new[] { "armorHP" },
+            97 => new[] { "maxRange", "falloff" },
+            98 => new[] { "maxVelocity" },
+            _ => Array.Empty<string>(),
+        };
+        if (droneAttrs.Length > 0)
+        {
+            const int dronesSkill = 3436;
+            foreach (var d in fit.Items.Where(x => x.Kind == ItemKind.Drone && x.RequiresSkill(dronesSkill)).Select(x => x.Index).ToList())
+                foreach (var n in droneAttrs)
+                {
+                    var a = fit.Ds.AttrIdOf(n);
+                    if (!a.IsNone) fit.AddModifier(d, a, info.Op, src, sourceItem, neverExempt);
+                }
+        }
         foreach (var a in info.Location)
         {
             fit.Targets.Resolve(fit, ship, ModFunc.Location, ModDomain.Ship, 0, t);
@@ -59,6 +84,23 @@ public sealed class WarfareBuffPass : IFitPass
             best[id] = (v, src);
         }
         foreach (var (id, idx, valAttr, v) in ActiveBursts(fit, agg)) Offer(id, v, ModSource.FromAttr(idx, valAttr));
+        // abyssal weather / AoE cloud beacons (Pyfa weather_* / aoe_beacon_* effects): warfareBuff1/2 of the environment
+        // item join the same pool (strongest |value| per buff id)
+        for (int i = 0; i < fit.Items.Count; i++)
+        {
+            var it = fit[i];
+            if (it.Kind != ItemKind.Beacon) continue;
+            bool weather = it.Effects.Any(er => fit.Ds.Effect(er.Id) is { } ei
+                && (ei.Name.StartsWith("weather_", StringComparison.Ordinal) || ei.Name.StartsWith("aoe_beacon_", StringComparison.Ordinal)));
+            if (!weather) continue;
+            foreach (var (idAttr, valAttr) in fit.K.WarfareBuffs.Take(2))
+            {
+                int id = fit.Has(i, idAttr) ? (int)fit.Get(i, idAttr) : 0;
+                if (id == 0 || agg.ContainsKey(id)) continue;
+                double v = fit.Get(i, valAttr);
+                Offer(id, v, ModSource.Const(v));
+            }
+        }
         for (int k = 0; k < fit.Request.BoosterFits.Count; k++)
         {
             Fit booster;
