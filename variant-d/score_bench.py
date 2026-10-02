@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score variant-d against the eve-dogma-bench expected values via batch mode (fast inner loop).
 usage: python3 score_bench.py [BENCH_DIR] [DATASET] [-v]"""
-import json, pathlib, subprocess, sys, collections
+import os, json, pathlib, subprocess, sys, collections
 here = pathlib.Path(__file__).resolve().parent
 bench = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else here / '../../eve-dogma-bench').resolve()
 dataset = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith('-') else str(here / '../../data/dataset-3569502.json.gz')
@@ -12,7 +12,7 @@ for p in sorted((bench / 'cases').glob('*.json')):
     e = bench / 'expected' / p.name
     if e.exists():
         cases.append((p.stem, json.dumps(json.loads(p.read_text())), json.loads(e.read_text())))
-r = subprocess.run(['node', str(here / 'dist/cli.js'), 'batch', '--dataset', dataset], input='\n'.join(c[1] for c in cases) + '\n',
+r = subprocess.run(['node', str(here / os.environ.get('VD_CLI', 'dist/cli.js')), 'batch', '--dataset', dataset], input='\n'.join(c[1] for c in cases) + '\n',
                    capture_output=True, text=True)
 outs = r.stdout.splitlines()
 assert len(outs) == len(cases), (len(outs), len(cases), r.stderr[-500:])

@@ -3,7 +3,12 @@
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { calc, calcJson, meta, parseEft, rpc, search, typeInfo } from './index.js';
-import { datasetPath, loadDatasetFile, writeCache } from './node.js';
+import { datasetPath, loadDatasetFile, setPackageDir, writeCache } from './node.js';
+import { dirname, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+
+// dist/cli.js and dist-cli/eve-dogma-ts.cjs both live one level below the package directory
+setPackageDir(resolve(dirname(realpathSync(process.argv[1])), '..'));
 
 const USAGE = `eve-dogma-ts <command> [--dataset PATH] [args]
 

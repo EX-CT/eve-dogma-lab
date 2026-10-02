@@ -2,7 +2,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { buildCache, datasetFromCache, isCache } from './core/cache.js';
 import { Dataset } from './core/dataset.js';
 
@@ -16,13 +15,17 @@ function readJsonBytes(path: string): Buffer {
   return bytes;
 }
 
-/** cache location for a dataset file: <package>/.cache/<sha1(abs path)>-<size>-<mtime>.vdc */
+/** package directory: set by the entry point (dist/cli.js, dist-cli bundle), else derived from the running script */
+let pkgDir: string | null = null;
+export function setPackageDir(dir: string): void { pkgDir = dir; }
+
+/** cache location for a dataset file: $EVE_DOGMA_TS_CACHE_DIR or <package>/.cache, <sha1(abs path)>-<size>-<mtime>.vdc3 */
 export function cachePath(datasetFile: string): string {
   const abs = resolve(datasetFile);
   const st = statSync(abs);
   const key = createHash('sha1').update(abs).digest('hex').slice(0, 16);
-  const pkg = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  return join(pkg, '.cache', `${key}-${st.size}-${Math.trunc(st.mtimeMs)}.vdc3`);
+  const dir = process.env.EVE_DOGMA_TS_CACHE_DIR ?? join(pkgDir ?? resolve(dirname(process.argv[1] ?? '.'), '..'), '.cache');
+  return join(dir, `${key}-${st.size}-${Math.trunc(st.mtimeMs)}.vdc3`);
 }
 
 /** Load a dataset: a VDC3 cache file, a prebuilt cache for this dataset file if present, else the gz/JSON itself. */

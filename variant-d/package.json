@@ -10,7 +10,8 @@
     "eve-dogma-ts": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p .",
+    "build": "tsc -p . && tsc -p tsconfig.browser.json && tsc -p tsconfig.cli.json && node tools/bundle.mjs",
+    "build:node": "tsc -p .",
     "test": "npm run build && node dist/test/parity.js",
     "bench": "npm run build && node dist/bench/bench.js",
     "build:web": "tsc -p tsconfig.browser.json && node tools/bundle.mjs",

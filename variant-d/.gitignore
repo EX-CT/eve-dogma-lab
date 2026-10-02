@@ -3,3 +3,4 @@ dist/
 *.json.gz
 .cache/
 dist-web/
+dist-cli/

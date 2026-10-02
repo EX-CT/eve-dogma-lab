@@ -1,6 +1,7 @@
 # eve-dogma-bench manifest for Variant D (TypeScript engine)
+# dist-cli/eve-dogma-ts.cjs is the single-file CommonJS CLI bundle (same code as dist/cli.js, ~25 ms faster cold start)
 # build also precomputes the fast-start cache (.cache/, a pure re-layout of the dataset; CLI falls back to the dataset if absent)
-build: npm ci --silent && npm run build --silent && node dist/cli.js cache --dataset {dataset}
-cmd: node dist/cli.js calc --dataset {dataset}
-batch_cmd: node dist/cli.js batch --dataset {dataset}
-rpc_cmd: node dist/cli.js serve-stdio --dataset {dataset}
+build: npm ci --silent && npm run build --silent && node dist-cli/eve-dogma-ts.cjs cache --dataset {dataset}
+cmd: node dist-cli/eve-dogma-ts.cjs calc --dataset {dataset}
+batch_cmd: node dist-cli/eve-dogma-ts.cjs batch --dataset {dataset}
+rpc_cmd: node dist-cli/eve-dogma-ts.cjs serve-stdio --dataset {dataset}

@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "AMD",
+    "moduleResolution": "node10",
+    "outFile": "dist-cli/eve-dogma-ts.amd.js",
+    "declaration": false,
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "files": ["src/cli.ts"],
+  "include": []
+}
