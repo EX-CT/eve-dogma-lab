@@ -317,7 +317,10 @@ pub fn index(db: &dyn Db, fit: FitIn) -> Arc<Index> {
                 add(S_CHAR_SKILL, r);
             }
         }
-        items.push(IdxItem { slot: s, kind: sp.kind, loc: sp.loc, group: sp.group, owned: sp.owned, type_id: sp.type_id, req_skills: sp.req_skills.clone() });
+        // consumers of `items[..].req_skills` only look at ship / charge / drone items: skills (most of the
+        // index) skip the copy
+        let req_skills = if sp.kind == Kind::Skill { Vec::new() } else { sp.req_skills.clone() };
+        items.push(IdxItem { slot: s, kind: sp.kind, loc: sp.loc, group: sp.group, owned: sp.owned, type_id: sp.type_id, req_skills });
     }
     // req_skills may repeat a skill: keep each slot once per set (the reference filters items, it doesn't duplicate)
     for v in sets.values_mut() {
@@ -971,10 +974,26 @@ pub type ModMap = FxHashMap<u32, Vec<AMod>>;
 pub fn incoming(db: &dyn Db, fit: FitIn) -> Arc<Vec<Arc<ModMap>>> {
     qcount(4);
     let slots = fit.slots(db);
-    let mut maps: Vec<ModMap> = vec![ModMap::default(); slots.len()];
     let idx = index(db, fit);
-    for &s in fit.order(db) {
-        let outs: &Arc<Vec<Out>> = outgoing(db, fit, slots[s as usize]);
+    let outs_all: Vec<&Arc<Vec<Out>>> = fit.order(db).iter().map(|&s| outgoing(db, fit, slots[s as usize])).collect();
+    // pre-size each target's map (upper bound: modifiers aimed at it) to avoid rehashing while filling
+    let mut cnt: Vec<u32> = vec![0; slots.len()];
+    for outs in &outs_all {
+        for o in outs.iter() {
+            if o.target & SET_BIT != 0 {
+                let k = ((o.target >> 24) & 0x7f) as u8;
+                if let Some(v) = idx.sets.get(&(k, o.target & 0x00ff_ffff)) {
+                    for &t in v {
+                        cnt[t as usize] += 1;
+                    }
+                }
+            } else {
+                cnt[o.target as usize] += 1;
+            }
+        }
+    }
+    let mut maps: Vec<ModMap> = cnt.iter().map(|&n| ModMap::with_capacity_and_hasher(n as usize, Default::default())).collect();
+    for outs in outs_all {
         for o in outs.iter() {
             if o.target & SET_BIT != 0 {
                 let k = ((o.target >> 24) & 0x7f) as u8;
@@ -1203,7 +1222,7 @@ pub struct VCache {
 
 impl VCache {
     pub fn new(memo: bool) -> VCache {
-        VCache { memo, ..Default::default() }
+        VCache { memo, map: FxHashMap::with_capacity_and_hasher(512, Default::default()), ..Default::default() }
     }
     #[inline]
     fn im(&mut self, db: &dyn Db, fit: FitIn, item: u32) -> ItemMods {

@@ -293,7 +293,7 @@ impl Session {
         let items: Vec<Arc<ItemSpec>> = built.items.clone();
         let layer = engine::plan(db, fit).final_layer;
         let layers: Vec<&Arc<engine::LayerMap>> = (1..=layer).map(|l| engine::layer_mods(db, fit, engine::LKey::new(db, l))).collect();
-        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special, vcache: Default::default(), ecache: &self.ecache, capmemo: &self.capmemo, layers, imods: std::cell::RefCell::new(vec![None; n]) })
+        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special, vcache: std::cell::RefCell::new(FxHashMap::with_capacity_and_hasher(1024, Default::default())), ecache: &self.ecache, capmemo: &self.capmemo, layers, imods: std::cell::RefCell::new(vec![None; n]) })
     }
 
     fn load(&mut self, req: &FitRequest, b: &spec::Built, offers: Vec<(u32, F)>) -> FitIn {
