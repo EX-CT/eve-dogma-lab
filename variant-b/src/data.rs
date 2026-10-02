@@ -395,6 +395,14 @@ impl Dataset {
         })
     }
 
+    /// Encode this dataset as a snapshot and load it back from owned bytes (the same code path as a cache hit,
+    /// minus the file). For tests: a snapshot-loaded dataset must compute exactly what the parsed one does.
+    #[doc(hidden)]
+    pub fn snapshot_roundtrip(&self) -> Option<Dataset> {
+        let bytes = self.snapshot_bytes().ok()?;
+        Self::from_snapshot(Blob::owned(&bytes))
+    }
+
     fn snapshot_bytes(&self) -> Result<Vec<u8>, String> {
         let main = Snapshot {
             build: self.build,
