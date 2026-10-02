@@ -69,6 +69,10 @@ impl<'a> Fit<'a> {
             message: format!("unknown type_id {type_id}"),
             path: path.to_string(),
         })?;
+        Ok(self.new_item_t(t, kind))
+    }
+
+    fn new_item_t(&mut self, t: &'a TypeInfo, kind: Kind) -> It {
         self.items.push(Item {
             t,
             kind,
@@ -90,7 +94,7 @@ impl<'a> Fit<'a> {
             side_effects: Vec::new(),
             active: true,
         });
-        Ok(self.items.len() - 1)
+        self.items.len() - 1
     }
 
     /// Pyfa MutatedMixin: attributes = {**base.attributes, **mutated.attributes}; mutators start at the base
@@ -198,7 +202,7 @@ impl<'a> Fit<'a> {
     pub fn build(ds: &'a Dataset, req: &FitRequest) -> Result<Fit<'a>, BuildError> {
         let mut fit = Fit {
             ds,
-            items: Vec::with_capacity(600),
+            items: Vec::with_capacity(ds.skills.len() + 96),
             ship: NONE,
             chr: NONE,
             mode: NONE,
@@ -207,8 +211,8 @@ impl<'a> Fit<'a> {
             fighters: Vec::new(),
             implants: Vec::new(),
             boosters: Vec::new(),
-            skills: Vec::new(),
-            skill_by_type: FxHashMap::default(),
+            skills: Vec::with_capacity(ds.skills.len()),
+            skill_by_type: FxHashMap::with_capacity_and_hasher(ds.skills.len(), Default::default()),
             default_level: req.character.skills.default_level.unwrap_or(0).min(5),
             proj_modules: Vec::new(),
             proj_drones: Vec::new(),
@@ -273,8 +277,12 @@ impl<'a> Fit<'a> {
                 levels.insert(id, (*v).min(5));
             }
         }
-        for &s in &ds.skills {
-            let idx = fit.new_item(s, Kind::Skill, "/character/skills")?;
+        let skill_pos = ds.skill_pos.get_or_init(|| ds.skills.iter().map(|&s| ds.types.index_of(s)).collect());
+        for (k, &s) in ds.skills.iter().enumerate() {
+            let idx = match skill_pos[k] {
+                Some(p) => fit.new_item_t(ds.types.get_at(p), Kind::Skill),
+                None => fit.new_item(s, Kind::Skill, "/character/skills")?,
+            };
             fit.items[idx].level = levels.get(&s).copied().unwrap_or(fit.default_level);
             fit.skills.push(idx);
             fit.skill_by_type.insert(s, idx);

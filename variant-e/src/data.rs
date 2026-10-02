@@ -79,6 +79,9 @@ pub struct Dataset {
     /// lazily decoded types (cache: per-type bincode records, decoded on first access)
     #[serde(skip)]
     pub types: Types,
+    /// positions of `skills` in `types` (built on first fit)
+    #[serde(skip)]
+    pub skill_pos: std::sync::OnceLock<Vec<Option<usize>>>,
     pub group_names: FxHashMap<u32, String>,
     pub group_category: FxHashMap<u32, u32>,
     pub category_names: FxHashMap<u32, String>,
@@ -397,6 +400,7 @@ impl Dataset {
             effects,
             effect_by_name,
             types: Types::from_map(types),
+            skill_pos: Default::default(),
             group_names,
             group_category,
             category_names,
@@ -461,6 +465,14 @@ impl Types {
             let (a, b) = (self.base + self.offs[i] as usize, self.base + self.offs[i + 1] as usize);
             bincode::deserialize(&self.blob[a..b]).expect("corrupt dataset cache record")
         })
+    }
+    /// position of `id` in the type table (for repeated lookups via `get_at`)
+    pub fn index_of(&self, id: u32) -> Option<usize> {
+        self.ids.binary_search(&id).ok()
+    }
+    #[inline]
+    pub fn get_at(&self, i: usize) -> &TypeInfo {
+        self.at(i)
     }
     pub fn get(&self, id: &u32) -> Option<&TypeInfo> {
         self.ids.binary_search(id).ok().map(|i| self.at(i))

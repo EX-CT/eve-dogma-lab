@@ -38,6 +38,7 @@ impl Heap {
     fn lt(&self, x: u32, y: u32) -> bool {
         lt(&self.a[x as usize], &self.a[y as usize])
     }
+    #[inline(always)]
     fn siftdown(&mut self, start: usize, mut pos: usize) {
         let new = self.h[pos];
         while pos > start {
