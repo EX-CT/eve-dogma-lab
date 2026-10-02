@@ -129,10 +129,10 @@ pub struct Dataset {
     pub release_date: Option<String>,
     pub sha256: String,
     pub types: TypeTable,
-    pub groups: FxHashMap<u32, GroupInfo>,
+    pub groups: LazyTable<GroupInfo>,
     /// category id -> English name
     pub categories: FxHashMap<u32, String>,
-    pub attrs: FxHashMap<u32, AttrInfo>,
+    pub attrs: LazyTable<AttrInfo>,
     pub effects: LazyTable<EffectInfo>,
     pub dbuffs: LazyTable<DbuffInfo>,
     pub mutaplasmids: LazyTable<MutaInfo>,
@@ -142,7 +142,8 @@ pub struct Dataset {
     pub skills_foldable: bool,
     /// (names_zh, type_by_name): only needed by search/type/EFT, so a snapshot load decodes them on first use
     names: std::sync::OnceLock<Names>,
-    names_blob: Vec<u8>,
+    /// bincode(Names) section of the snapshot (blob, start, end), decoded on first `names()`
+    names_blob: Option<(std::sync::Arc<Blob>, usize, usize)>,
     /// all skill type ids (category 16)
     pub skills: Vec<u32>,
     /// Variant B: dataset-derived precomputation (skill folding tables), built once on first use.
@@ -344,7 +345,7 @@ impl Dataset {
             secs.push((s, e));
             at = e;
         }
-        if secs.len() != 10 {
+        if secs.len() != 13 {
             return None;
         }
         let tm = std::time::Instant::now();
@@ -352,7 +353,7 @@ impl Dataset {
         if std::env::var_os("VB_LOAD_TIMING").is_some() {
             eprintln!("  main section {:?}", tm.elapsed());
         }
-        let names_blob = b[secs[1].0..secs[1].1].to_vec();
+        let names_blob = Some((blob.clone(), secs[1].0, secs[1].1));
         let tt = std::time::Instant::now();
         let lt = std::env::var_os("VB_LOAD_TIMING").is_some();
         let lap = |n: &str| if lt { eprintln!("  {n} {:?}", tt.elapsed()); };
@@ -367,7 +368,9 @@ impl Dataset {
         let effect_by_name = NameIndex::decode(&blob, secs[7].0, secs[7].1)?;
         lap("names");
         let folds = LazyTable::decode(&blob, secs[9].0, secs[9].1)?;
-        let prep = crate::engine::Prepared::from_snapshot(&b[secs[8].0..secs[8].1], folds)?;
+        let groups = LazyTable::decode(&blob, secs[10].0, secs[10].1)?;
+        let attrs = LazyTable::decode(&blob, secs[11].0, secs[11].1)?;
+        let prep = crate::engine::Prepared::from_snapshot(&b[secs[8].0..secs[8].1], folds, &blob, secs[12])?;
         lap("prepared");
         let prepared = std::sync::OnceLock::new();
         let _ = prepared.set(prep);
@@ -376,9 +379,9 @@ impl Dataset {
             release_date: main.release_date,
             sha256: main.sha256,
             types,
-            groups: main.groups,
+            groups,
             categories: main.categories,
-            attrs: main.attrs,
+            attrs,
             effects,
             dbuffs,
             mutaplasmids,
@@ -397,15 +400,13 @@ impl Dataset {
             build: self.build,
             release_date: self.release_date.clone(),
             sha256: self.sha256.clone(),
-            groups: self.groups.clone(),
             categories: self.categories.clone(),
-            attrs: self.attrs.clone(),
             skills: self.skills.clone(),
             skills_foldable: self.skills_foldable,
         };
         let names_of = |ix: &NameIndex| -> Vec<u8> { ix.blob[ix.at..].to_vec() };
         let prep = self.prepared.get_or_init(|| crate::engine::Prepared::new(self));
-        let (prep_core, prep_folds) = prep.snapshot_sections(self)?;
+        let (prep_core, prep_folds, prep_meta) = prep.snapshot_sections(self)?;
         let secs: Vec<Vec<u8>> = vec![
             bincode::serialize(&main).map_err(|e| e.to_string())?,
             bincode::serialize(self.names()).map_err(|e| e.to_string())?,
@@ -417,6 +418,9 @@ impl Dataset {
             names_of(&self.effect_by_name),
             prep_core,
             prep_folds,
+            self.groups.encode()?,
+            self.attrs.encode()?,
+            prep_meta,
         ];
         let mut out = Vec::with_capacity(8 + secs.iter().map(|x| x.len() + 8).sum::<usize>());
         out.extend_from_slice(SNAP_MAGIC);
@@ -570,9 +574,9 @@ impl Dataset {
             release_date: raw.sde.release_date,
             sha256,
             types: TypeTable::from_map(types, |t| t.group),
-            groups,
+            groups: LazyTable::from_map(groups, |_| 0),
             categories,
-            attrs,
+            attrs: LazyTable::from_map(attrs, |_| 0),
             effects: LazyTable::from_map(effects, |_| 0),
             dbuffs: LazyTable::from_map(dbuffs, |_| 0),
             mutaplasmids: LazyTable::from_map(mutaplasmids, |_| 0),
@@ -580,7 +584,7 @@ impl Dataset {
             effect_by_name: NameIndex::from_map(&effect_by_name),
             skills_foldable,
             names: std::sync::OnceLock::from(Names { zh: names_zh, type_by_name }),
-            names_blob: Vec::new(),
+            names_blob: None,
             skills,
             prepared: std::sync::OnceLock::new(),
         })
@@ -595,7 +599,10 @@ impl Dataset {
         self.effect_by_name.get(name).unwrap_or(0)
     }
     fn names(&self) -> &Names {
-        self.names.get_or_init(|| bincode::deserialize(&self.names_blob).unwrap_or_default())
+        self.names.get_or_init(|| match &self.names_blob {
+            Some((b, s, e)) => bincode::deserialize(&b[*s..*e]).unwrap_or_default(),
+            None => Names::default(),
+        })
     }
     pub fn names_zh(&self) -> &FxHashMap<u32, String> {
         &self.names().zh
@@ -702,7 +709,7 @@ impl<'de> Deserialize<'de> for IdKey {
     }
 }
 
-const SNAPSHOT_VERSION: u32 = 8;
+const SNAPSHOT_VERSION: u32 = 10;
 
 /// Snapshot bytes: memory-mapped cache file (pages faulted in on use) or an owned buffer.
 pub enum Blob {
@@ -875,19 +882,10 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned> LazyTable<T> {
             at,
             slots: zeroed_slots(n),
         };
-        // structural checks: sorted ids, monotonic in-bounds offsets
-        let sec = end - at;
-        for p in 0..n {
-            if p + 1 < n && t.id_at(p) >= t.id_at(p + 1) {
-                return None;
-            }
-            if t.start(p) > t.start(p + 1) {
-                return None;
-            }
-        }
-        if n > 0 && (t.start(0) < 4 * words || t.start(n) > sec) {
-            return None;
-        }
+        // per-entry structure (sorted ids, monotonic offsets) is not walked at start-up: `pos` with a dense index
+        // re-checks the id, the binary-search fallback only needs sorted ids from our own writer, and entry bytes
+        // are cut with bounds-checked slices (a corrupt file panics in `decode_slot`, it never reads out of bounds)
+        let _ = end;
         Some(t)
     }
 
@@ -1069,18 +1067,8 @@ impl NameIndex {
         if names > end {
             return None;
         }
-        // validate every entry once (bounds + UTF-8 are not needed for byte comparison, bounds are)
-        for i in 0..n {
-            let (o, l) = (u(entries + i * 12)?, u(entries + i * 12 + 4)?);
-            if names + o + l > end {
-                return None;
-            }
-        }
-        for s in 0..cap {
-            if u(at + 4 + s * 4)? > n {
-                return None;
-            }
-        }
+        // entries are not validated up front (that touched every page of the index at start-up): `get` uses
+        // bounds-checked slices, so a corrupt index can only fail a lookup loudly, never read out of bounds
         Some(NameIndex { blob: blob.clone(), at, cap, entries, names })
     }
 
@@ -1127,9 +1115,7 @@ struct Snapshot {
     build: u64,
     release_date: Option<String>,
     sha256: String,
-    groups: FxHashMap<u32, GroupInfo>,
     categories: FxHashMap<u32, String>,
-    attrs: FxHashMap<u32, AttrInfo>,
     skills: Vec<u32>,
     skills_foldable: bool,
 }

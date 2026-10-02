@@ -976,7 +976,7 @@ impl<'a> Fit<'a> {
         let red = a("systemEffectDamageReduction");
         let mls = ds.type_by_name("Missile Launcher Operation").unwrap_or(0);
         let gunnery = ds.type_by_name("Gunnery").unwrap_or(0);
-        let smartbomb = ds.groups.iter().find(|(_, g)| g.name == "Smart Bomb").map(|(k, _)| *k).unwrap_or(0);
+        let smartbomb = ds.groups.iter().find(|(_, g)| g.name == "Smart Bomb").map(|(k, _)| k).unwrap_or(0);
         let n = self.items.len();
         for t in 0..n {
             let it = &self.items[t];
@@ -1941,14 +1941,68 @@ impl SkillFold {
 }
 
 /// Dense per-attribute metadata (indexed by attribute id) — no hash lookups in compile/eval.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+/// `repr(C)` so the snapshot can hold the dense table as 24-byte records read in place.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct AttrMeta {
     pub default: f64,
+    pub min: u32,
+    pub max: u32,
     pub stackable: bool,
     pub high_is_good: bool,
     pub round2: bool,
-    pub min: u32,
-    pub max: u32,
+}
+const _: () = assert!(std::mem::size_of::<AttrMeta>() == 24 && std::mem::align_of::<AttrMeta>() == 8);
+
+/// Dense AttrMeta table: built in memory or borrowed from the snapshot bytes.
+pub struct MetaTable {
+    ptr: *const AttrMeta,
+    len: usize,
+    _own: MetaOwn,
+}
+#[allow(dead_code)] // owners only keep the bytes alive
+enum MetaOwn {
+    Vec(Vec<AttrMeta>),
+    Blob(std::sync::Arc<crate::data::Blob>),
+}
+// SAFETY: ptr points into the owned, immutable Vec / blob
+unsafe impl Send for MetaTable {}
+unsafe impl Sync for MetaTable {}
+
+impl MetaTable {
+    fn from_vec(v: Vec<AttrMeta>) -> MetaTable {
+        MetaTable { ptr: v.as_ptr(), len: v.len(), _own: MetaOwn::Vec(v) }
+    }
+    #[inline]
+    pub fn as_slice(&self) -> &[AttrMeta] {
+        // SAFETY: ptr/len describe valid, aligned, initialised AttrMeta records owned by `_own`
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.len * 24);
+        for m in self.as_slice() {
+            out.extend_from_slice(&m.default.to_le_bytes());
+            out.extend_from_slice(&m.min.to_le_bytes());
+            out.extend_from_slice(&m.max.to_le_bytes());
+            out.extend_from_slice(&[m.stackable as u8, m.high_is_good as u8, m.round2 as u8, 0, 0, 0, 0, 0]);
+        }
+        out
+    }
+    fn decode(blob: &std::sync::Arc<crate::data::Blob>, s: usize, e: usize) -> Option<MetaTable> {
+        let b: &[u8] = blob;
+        let bytes = b.get(s..e)?;
+        if bytes.len() % 24 != 0 || (bytes.as_ptr() as usize) % 8 != 0 {
+            return None;
+        }
+        let len = bytes.len() / 24;
+        // bool fields must hold 0 or 1 to be read as `bool`
+        for r in 0..len {
+            if bytes[r * 24 + 16..r * 24 + 19].iter().any(|&x| x > 1) {
+                return None;
+            }
+        }
+        Some(MetaTable { ptr: bytes.as_ptr() as *const AttrMeta, len, _own: MetaOwn::Blob(blob.clone()) })
+    }
 }
 const ATTR_META_UNKNOWN: AttrMeta = AttrMeta { default: 0.0, stackable: true, high_is_good: true, round2: false, min: 0, max: 0 };
 
@@ -1958,7 +2012,7 @@ pub struct Prepared {
     pub published_skills: Vec<u32>,
     /// tactical destroyer modes (group 1306): (lowercase name, type id)
     pub modes: Vec<(String, u32)>,
-    pub attr_meta: Vec<AttrMeta>,
+    pub attr_meta: MetaTable,
     /// attribute ids used by fit validation (resolved once per dataset)
     pub vids: crate::stats::ValidateIds,
     folds: std::sync::Mutex<Vec<(u32, Option<std::sync::Arc<SkillFold>>)>>,
@@ -1993,14 +2047,13 @@ struct PreparedCore {
     skills_foldable: bool,
     published_skills: Vec<u32>,
     modes: Vec<(String, u32)>,
-    attr_meta: Vec<AttrMeta>,
     vids: crate::stats::ValidateIds,
 }
 
 impl Prepared {
     #[inline]
     pub fn meta(&self, attr: u32) -> &AttrMeta {
-        self.attr_meta.get(attr as usize).unwrap_or(&ATTR_META_UNKNOWN)
+        self.attr_meta.as_slice().get(attr as usize).unwrap_or(&ATTR_META_UNKNOWN)
     }
 
     pub fn new(ds: &Dataset) -> Prepared {
@@ -2021,10 +2074,10 @@ impl Prepared {
                 table.push((s, build_fold(ds, s).map(std::sync::Arc::new)));
             }
         }
-        let max_attr = ds.attrs.keys().copied().max().unwrap_or(0) as usize;
+        let max_attr = ds.attrs.iter().map(|(k, _)| k).max().unwrap_or(0) as usize;
         let mut attr_meta = vec![ATTR_META_UNKNOWN; max_attr + 1];
-        for (id, a) in &ds.attrs {
-            attr_meta[*id as usize] = AttrMeta {
+        for (id, a) in ds.attrs.iter() {
+            attr_meta[id as usize] = AttrMeta {
                 default: a.default,
                 stackable: a.stackable,
                 high_is_good: a.high_is_good,
@@ -2038,16 +2091,15 @@ impl Prepared {
             ds.types.ids_in_group(1306).map(|id| (ds.types[&id].name.to_lowercase(), id)).collect();
         modes.sort_by_key(|x| x.1);
         let vids = crate::stats::ValidateIds::new(ds);
-        Prepared { skills_foldable: foldable, published_skills, modes, attr_meta, vids, folds: std::sync::Mutex::new(Vec::new()), table: FoldTable::Built(table) }
+        Prepared { skills_foldable: foldable, published_skills, modes, attr_meta: MetaTable::from_vec(attr_meta), vids, folds: std::sync::Mutex::new(Vec::new()), table: FoldTable::Built(table) }
     }
 
     /// Snapshot sections: bincode(PreparedCore) and the fold table with every (structure, level) value probed.
-    pub(crate) fn snapshot_sections(&self, ds: &Dataset) -> Result<(Vec<u8>, Vec<u8>), String> {
+    pub(crate) fn snapshot_sections(&self, ds: &Dataset) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
         let core = PreparedCore {
             skills_foldable: self.skills_foldable,
             published_skills: self.published_skills.clone(),
             modes: self.modes.clone(),
-            attr_meta: self.attr_meta.clone(),
             vids: self.vids.clone(),
         };
         let mut folds: Vec<(u32, Option<SkillFold>)> = Vec::new();
@@ -2066,16 +2118,22 @@ impl Prepared {
                 folds.push((*s, f));
             }
         }
-        Ok((bincode::serialize(&core).map_err(|e| e.to_string())?, crate::data::LazyTable::encode_pairs(&folds)?))
+        Ok((bincode::serialize(&core).map_err(|e| e.to_string())?, crate::data::LazyTable::encode_pairs(&folds)?, self.attr_meta.encode()))
     }
 
-    pub(crate) fn from_snapshot(core: &[u8], folds: crate::data::LazyTable<Option<SkillFold>>) -> Option<Prepared> {
+    pub(crate) fn from_snapshot(
+        core: &[u8],
+        folds: crate::data::LazyTable<Option<SkillFold>>,
+        blob: &std::sync::Arc<crate::data::Blob>,
+        meta: (usize, usize),
+    ) -> Option<Prepared> {
         let c: PreparedCore = bincode::deserialize(core).ok()?;
+        let attr_meta = MetaTable::decode(blob, meta.0, meta.1)?;
         Some(Prepared {
             skills_foldable: c.skills_foldable,
             published_skills: c.published_skills,
             modes: c.modes,
-            attr_meta: c.attr_meta,
+            attr_meta,
             vids: c.vids,
             folds: std::sync::Mutex::new(Vec::new()),
             table: FoldTable::Snap(folds),

@@ -63,3 +63,9 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   single-calc ~9.5M -> ~5.5M instructions; cold median ~0.5-1 ms lower at load ~7. Output identical (diff vs A
   with and without cache).
 - Tried: LSD radix sort for the modifier order — slower than pdqsort on the mostly presorted keys (+2% instr); reverted.
+- 06:50 snapshot v10: groups and attrs are lazy tables too (no eager String/HashMap decode), the Names section is
+  borrowed from the mapping instead of copied (~0.9 MB memcpy + page faults), AttrMeta is a repr(C) 24-byte record
+  table read in place, and the start-up per-entry validation walks of the lazy tables / name indexes are gone
+  (lookups re-check ids; entry bytes are cut with bounds-checked slices). Single cold calc (callgrind, rifter):
+  9.5M -> 3.6M instructions this session; cold median ~6.4 -> ~4.6 ms at load ~7. Identical output (diff vs A with
+  and without the cache, cargo test).
