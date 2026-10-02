@@ -378,21 +378,31 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		f.lvIDs, f.lvVals = make([]uint32, len(skillIDs)), make([]float64, len(skillIDs))
 	}
 	lvIDs, lvVals := f.lvIDs[:len(skillIDs)], f.lvVals[:len(skillIDs)]
-	for k, s := range skillIDs {
-		if ds.typ(s) == nil {
-			continue
-		}
+	level := func(s uint32) float64 {
 		l, ok := extra[s]
 		if !ok {
 			l = def
 		}
-		if l > 5 {
-			l = 5
+		return float64(min(l, 5))
+	}
+	if tpl := ds.skillItemTemplate(); f.skillsCanonical && len(tpl) == len(skillIDs) {
+		// canonical skill set: copy the prebuilt items (one memmove), then set each level overlay
+		f.Items = append(f.Items, tpl...)
+		sk := f.Items[f.skillLo:]
+		for k := range sk {
+			lvIDs[k], lvVals[k] = attrSkillLevel, level(sk[k].TypeID)
+			sk[k].overlay = attrSet{lvIDs[k : k+1 : k+1], lvVals[k : k+1 : k+1]}
 		}
-		idx, _ := f.newItem(s, KSkill, LChar, ipath{"/character/skills", -1, ""})
-		lvIDs[k], lvVals[k] = attrSkillLevel, float64(l)
-		f.Items[idx].overlay = attrSet{lvIDs[k : k+1 : k+1], lvVals[k : k+1 : k+1]}
-		f.Items[idx].Owned = false
+	} else {
+		for k, s := range skillIDs {
+			if ds.typ(s) == nil {
+				continue
+			}
+			idx, _ := f.newItem(s, KSkill, LChar, ipath{"/character/skills", -1, ""})
+			lvIDs[k], lvVals[k] = attrSkillLevel, level(s)
+			f.Items[idx].overlay = attrSet{lvIDs[k : k+1 : k+1], lvVals[k : k+1 : k+1]}
+			f.Items[idx].Owned = false
+		}
 	}
 	f.skillHi = len(f.Items)
 	// tactical destroyer default mode

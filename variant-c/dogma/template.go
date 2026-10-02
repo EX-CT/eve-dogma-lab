@@ -35,3 +35,20 @@ func (ds *Dataset) skillTemplate() [][]amod {
 	})
 	return ds.tpl
 }
+
+// skillItemTemplate returns prebuilt Items for ds.PublishedSkills (in order, no level overlay), copied
+// into every canonical fit instead of constructing ~500 items one by one.
+func (ds *Dataset) skillItemTemplate() []Item {
+	ds.skillItemsOnce.Do(func() {
+		f := &Fit{DS: ds, noPool: true}
+		for _, s := range ds.PublishedSkills {
+			idx, err := f.newItem(s, KSkill, LChar, ipath{})
+			if err != nil {
+				return
+			}
+			f.Items[idx].Owned = false
+		}
+		ds.skillItems = f.Items
+	})
+	return ds.skillItems
+}

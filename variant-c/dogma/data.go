@@ -206,12 +206,14 @@ type Dataset struct {
 
 	maxAttr uint32 // largest attribute id (dense per-fit registry size)
 	// dense id-indexed views of Attrs/Effects/Types/Groups for the hot paths (nil = absent)
-	attrD   []*AttrInfo
-	effectD []*EffectInfo
-	typeD   []*TypeInfo
-	groupD  []*GroupInfo
-	tplOnce sync.Once
-	tpl     [][]amod
+	attrD          []*AttrInfo
+	effectD        []*EffectInfo
+	typeD          []*TypeInfo
+	groupD         []*GroupInfo
+	skillItemsOnce sync.Once
+	skillItems     []Item
+	tplOnce        sync.Once
+	tpl            [][]amod
 }
 
 // ---- raw JSON shapes ----
