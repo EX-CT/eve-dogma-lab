@@ -1,5 +1,6 @@
 // Portable graph evaluator (approach G2): GraphRequest + engine primitives -> GraphResult. No I/O, no deps.
 import { capacitor } from "./capacitor.js";
+import { ewar } from "./ewar.js";
 import { lockTime, mobility, shieldRegen, warpTime } from "./simple.js";
 import type { GraphRequest, GraphResult, Primitives } from "./types.js";
 import { GraphError } from "./types.js";
@@ -16,6 +17,7 @@ registerGraph("lock_time", ["tgt_sig_m"], ["time_s"], lockTime);
 registerGraph("warp_time", ["distance_m"], ["time_s"], warpTime);
 registerGraph("mobility", ["time_s"], ["speed_mps", "distance_m", "momentum_kg_mps", "bump_speed_mps", "bump_distance_m"], mobility);
 registerGraph("shield_regen", ["time_s", "shield_pct"], ["shield_hp", "shield_regen_hp_s"], shieldRegen);
+registerGraph("ewar", ["distance_m"], ["neut_gj_s", "web_pct", "ecm_strength", "damp_lock_range_pct", "td_optimal_pct", "gd_range_pct", "tp_sig_pct"], ewar);
 registerGraph("capacitor", ["time_s", "cap_pct"], ["cap_gj", "cap_regen_gj_s"], capacitor);
 
 export function graphs() {

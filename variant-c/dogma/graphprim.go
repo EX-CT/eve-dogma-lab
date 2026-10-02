@@ -50,6 +50,31 @@ func (f *Fit) itemPrim(i int) obj {
 	o["state"] = stateName(it.State)
 	o["effects"] = f.effectNames(i)
 	o["attrs"] = f.DumpAttrs(i)
+	// per-effect range / falloff / tracking values (the attributes each effect names in the SDE)
+	er := obj{}
+	for _, e := range it.Effects {
+		ef := f.DS.effect(e.ID)
+		if ef == nil || (ef.RangeAttr == 0 && ef.FalloffAttr == 0) {
+			continue
+		}
+		x := obj{"category": ef.Category, "offensive": ef.IsOffensive, "assistance": ef.IsAssistance}
+		if ef.RangeAttr != 0 {
+			x["range"] = f.Get(i, ef.RangeAttr)
+		}
+		if ef.FalloffAttr != 0 {
+			x["falloff"] = f.Get(i, ef.FalloffAttr)
+		}
+		if ef.TrackingAttr != 0 {
+			x["tracking"] = f.Get(i, ef.TrackingAttr)
+		}
+		if ef.ResistanceAttr != 0 {
+			if a := f.DS.attr(ef.ResistanceAttr); a != nil {
+				x["resistance_attr"] = a.Name
+			}
+		}
+		er[ef.Name] = x
+	}
+	o["effect_ranges"] = er
 	switch it.Kind {
 	case KModule:
 		o["kind"] = "module"

@@ -31,7 +31,7 @@ export function capacitor(req: GraphRequest, p: Primitives): Record<string, (num
           else hi = mid - 1;
         }
         const [t0, c0] = pts[lo];
-        if (sim.ranOut && lo === pts.length - 1 && t > t0) return null;
+        if (lo === pts.length - 1 && t > t0) return null; // past the end of the simulation
         return regenLevel(C, tau, Math.max(c0, 0), t - t0);
       };
     } else {

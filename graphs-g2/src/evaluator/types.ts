@@ -31,6 +31,7 @@ export interface ItemPrim {
   state: "offline" | "online" | "active" | "overheated";
   effects: string[];
   attrs: Attrs;
+  effect_ranges?: Record<string, { range?: number; falloff?: number; tracking?: number; category: number; offensive: boolean; assistance: boolean; resistance_attr?: string }>;
   // modules
   weapon_kind?: string;
   volley?: [number, number, number, number]; // em, thermal, kinetic, explosive (one cycle, unspooled)
