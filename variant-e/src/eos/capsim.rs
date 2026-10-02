@@ -14,8 +14,16 @@ pub struct Drain {
 #[derive(Clone, Copy, Debug)]
 struct Act([f64; 7]);
 
+#[inline(always)]
 fn lt(a: &Act, b: &Act) -> bool {
-    for i in 0..7 {
+    // first field (event time) decides almost every comparison
+    if a.0[0] < b.0[0] {
+        return true;
+    }
+    if a.0[0] > b.0[0] {
+        return false;
+    }
+    for i in 1..7 {
         if a.0[i] < b.0[i] {
             return true;
         }
@@ -76,6 +84,7 @@ impl Heap {
         self.push_idx(i);
     }
     /// heappush of an entry already in the arena (popped earlier)
+    #[inline(always)]
     fn push_idx(&mut self, i: u32) {
         self.h.push(i);
         let n = self.h.len() - 1;
