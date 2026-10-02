@@ -128,16 +128,17 @@ pub struct Dataset {
     pub build: u64,
     pub release_date: Option<String>,
     pub sha256: String,
-    pub types: FxHashMap<u32, TypeInfo>,
+    pub types: TypeTable,
     pub groups: FxHashMap<u32, GroupInfo>,
     pub attrs: FxHashMap<u32, AttrInfo>,
     pub effects: FxHashMap<u32, EffectInfo>,
     pub dbuffs: FxHashMap<u32, DbuffInfo>,
     pub mutaplasmids: FxHashMap<u32, MutaInfo>,
-    pub names_zh: FxHashMap<u32, String>,
     attr_by_name: FxHashMap<String, u32>,
     effect_by_name: FxHashMap<String, u32>,
-    type_by_name: FxHashMap<String, u32>,
+    /// (names_zh, type_by_name): only needed by search/type/EFT, so a snapshot load decodes them on first use
+    names: std::sync::OnceLock<Names>,
+    names_blob: Vec<u8>,
     /// all skill type ids (category 16)
     pub skills: Vec<u32>,
     /// Variant B: dataset-derived precomputation (skill folding tables), built once on first use.
@@ -264,6 +265,7 @@ impl Dataset {
         if std::env::var_os("EVE_DOGMA_NO_CACHE").is_some() {
             return Self::load_bytes(&bytes);
         }
+        let tk = std::time::Instant::now();
         let key = {
             use sha2::Digest;
             let d = sha2::Sha256::digest(&bytes);
@@ -275,24 +277,49 @@ impl Dataset {
             .or_else(|| std::env::var_os("HOME").map(|d| std::path::PathBuf::from(d).join(".cache/eve-dogma-vb")))
             .unwrap_or_else(|| std::env::temp_dir().join("eve-dogma-vb"));
         let file = dir.join(format!("{key}-v{}-{SNAPSHOT_VERSION}.bin", env!("CARGO_PKG_VERSION")));
+        let timing = std::env::var_os("VB_LOAD_TIMING").is_some();
+        if timing {
+            eprintln!("key {:?}", tk.elapsed());
+        }
         if let Ok(snap) = std::fs::read(&file) {
             let t0 = std::time::Instant::now();
-            if let Ok(ds) = bincode::deserialize::<Snapshot>(&snap) {
-                if std::env::var_os("VB_LOAD_TIMING").is_some() {
+            if let Some(ds) = Self::from_snapshot(snap) {
+                if timing {
                     eprintln!("snapshot {:?}", t0.elapsed());
                 }
-                return Ok(ds.into_dataset());
+                return Ok(ds);
             }
         }
         let ds = Self::load_bytes(&bytes)?;
         // best effort: never fail a calculation because the cache is not writable
         let _ = std::fs::create_dir_all(&dir).and_then(|_| {
             let tmp = dir.join(format!("{key}.{}.tmp", std::process::id()));
-            let data = bincode::serialize(&Snapshot::of(&ds)).map_err(std::io::Error::other)?;
+            let main = bincode::serialize(&Snapshot::of(&ds)).map_err(std::io::Error::other)?;
+            let names = bincode::serialize(ds.names()).map_err(std::io::Error::other)?;
+            let types = ds.types.encode().map_err(std::io::Error::other)?;
+            let mut data = Vec::with_capacity(16 + main.len() + names.len() + types.len());
+            data.extend_from_slice(&(main.len() as u64).to_le_bytes());
+            data.extend_from_slice(&main);
+            data.extend_from_slice(&(names.len() as u64).to_le_bytes());
+            data.extend_from_slice(&names);
+            data.extend_from_slice(&types);
             std::fs::write(&tmp, data)?;
             std::fs::rename(&tmp, &file)
         });
         Ok(ds)
+    }
+
+    /// Snapshot file: u64 len + bincode(Snapshot), u64 len + bincode(Names), then the lazily decoded type table.
+    fn from_snapshot(snap: Vec<u8>) -> Option<Dataset> {
+        let rd = |at: usize| -> Option<usize> { Some(u64::from_le_bytes(snap.get(at..at + 8)?.try_into().ok()?) as usize) };
+        let main_len = rd(0)?;
+        let main_end = 8usize.checked_add(main_len)?;
+        let ds: Snapshot = bincode::deserialize(snap.get(8..main_end)?).ok()?;
+        let names_len = rd(main_end)?;
+        let names_end = (main_end + 8).checked_add(names_len)?;
+        let names = snap.get(main_end + 8..names_end)?.to_vec();
+        let types = TypeTable::decode(snap, names_end)?;
+        Some(ds.into_dataset(names, types))
     }
 
     pub fn load_bytes(bytes: &[u8]) -> Result<Dataset, String> {
@@ -426,16 +453,16 @@ impl Dataset {
             build: raw.sde.build,
             release_date: raw.sde.release_date,
             sha256,
-            types,
+            types: TypeTable::from_map(types),
             groups,
             attrs,
             effects,
             dbuffs,
             mutaplasmids,
-            names_zh,
             attr_by_name,
             effect_by_name,
-            type_by_name,
+            names: std::sync::OnceLock::from(Names { zh: names_zh, type_by_name }),
+            names_blob: Vec::new(),
             skills,
             prepared: std::sync::OnceLock::new(),
         })
@@ -447,8 +474,14 @@ impl Dataset {
     pub fn effect_id(&self, name: &str) -> u32 {
         *self.effect_by_name.get(name).unwrap_or(&0)
     }
+    fn names(&self) -> &Names {
+        self.names.get_or_init(|| bincode::deserialize(&self.names_blob).unwrap_or_default())
+    }
+    pub fn names_zh(&self) -> &FxHashMap<u32, String> {
+        &self.names().zh
+    }
     pub fn type_by_name(&self, name: &str) -> Option<u32> {
-        self.type_by_name.get(&name.trim().to_lowercase()).copied()
+        self.names().type_by_name.get(&name.trim().to_lowercase()).copied()
     }
     pub fn attr_default(&self, id: u32) -> f64 {
         self.attrs.get(&id).map(|a| a.default).unwrap_or(0.0)
@@ -549,23 +582,163 @@ impl<'de> Deserialize<'de> for IdKey {
     }
 }
 
-const SNAPSHOT_VERSION: u32 = 1;
+const SNAPSHOT_VERSION: u32 = 3;
+
+/// Type table with the FxHashMap-like API the engine uses. Loaded from a snapshot, each TypeInfo stays
+/// bincode-encoded until first use (a calc touches a few hundred of ~10k types).
+pub struct TypeTable {
+    /// sorted type ids
+    ids: Vec<u32>,
+    groups: Vec<u32>,
+    /// type id -> position + 1 (0 = absent); empty when ids are too sparse (binary search instead)
+    dense: Vec<u32>,
+    slots: Vec<std::sync::OnceLock<TypeInfo>>,
+    blob: Vec<u8>,
+    /// (start, end) of each encoded TypeInfo in `blob`
+    spans: Vec<(u32, u32)>,
+}
+
+impl TypeTable {
+    fn build_index(ids: &[u32]) -> Vec<u32> {
+        let max = ids.last().copied().unwrap_or(0) as usize;
+        if max >= 1 << 24 {
+            return Vec::new();
+        }
+        let mut dense = vec![0u32; max + 1];
+        for (p, &id) in ids.iter().enumerate() {
+            dense[id as usize] = p as u32 + 1;
+        }
+        dense
+    }
+
+    fn from_map(m: FxHashMap<u32, TypeInfo>) -> TypeTable {
+        let mut v: Vec<(u32, TypeInfo)> = m.into_iter().collect();
+        v.sort_unstable_by_key(|x| x.0);
+        let ids: Vec<u32> = v.iter().map(|x| x.0).collect();
+        let groups = v.iter().map(|x| x.1.group).collect();
+        let dense = Self::build_index(&ids);
+        let slots = v.into_iter().map(|(_, t)| std::sync::OnceLock::from(t)).collect();
+        TypeTable { ids, groups, dense, slots, blob: Vec::new(), spans: Vec::new() }
+    }
+
+    /// section: u32 n, n x (id, group, start, end) u32 LE (offsets relative to the section), then encoded types
+    fn encode(&self) -> Result<Vec<u8>, String> {
+        let n = self.ids.len();
+        let mut body = Vec::new();
+        let mut spans = Vec::with_capacity(n);
+        let head = 4 + n * 16;
+        for p in 0..n {
+            let t = self.at(p);
+            let start = head + body.len();
+            bincode::serialize_into(&mut body, t).map_err(|e| e.to_string())?;
+            spans.push((start as u32, (head + body.len()) as u32));
+        }
+        let mut out = Vec::with_capacity(head + body.len());
+        out.extend_from_slice(&(n as u32).to_le_bytes());
+        for p in 0..n {
+            for x in [self.ids[p], self.groups[p], spans[p].0, spans[p].1] {
+                out.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&body);
+        Ok(out)
+    }
+
+    fn decode(blob: Vec<u8>, at: usize) -> Option<TypeTable> {
+        let u = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(blob.get(o..o + 4)?.try_into().ok()?)) };
+        let n = u(at)? as usize;
+        let mut ids = Vec::with_capacity(n);
+        let mut groups = Vec::with_capacity(n);
+        let mut spans = Vec::with_capacity(n);
+        for p in 0..n {
+            let o = at + 4 + p * 16;
+            ids.push(u(o)?);
+            groups.push(u(o + 4)?);
+            let (s, e) = (u(o + 8)? as usize + at, u(o + 12)? as usize + at);
+            if s > e || e > blob.len() || s > u32::MAX as usize || e > u32::MAX as usize {
+                return None;
+            }
+            spans.push((s as u32, e as u32));
+        }
+        if ids.windows(2).any(|w| w[0] >= w[1]) {
+            return None;
+        }
+        let dense = Self::build_index(&ids);
+        let slots = (0..n).map(|_| std::sync::OnceLock::new()).collect();
+        Some(TypeTable { ids, groups, dense, slots, blob, spans })
+    }
+
+    #[inline]
+    fn pos(&self, id: u32) -> Option<usize> {
+        if !self.dense.is_empty() || self.ids.is_empty() {
+            match self.dense.get(id as usize) {
+                Some(&p) if p != 0 => Some(p as usize - 1),
+                _ => None,
+            }
+        } else {
+            self.ids.binary_search(&id).ok()
+        }
+    }
+
+    #[inline]
+    fn at(&self, p: usize) -> &TypeInfo {
+        self.slots[p].get_or_init(|| {
+            let (s, e) = self.spans[p];
+            bincode::deserialize(&self.blob[s as usize..e as usize]).expect("corrupt dataset snapshot")
+        })
+    }
+
+    #[inline]
+    pub fn get(&self, id: &u32) -> Option<&TypeInfo> {
+        self.pos(*id).map(|p| self.at(p))
+    }
+    pub fn contains_key(&self, id: &u32) -> bool {
+        self.pos(*id).is_some()
+    }
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+    /// all types in id order (decodes every type)
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &TypeInfo)> + '_ {
+        self.ids.iter().enumerate().map(move |(p, id)| (id, self.at(p)))
+    }
+    pub fn values(&self) -> impl Iterator<Item = &TypeInfo> + '_ {
+        (0..self.ids.len()).map(move |p| self.at(p))
+    }
+    /// type ids of one group, without decoding other types
+    pub fn ids_in_group(&self, group: u32) -> impl Iterator<Item = u32> + '_ {
+        self.ids.iter().zip(&self.groups).filter(move |(_, g)| **g == group).map(|(id, _)| *id)
+    }
+}
+
+impl std::ops::Index<&u32> for TypeTable {
+    type Output = TypeInfo;
+    fn index(&self, id: &u32) -> &TypeInfo {
+        self.get(id).expect("unknown type id")
+    }
+}
+
+#[derive(Default, serde::Serialize, Deserialize)]
+struct Names {
+    zh: FxHashMap<u32, String>,
+    type_by_name: FxHashMap<String, u32>,
+}
 
 #[derive(serde::Serialize, Deserialize)]
 struct Snapshot {
     build: u64,
     release_date: Option<String>,
     sha256: String,
-    types: FxHashMap<u32, TypeInfo>,
     groups: FxHashMap<u32, GroupInfo>,
     attrs: FxHashMap<u32, AttrInfo>,
     effects: FxHashMap<u32, EffectInfo>,
     dbuffs: FxHashMap<u32, DbuffInfo>,
     mutaplasmids: FxHashMap<u32, MutaInfo>,
-    names_zh: FxHashMap<u32, String>,
     attr_by_name: FxHashMap<String, u32>,
     effect_by_name: FxHashMap<String, u32>,
-    type_by_name: FxHashMap<String, u32>,
     skills: Vec<u32>,
 }
 
@@ -575,34 +748,31 @@ impl Snapshot {
             build: d.build,
             release_date: d.release_date.clone(),
             sha256: d.sha256.clone(),
-            types: d.types.clone(),
             groups: d.groups.clone(),
             attrs: d.attrs.clone(),
             effects: d.effects.clone(),
             dbuffs: d.dbuffs.clone(),
             mutaplasmids: d.mutaplasmids.clone(),
-            names_zh: d.names_zh.clone(),
             attr_by_name: d.attr_by_name.clone(),
             effect_by_name: d.effect_by_name.clone(),
-            type_by_name: d.type_by_name.clone(),
             skills: d.skills.clone(),
         }
     }
-    fn into_dataset(self) -> Dataset {
+    fn into_dataset(self, names_blob: Vec<u8>, types: TypeTable) -> Dataset {
         Dataset {
             build: self.build,
             release_date: self.release_date,
             sha256: self.sha256,
-            types: self.types,
+            types,
             groups: self.groups,
             attrs: self.attrs,
             effects: self.effects,
             dbuffs: self.dbuffs,
             mutaplasmids: self.mutaplasmids,
-            names_zh: self.names_zh,
             attr_by_name: self.attr_by_name,
             effect_by_name: self.effect_by_name,
-            type_by_name: self.type_by_name,
+            names: std::sync::OnceLock::new(),
+            names_blob,
             skills: self.skills,
             prepared: std::sync::OnceLock::new(),
         }

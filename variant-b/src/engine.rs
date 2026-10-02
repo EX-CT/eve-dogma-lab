@@ -1735,7 +1735,7 @@ impl Prepared {
         }
         let published_skills: Vec<u32> = ds.skills.iter().copied().filter(|s| ds.types[s].published).collect();
         let mut modes: Vec<(String, u32)> =
-            ds.types.iter().filter(|(_, t)| t.group == 1306).map(|(id, t)| (t.name.to_lowercase(), *id)).collect();
+            ds.types.ids_in_group(1306).map(|id| (ds.types[&id].name.to_lowercase(), id)).collect();
         modes.sort_by_key(|x| x.1);
         Prepared { skills_foldable: foldable, published_skills, modes, attr_meta, folds: std::sync::Mutex::new(Vec::new()), table }
     }
