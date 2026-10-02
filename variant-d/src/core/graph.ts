@@ -71,15 +71,19 @@ export interface Item {
 
 /** attributes whose value is post-processed even without modifiers */
 interface AttrPost { min: number | null; max: number | null; round2: boolean; highIsGood: boolean }
+/** per-dataset memo of AttrPost by attribute id (shared by all fits of a dataset) */
+interface PostTable { post: (AttrPost | null)[]; known: Uint8Array }
+const POST = new WeakMap<Dataset, PostTable>();
 
 export class AttrGraph {
   items: Item[] = [];
   epoch = 1;
-  private post: (AttrPost | null)[] = [];
-  private postKnown: Uint8Array;
+  private pt: PostTable;
 
   constructor(public ds: Dataset) {
-    this.postKnown = new Uint8Array(0);
+    let pt = POST.get(ds);
+    if (pt === undefined) POST.set(ds, (pt = { post: [], known: new Uint8Array(0) }));
+    this.pt = pt;
   }
 
   // ------------------------------------------------------------------ base values
@@ -136,11 +140,12 @@ export class AttrGraph {
 
   // ------------------------------------------------------------------ evaluation
   private attrPost(a: number): AttrPost | null {
-    if (a < this.postKnown.length && this.postKnown[a]) return this.post[a];
-    if (a >= this.postKnown.length) {
-      const n = new Uint8Array(Math.max(a + 1, this.postKnown.length * 2, 4096));
-      n.set(this.postKnown);
-      this.postKnown = n;
+    const pt = this.pt;
+    if (a < pt.known.length && pt.known[a]) return pt.post[a];
+    if (a >= pt.known.length) {
+      const n = new Uint8Array(Math.max(a + 1, pt.known.length * 2, 4096));
+      n.set(pt.known);
+      pt.known = n;
     }
     const info = this.ds.attrs.get(a);
     let p: AttrPost | null = null;
@@ -148,8 +153,8 @@ export class AttrGraph {
       const round2 = info.name === 'cpu' || info.name === 'power' || info.name === 'cpuOutput' || info.name === 'powerOutput';
       p = { min: info.minAttr, max: info.maxAttr, round2, highIsGood: info.highIsGood };
     }
-    this.post[a] = p;
-    this.postKnown[a] = 1;
+    pt.post[a] = p;
+    pt.known[a] = 1;
     return p;
   }
 

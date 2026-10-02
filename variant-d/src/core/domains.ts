@@ -50,6 +50,9 @@ export class TargetIndex {
 }
 
 const NONE: readonly number[] = [];
+/** scratch one-element result (callers consume a result before resolving again) */
+const ONE: number[] = [0];
+const one = (i: number): readonly number[] => { ONE[0] = i; return ONE; };
 
 export function resolveTargets(
   g: AttrGraph, idx: TargetIndex, src: number, func: Func, domain: Domain, extra: number,
@@ -58,17 +61,17 @@ export function resolveTargets(
   const s = g.items[src];
   switch (domain) {
     case Domain.Item:
-      return func === Func.Item ? [src] : NONE;
+      return func === Func.Item ? one(src) : NONE;
     case Domain.Other:
-      if (s.charge >= 0) return [s.charge];
-      if (s.parent >= 0) return [s.parent];
+      if (s.charge >= 0) return one(s.charge);
+      if (s.parent >= 0) return one(s.parent);
       return NONE;
     case Domain.Structure:
       if (!isStructure) return NONE;
     // falls through
     case Domain.Ship:
       switch (func) {
-        case Func.Item: return [ship];
+        case Func.Item: return one(ship);
         case Func.Location: return idx.shipLoc;
         case Func.LocationGroup: return idx.shipByGroup.get(extra) ?? NONE;
         case Func.LocationRequiredSkill: return idx.skillShip.get(extra) ?? NONE;
@@ -77,7 +80,7 @@ export function resolveTargets(
       }
     case Domain.Char:
       switch (func) {
-        case Func.Item: return [char];
+        case Func.Item: return one(char);
         case Func.Location: return idx.charLoc;
         case Func.LocationGroup: return idx.charByGroup.get(extra) ?? NONE;
         case Func.LocationRequiredSkill:

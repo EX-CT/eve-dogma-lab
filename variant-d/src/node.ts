@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { buildCache, datasetFromCache, isCache } from './core/cache.js';
 import { Dataset } from './core/dataset.js';
 
@@ -15,16 +16,16 @@ function readJsonBytes(path: string): Buffer {
   return bytes;
 }
 
-/** package directory: set by the entry point (dist/cli.js, dist-cli bundle), else derived from the running script */
+/** package directory: set by the CLI entry points (dist/cli.js, dist-cli bundle); library default ~/.cache/eve-dogma-ts */
 let pkgDir: string | null = null;
 export function setPackageDir(dir: string): void { pkgDir = dir; }
 
-/** cache location for a dataset file: $EVE_DOGMA_TS_CACHE_DIR or <package>/.cache, <sha1(abs path)>-<size>-<mtime>.vdc3 */
+/** cache location for a dataset file: $EVE_DOGMA_TS_CACHE_DIR, <package>/.cache (CLI) or ~/.cache/eve-dogma-ts, <sha1(abs path)>-<size>-<mtime>.vdc3 */
 export function cachePath(datasetFile: string): string {
   const abs = resolve(datasetFile);
   const st = statSync(abs);
   const key = createHash('sha1').update(abs).digest('hex').slice(0, 16);
-  const dir = process.env.EVE_DOGMA_TS_CACHE_DIR ?? join(pkgDir ?? resolve(dirname(process.argv[1] ?? '.'), '..'), '.cache');
+  const dir = process.env.EVE_DOGMA_TS_CACHE_DIR ?? (pkgDir !== null ? join(pkgDir, '.cache') : join(homedir(), '.cache', 'eve-dogma-ts'));
   return join(dir, `${key}-${st.size}-${Math.trunc(st.mtimeMs)}.vdc3`);
 }
 

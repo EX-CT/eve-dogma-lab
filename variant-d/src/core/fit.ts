@@ -411,15 +411,21 @@ export class Fit extends AttrGraph {
     let list = ds.publishedSkills;
     if (this.skillCustom.size) list = [...new Set([...list, ...this.skillCustom.keys()])].sort((a, b) => a - b);
     const eBastion = ds.effectId('moduleBonusBastionModule');
+    let reaches = REACH.get(ds);
+    if (reaches === undefined) REACH.set(ds, (reaches = new Map()));
     for (const s of list) {
-      const t = ds.types.get(s);
-      if (!t) continue;
       // A skill's attributes are only read through its own outgoing modifiers: skip it if none reaches the fit.
-      const plan = planFor(ds, s, t.effects, eBastion);
-      let reach = plan.hasSpecial;
-      for (let k = 0; !reach && k < plan.outgoing.length; k++) {
-        const m = plan.outgoing[k];
-        if (m.domain !== Domain.Other && resolveTargets(this, this.index, this.char, m.func, m.domain, m.extra, this.ship, this.char, this.isStructure).length > 0) reach = true;
+      let r = reaches.get(s);
+      if (r === undefined) {
+        const t = ds.types.get(s);
+        r = t ? skillReach(planFor(ds, s, t.effects, eBastion)) : null;
+        reaches.set(s, r);
+      }
+      if (r === null) continue;
+      let reach = r.always;
+      for (let k = 0; !reach && k < r.checks.length; k++) {
+        const m = r.checks[k];
+        if (resolveTargets(this, this.index, this.char, m.func, m.domain, m.extra, this.ship, this.char, this.isStructure).length > 0) reach = true;
       }
       if (!reach) continue;
       const idx = this.newItem(s, Kind.Skill, Loc.Char, '/character/skills');
@@ -651,6 +657,16 @@ interface PlanEffect { eid: number; e: import('./dataset.js').EffectInfo; isDefa
 interface Plan { effects: PlanEffect[]; outgoing: PlanMod[]; hasSpecial: boolean }
 /** memo keyed by the (immutable) effects array of a type, or of a mutated item */
 const PLANS = new WeakMap<[number, number][], Plan>();
+
+/** per-skill reach test: `always` (a special, or a modifier on the ship/character item or location, which always
+ * exist) or else the outgoing modifiers whose targets must be resolved against the fit */
+interface Reach { always: boolean; checks: PlanMod[] }
+const REACH = new WeakMap<Dataset, Map<number, Reach | null>>();
+function skillReach(plan: Plan): Reach {
+  const checks = plan.outgoing.filter((m) => m.domain !== Domain.Other);
+  const always = plan.hasSpecial || checks.some((m) => (m.domain === Domain.Ship || m.domain === Domain.Char) && (m.func === Func.Item || m.func === Func.Location));
+  return { always, checks };
+}
 
 function planFor(ds: Dataset, typeId: number, effects: [number, number][], eBastion: number): Plan {
   let p = PLANS.get(effects);
