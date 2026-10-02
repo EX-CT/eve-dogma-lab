@@ -52,5 +52,18 @@ FitRequest ─▶ eos::fit::build ─▶ calculate (early/normal/late) ─▶ pr
 - **Per-fit state** uses a `Vec<Item>` arena with an `FxHashMap` of modifier entries per item. Every published skill
   is materialised as an item, which is Pyfa's model. That is the main per-fit cost (about 0.5 ms).
 - **Also ported:** sustained tank (`calculateSustainableTank`), projected fighters with abilities, and drone/fighter range, velocity and signature fields.
-- **Not ported (not scored):** mining yield, and EFT import/export (`search`/`type` RPC methods).
-  `fleet.buffs` (explicit buffs) are fed through the same `addCommandBonus` path at the normal runtime.
+- **EFT export** (`eft_export` RPC, `src/eft.rs`): port of Pyfa `exportEft` with all options on, after `Fit.fill()`
+  (empty-slot lines from the modified slot counts), DRONE_ORDER by market group, mutation blocks with `floatUnerr`
+  values in Python float repr. 295/295 byte-identical to Pyfa on the bench corpus.
+- **Fleet buffs** (contract 1.4.2): explicit `fleet.buffs` override booster fits and the fit's own bursts per buff id
+  (several entries with one id aggregate by min/max per the buff's aggregate mode); other ids keep Pyfa's
+  strongest-|value| rule (`addCommandBonus`).
+- **Not ported (not scored):** mining yield, EFT import, and the `search`/`type` RPC methods.
+
+### Performance notes
+- JSON output goes through a flat output tree (`src/jv.rs`: objects are vectors, keys sorted at serialisation), so
+  the output is byte-identical to `serde_json::Value` without per-key BTreeMap nodes.
+- Python `round(x, n)` (used by `floatUnerr`, cpu/power rounding, capSim) has an exact fast path: `round(x·10ⁿ)/10ⁿ`
+  when x·10ⁿ is not within its rounding error of a .5 tie (Clinger fast path), else the decimal formatter. A test
+  checks 32 M random cases bit-for-bit against format+parse.
+- The parsed dataset is cached as bincode (cold start ~20 ms instead of ~160 ms).
