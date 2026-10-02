@@ -83,12 +83,18 @@ A cycle guard returns the base value. Systems that need evaluated values (buff i
 
 ## Known gaps
 
-- Projected remote reps, neuts, nos and cap transfers, projected fits, booster fits, environments and
-  per-weapon range/tracking are implemented, and they match Pyfa on the full 249-case corpus.
+- Implemented and checked against Pyfa:
+  - projected remote reps, neuts, nos and cap transfers
+  - projected modules, drones, fighters and whole fits
+  - booster fits, environments
+  - sustained tank
+  - ECM jam chance
+  - per-weapon and per-drone application fields
 - Not implemented: EFT import/export, and the `search`/`type` CLI helpers. `serve-stdio` supports only
   `calc` and `meta` requests.
-- The capacitor sim mirrors Variant A's semantics. Edge cases that the corpus does not cover (e.g. very
-  long-cycle modules with mixed reload) have not been checked against Pyfa.
+- Known divergences from Pyfa are the bench's `known_divergences.json` entries: invalid fits and SDE/eve.db data
+  drift.
+- Void bombs (projected cap drain from a bomb charge) are not modelled. Lockbreaker bomb ECM is modelled.
 
 ## Performance notes
 
