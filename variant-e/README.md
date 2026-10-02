@@ -16,9 +16,19 @@ D=/workspace/exct-eve/data/dataset-3569502.json.gz   # or $EVE_DOGMA_DATASET
 $B calc --dataset $D < request.json > response.json  # one FitRequest -> one FitStats
 $B calc --dataset $D request.json                    # same, from a file
 $B batch --dataset $D < requests.jsonl > responses.jsonl
-$B serve-stdio --dataset $D                          # JSONL RPC: {"id","method":"calc|eft_export|meta","params"}
+$B serve-stdio --dataset $D                          # JSONL RPC: {"id","method":"calc|eft_parse|eft_export|search|type|meta","params"}
+$B eft fit.txt --dataset $D [--calc]                 # EFT text -> FitRequest (or FitStats with --calc)
+$B search "Shield Ext" --dataset $D                  # type search (interim spec: exact > prefix > substring, en/zh)
+$B type 587 --dataset $D                             # type info by id or name
 $B meta --dataset $D
 ```
+
+RPC methods (contract 1.4.3): `calc` (FitRequest), `eft_parse` `{text}` -> FitRequest, `eft_export` `{fit,name?}` ->
+`{text}`, `search` `{query,limit?=20,kinds?}` -> `[{type_id,name,name_zh,group,category_id,kind,slot,meta_level,match}]`,
+`type` `{id}` (type id or name) -> `{type_id,name,name_zh,group,group_id,category_id,published,mass,volume,capacity,
+meta_level,slot,attributes{name:value},effects[{id,name,default}]}` (unknown -> `UNKNOWN_TYPE` error), `meta`.
+`eft_parse` output is identical to the reference engine (eve-dogma-rs) on all 326 bench EFT texts; `search` results
+match it on the probe queries.
 
 Errors come back as JSON `{"error":{"code","message","path"}}` (exit code 2 for `calc`, 3 if the dataset cannot be loaded).
 

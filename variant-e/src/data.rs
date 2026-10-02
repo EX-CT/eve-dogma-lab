@@ -41,6 +41,9 @@ pub struct TypeInfo {
     pub req_skills: Vec<(u32, u8)>,
     pub market_group: Option<u32>,
     pub variation_parent: Option<u32>,
+    /// Chinese name (dataset `names.zh`), for search / type lookups
+    pub name_zh: Option<String>,
+    pub meta_level: Option<i32>,
 }
 
 impl TypeInfo {
@@ -137,6 +140,8 @@ struct RawType {
     market_group: Option<u32>,
     #[serde(default)]
     variation_parent: Option<u32>,
+    #[serde(default)]
+    meta_level: Option<i32>,
 }
 #[derive(Deserialize)]
 struct RawCategory {
@@ -188,6 +193,9 @@ struct Raw {
     dbuffs: FxHashMap<String, RawDbuff>,
     #[serde(default)]
     mutaplasmids: FxHashMap<String, RawMuta>,
+    /// localised names: language -> type id -> name
+    #[serde(default)]
+    names: FxHashMap<String, FxHashMap<String, String>>,
     sde: RawSde,
 }
 
@@ -212,7 +220,7 @@ impl Dataset {
             use std::hash::Hasher;
             let mut h = rustc_hash::FxHasher::default();
             h.write(&bytes);
-            h.write(concat!(env!("CARGO_PKG_VERSION"), "-cache-v3").as_bytes());
+            h.write(concat!(env!("CARGO_PKG_VERSION"), "-cache-v4").as_bytes());
             format!("{:016x}-{}", h.finish(), bytes.len())
         };
         let dir = std::env::var_os("EVE_DOGMA_E_CACHE")
@@ -265,7 +273,7 @@ impl Dataset {
             return None;
         }
         let n = ix.ids.len();
-        ds.types = Types { ids: ix.ids, groups: ix.groups, offs: ix.offs, blob: c, base, cells: (0..n).map(|_| std::sync::OnceLock::new()).collect(), by_name: std::sync::OnceLock::new() };
+        ds.types = Types { ids: ix.ids, groups: ix.groups, offs: ix.offs, blob: c, base, cells: (0..n).map(|_| std::sync::OnceLock::new()).collect(), by_name: std::sync::OnceLock::new(), by_lname: std::sync::OnceLock::new() };
         Some(ds)
     }
 
@@ -280,7 +288,7 @@ impl Dataset {
     }
 
     pub fn from_json(json: &[u8]) -> Result<Dataset, String> {
-        let raw: Raw = serde_json::from_slice(json).map_err(|e| format!("dataset json: {e}"))?;
+        let mut raw: Raw = serde_json::from_slice(json).map_err(|e| format!("dataset json: {e}"))?;
         let sha256 = sha256_hex(json);
         let mut attrs = FxHashMap::default();
         let mut attr_by_name = FxHashMap::default();
@@ -319,6 +327,7 @@ impl Dataset {
         }
         let mut types = FxHashMap::default();
         let mut skills = Vec::new();
+        let mut zh = raw.names.remove("zh").unwrap_or_default();
         for (k, t) in raw.types {
             let id: u32 = k.parse().unwrap_or(0);
             let mut av: Vec<(u32, f64)> = t.attrs.iter().filter_map(|(a, v)| a.parse().ok().map(|a: u32| (a, *v))).collect();
@@ -360,6 +369,8 @@ impl Dataset {
                     req_skills: req,
                     market_group: t.market_group,
                     variation_parent: t.variation_parent,
+                    name_zh: zh.remove(&k),
+                    meta_level: t.meta_level,
                 },
             );
         }
@@ -435,6 +446,7 @@ pub struct Types {
     base: usize,
     cells: Vec<std::sync::OnceLock<TypeInfo>>,
     by_name: std::sync::OnceLock<FxHashMap<String, u32>>,
+    by_lname: std::sync::OnceLock<FxHashMap<String, u32>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -489,6 +501,27 @@ impl Types {
     /// types of one group (ascending id)
     pub fn in_group(&self, g: u32) -> impl Iterator<Item = &TypeInfo> {
         (0..self.ids.len()).filter(move |&i| self.groups[i] == g).map(move |i| self.at(i))
+    }
+    /// all types, ascending id
+    pub fn iter(&self) -> impl Iterator<Item = &TypeInfo> {
+        (0..self.ids.len()).map(move |i| self.at(i))
+    }
+    /// case-insensitive (trimmed) English name -> type id; a published type wins, else the lowest id
+    /// (EFT import / `type` by name)
+    pub fn by_name_ci(&self, name: &str) -> Option<u32> {
+        self.by_lname
+            .get_or_init(|| {
+                let mut m: FxHashMap<String, (bool, u32)> = FxHashMap::default();
+                for t in self.iter() {
+                    let e = m.entry(t.name.to_lowercase()).or_insert((t.published, t.id));
+                    if t.published && !e.0 {
+                        *e = (true, t.id);
+                    }
+                }
+                m.into_iter().map(|(k, v)| (k, v.1)).collect()
+            })
+            .get(&name.trim().to_lowercase())
+            .copied()
     }
     /// name -> lowest type id with that name (built on first use)
     pub fn by_name(&self, name: &str) -> Option<u32> {

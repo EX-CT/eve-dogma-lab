@@ -1,5 +1,5 @@
 {
- "variant": "E",
+ "variant": "e-rpc",
  "cmd": "./target/release/eve-dogma-e calc --dataset /workspace/exct-eve/data/dataset-3569502.json.gz",
  "batch_cmd": "./target/release/eve-dogma-e batch --dataset /workspace/exct-eve/data/dataset-3569502.json.gz",
  "cases": 326,
@@ -738,26 +738,26 @@
  "errors": 0,
  "perf": {
   "single_process_per_case_ms": {
-   "median": 7.567110998934368,
-   "min": 5.457631006720476,
-   "max": 24.14305999991484
+   "median": 8.634116500616074,
+   "min": 5.711719000828452,
+   "max": 28.60891499585705
   },
   "batch_corpus": {
-   "requests": 1630,
-   "total_s": 0.3856270989999757,
-   "fits_per_s": 4226.881368625244,
-   "avg_ms_incl_startup": 0.23658104233127344,
-   "responses": 1630,
+   "requests": 978,
+   "total_s": 0.2170340849988861,
+   "fits_per_s": 4506.204636036867,
+   "avg_ms_incl_startup": 0.2219162423301494,
+   "responses": 978,
    "exit": 0
   },
   "latency_one_fit": {
    "case": "exct_rifter",
-   "n": 500,
-   "startup_plus_one_ms": 14.19842099858215,
-   "per_calc_ms": 0.12417482965444317
+   "n": 50,
+   "startup_plus_one_ms": 9.526904002996162,
+   "per_calc_ms": 0.10843636727611515
   },
   "deterministic": true
  },
  "host": "x86_64",
- "time": "2026-10-03T06:32:17+0800"
+ "time": "2026-10-03T07:34:10+0800"
 }

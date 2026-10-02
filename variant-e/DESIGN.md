@@ -58,7 +58,15 @@ FitRequest ─▶ eos::fit::build ─▶ calculate (early/normal/late) ─▶ pr
 - **Fleet buffs** (contract 1.4.2): explicit `fleet.buffs` override booster fits and the fit's own bursts per buff id
   (several entries with one id aggregate by min/max per the buff's aggregate mode); other ids keep Pyfa's
   strongest-|value| rule (`addCommandBonus`).
-- **Not ported (not scored):** mining yield, EFT import, and the `search`/`type` RPC methods.
+- **EFT import** (`eft_parse` RPC / `eft` CLI, `src/eft_parse.rs`): EFT text -> FitRequest JSON with the reference
+  engine's rules and output shape (case-insensitive names, published type preferred; `Name xN` -> drone/fighter/cargo
+  by category; implant vs booster by `boosterness`; T3D mode line -> `ship.mode_type_id`; trailing mutation blocks).
+  Identical to eve-dogma-rs on all 326 bench EFT exports (round trip 326/326).
+- **Search / type** (`search`, `type` RPC + CLI, `src/api.rs`): interim search spec from CONTRACT.md (published
+  ship/module/charge/drone/fighter/implant/booster/subsystem/skill types, exact > prefix > substring on English or
+  Chinese names, ties by type id, default limit 20). Chinese names (`names.zh`) and `meta_level` live in the lazily
+  decoded per-type cache records, so they cost nothing at cold start (dataset cache format v4).
+- **Not ported (not scored):** mining yield.
 
 ### Performance notes
 - JSON output goes through a flat output tree (`src/jv.rs`: objects are vectors, keys sorted at serialisation), so

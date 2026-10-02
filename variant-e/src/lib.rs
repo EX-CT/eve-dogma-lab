@@ -15,3 +15,4 @@ pub mod generated {
 pub mod api;
 pub mod jv;
 pub mod eft;
+pub mod eft_parse;
