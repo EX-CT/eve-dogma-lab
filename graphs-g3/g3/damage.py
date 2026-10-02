@@ -881,10 +881,11 @@ def _fighter_mult(c, tgt, settings, D, d, tv, sig, n):
 
 # ---------------------------------------------------------------- series assembly
 def _apply(maps, apps, tgt, settings, n):
-    """maps: list of (dealer key, Dmg or per-point list of Dmg); returns total array"""
+    """maps: list of (dealer key, Dmg or per-point _PP); returns total array"""
     res = (0.0, 0.0, 0.0, 0.0) if settings["ignore_resists"] else tgt.res
     tot = np.zeros(n)
     ticks = {}
+    gpos, gcols = {}, []
     for key, dm in maps:
         a = apps.get(key)
         if a is None:
@@ -895,40 +896,156 @@ def _apply(maps, apps, tgt, settings, n):
                 for ab, rl in L:
                     val = np.minimum(ab * a, rl * a * tgt.hp)
                     ticks[t] = np.maximum(ticks[t], val) if t in ticks else val
-        else:  # per-point list
-            vec = np.array([[x * (1 - r) for x, r in zip(m.v, res)] if m is not None else [0.0] * 4 for m in dm])
-            tot += vec.sum(axis=1) * a
-            for j, m in enumerate(dm):
-                if m is None or not m.b:
-                    continue
-                for t, L in m.b.items():
-                    best = max(min(ab * a[j], rl * a[j] * tgt.hp) for ab, rl in L)
-                    arr = ticks.setdefault((t, "pp"), np.zeros(n))
-                    arr[j] = max(arr[j], best)
+        else:
+            if n == 0:
+                raise np.exceptions.AxisError("axis 1 is out of bounds for array of dimension 1")
+            tot = _pp_apply(dm, np.broadcast_to(np.asarray(a, float), (n,)), tuple(res), tgt.hp, n, tot, gpos,
+                            gcols)
     for v in ticks.values():
+        tot = tot + v
+    for v in gcols:
         tot = tot + v
     return tot
 
 
+class _Entries:
+    """time-cache column of one dealer prepared for array evaluation: entry list (Dmg), unerr'd change times,
+    resisted 4-vectors per resist profile and breacher tick matrices (built once per time cache)"""
+    __slots__ = ("ents", "times", "_res", "_ticks")
+
+    def __init__(self, times, ents):
+        self.ents = ents
+        self.times = unerr(np.asarray(times, float)) if len(times) else None
+        self._res = {}
+        self._ticks = None
+
+    def lookup(self, tq):
+        if self.times is None:
+            return np.full(len(tq), -1)
+        return np.searchsorted(self.times, unerr(tq), side="right") - 1
+
+    def resisted(self, res):
+        R = self._res.get(res)
+        if R is None:
+            R = self._res[res] = np.array([[x * (1 - r) for x, r in zip(m.v, res)] for m in self.ents],
+                                          float).reshape(len(self.ents), 4)
+        return R
+
+    def ticks(self):
+        """(has_b per entry, ordered tick keys per entry, tick key list, AB, RL, present) or None"""
+        if self._ticks is None:
+            hasb = np.array([bool(m.b) for m in self.ents], bool)
+            if not hasb.any():
+                self._ticks = False
+            else:
+                keys, pos = [], {}
+                lmax = 1
+                for m in self.ents:
+                    for t, L in m.b.items():
+                        if t not in pos:
+                            pos[t] = len(keys)
+                            keys.append(t)
+                        lmax = max(lmax, len(L))
+                E, T = len(self.ents), len(keys)
+                AB, RL = np.zeros((E, T, lmax)), np.zeros((E, T, lmax))
+                PR = np.zeros((E, T, lmax), bool)
+                for e, m in enumerate(self.ents):
+                    for t, L in m.b.items():
+                        ti = pos[t]
+                        for l, (ab, rl) in enumerate(L):
+                            AB[e, ti, l], RL[e, ti, l], PR[e, ti, l] = ab, rl, True
+                ekeys = [[pos[t] for t in m.b] for m in self.ents]
+                self._ticks = (hasb, ekeys, keys, AB, RL, PR)
+        return self._ticks or None
+
+
+class _PP:
+    """per-point view: dealer entries + entry index per point (-1 = none)"""
+    __slots__ = ("E", "k")
+
+    def __init__(self, E, k):
+        self.E, self.k = E, k
+
+
+def _prepared(c, tc):
+    pc = c.memo.get("ppcache")
+    if pc is None or pc[0] is not tc:
+        pc = c.memo["ppcache"] = (tc, {})
+    return pc[1]
+
+
 def _per_point_maps(c, tq, n, what):
-    """time-cache value per dealer for an array of times: list of (key, [Dmg|None]*n)"""
+    """time-cache value per dealer for an array of times: list of (key, _PP)"""
     tmax = float(np.nanmax(tq)) if n else 0.0
     tc = time_cache(c, tmax)
+    prep = _prepared(c, tc)
     out = []
     for key, (pts, dts, dmgs) in tc.items():
-        if what in ("dps", "volley"):
-            k = _lookup([p[0] for p in pts], tq)
-            col = 1 if what == "dps" else 2
-            out.append((key, [pts[j][col] if j >= 0 else None for j in k.tolist()]))
-        else:
-            k = _lookup(dts, tq)
-            cum = []
-            acc = Dmg()
-            for m in dmgs:
-                acc = acc.plus(m)
-                cum.append(acc)
-            out.append((key, [cum[j] if j >= 0 else None for j in k.tolist()]))
+        mode = "pts" + what if what in ("dps", "volley") else "cum"
+        E = prep.get((key, mode))
+        if E is None:
+            if mode != "cum":
+                col = 1 if what == "dps" else 2
+                E = _Entries([p[0] for p in pts], [p[col] for p in pts])
+            else:
+                cum = []
+                acc = Dmg()
+                for m in dmgs:
+                    acc = acc.plus(m)
+                    cum.append(acc)
+                E = _Entries(dts, cum)
+            prep[(key, mode)] = E
+        out.append((key, _PP(E, E.lookup(tq))))
     return out
+
+
+def _pp_apply(dm, a, res, hp, n, tot, gpos, gcols):
+    """vectorised per-point accumulation; same operations and tick order as the scalar definition:
+    tick arrays are created in first-visit order (dealer order, then point order, then tick order) and each holds
+    the running max of max_L min(ab*a, rl*a*hp) (Python min/max comparison semantics)"""
+    E, k = dm.E, dm.k
+    valid = k >= 0
+    kk = np.where(valid, k, 0)
+    if len(E.ents):
+        R = E.resisted(res)
+        vec = np.where(valid[:, None], R[kk], 0.0)
+    else:
+        vec = np.zeros((n, 4))
+    tot += vec.sum(axis=1) * a
+    tk = E.ticks()
+    if tk is None:
+        return tot
+    hasb, ekeys, keys, AB, RL, PR = tk
+    vis = valid & hasb[kk]
+    if not vis.any():
+        return tot
+    vk = k[vis]
+    _, first = np.unique(vk, return_index=True)
+    order = vk[np.sort(first)].tolist()
+    used = []
+    seen = set()
+    for e in order:
+        for ti in ekeys[e]:
+            if ti not in seen:
+                seen.add(ti)
+                used.append(ti)
+                g = (keys[ti], "pp")
+                if g not in gpos:
+                    gpos[g] = len(gcols)
+                    gcols.append(np.zeros(n))
+    a2 = a[:, None]
+    for ti in used:
+        ab, rl, pr = AB[kk, ti, :], RL[kk, ti, :], PR[kk, ti, :] & vis[:, None]
+        x, y = ab * a2, rl * a2 * hp
+        v = np.where(y < x, y, x)  # Python min(x, y)
+        best = v[:, 0]
+        present = pr[:, 0]
+        for l in range(1, v.shape[1]):
+            best = np.where(pr[:, l] & (v[:, l] > best), v[:, l], best)
+            present = present | pr[:, l]
+        col = gcols[gpos[(keys[ti], "pp")]]
+        gcols[gpos[(keys[ti], "pp")]] = np.where(present & (best > col), best, col)
+    return tot
 
 
 def _speed_param(params, prefix, vmax):

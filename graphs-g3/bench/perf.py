@@ -64,6 +64,19 @@ e.graph(big)
 t_big = best(lambda: e.graph(big), 3)
 print(f"d) damage/distance 100k pts warm: {t_big*1000:.0f} ms = {100000/t_big:,.0f} points/s (incl. JSON-ready lists)")
 
+tl = []
+for name in sorted(os.path.basename(f) for f in glob.glob(os.path.join(CASES, "*.json"))):
+    r = json.load(open(os.path.join(CASES, name)))
+    if r["x"]["axis"] != "time_s":
+        continue
+    hi = max(r["x"]["values"])
+    rr = dict(r, x=dict(r["x"], values=[hi * k / 499 for k in range(500)]))
+    e.graph(rr)
+    tl.append((best(lambda: e.graph(rr), 5), name))
+tsum = sum(t for t, _ in tl)
+print(f"f) time axis, 500 points, warm fit: {len(tl)} requests, total {tsum*1000:.1f} ms = "
+      f"{500*len(tl)/tsum:,.0f} points/s; slowest " + ", ".join(f"{n[:-5]} {t*1000:.1f} ms" for t, n in sorted(tl)[::-1][:3]))
+
 exe = os.path.join(ROOT, "bin", "eve-dogma-g3")
 walls = []
 for _ in range(3):
