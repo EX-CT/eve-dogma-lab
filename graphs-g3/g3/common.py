@@ -3,7 +3,6 @@ import math
 
 import numpy as np
 
-from evedogma_g.stats import float_unerr
 
 NAN = float("nan")
 PENALTY = np.exp(-(np.arange(64, dtype=float) ** 2) / 7.1289)
@@ -23,13 +22,12 @@ def range_factor(optimal, falloff, d, restricted=True):
 
 
 def unerr(a):
-    """floatUnerr (round to 8 significant digits) elementwise"""
+    """float_unerr (round to 1e-9) elementwise; same IEEE operations as the scalar version, branch-free"""
     a = np.asarray(a, dtype=float)
-    out = np.empty_like(a)
-    flat, of = a.ravel(), out.ravel()
-    for k, x in enumerate(flat.tolist()):
-        of[k] = float_unerr(x) if math.isfinite(x) else x
-    return out
+    with np.errstate(invalid="ignore", over="ignore"):
+        y = a * 1e9
+        r = np.where(y >= 0, np.floor(y + 0.5), -np.floor(-y + 0.5)) / 1e9
+    return np.where(np.isfinite(a), r, a)
 
 
 def stack_mult(rows):

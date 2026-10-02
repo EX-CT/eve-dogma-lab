@@ -105,7 +105,12 @@ class Engine:
         series = {}
         for y in ys:
             a = out[y]
-            series[y] = [None if not math.isfinite(v) else v for v in np.asarray(a, dtype=float).tolist()]
+            a = np.asarray(a, dtype=float)
+            lst = a.tolist()
+            if not np.isfinite(a).all():
+                for k in np.flatnonzero(~np.isfinite(a)).tolist():
+                    lst[k] = None
+            series[y] = lst
         for k, v in out.items():
             if k.endswith("_charge_type_id"):
                 series[k] = v

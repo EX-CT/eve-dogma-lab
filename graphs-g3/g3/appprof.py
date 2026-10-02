@@ -384,6 +384,114 @@ def _with_charge(eng, c, i, tid):
     raise GraphError("INTERNAL", "charge variant lost its module")
 
 
+# ---------------------------------------------------------------- vectorised kernels ([charges] x [distances])
+def _soa(cds, keys):
+    return {k: np.array([cd[k] for cd in cds], float)[:, None] for k in keys}
+
+
+def turret_matrix(soa, base, tp, proj, d):
+    """applied volley of every charge (rows) at every distance (cols)"""
+    d = np.asarray(d, float)[None, :]
+    opt, fall, track = soa["opt"], soa["fall"], soa["track"]
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        rf = np.where(d <= opt, 1.0, np.where(fall > 0, 0.5 ** ((np.maximum(0, d - opt) / np.where(fall > 0, fall, 1.0)) ** 2), 0.0))
+        if tp is None:
+            tf = 1.0
+        else:
+            sp, sg = proj.at(d[0])
+            sp, sg = sp[None, :], sg[None, :]
+            a1, a2 = tp["atk_angle"] * math.pi / 180, tp["tgt_angle"] * math.pi / 180
+            ctc = tp["atk_r"] + d + tp["tgt_r"]
+            tr = np.abs(tp["atk_speed"] * math.sin(a1) - sp * math.sin(a2))
+            ang = np.where(ctc == 0, np.where(tr == 0, 0.0, INF), tr / np.where(ctc == 0, 1.0, ctc))
+            e = (ang * base["osr"]) / (track * sg)
+            tf = np.where((track <= 0) | (sg <= 0), 0.0, np.where(ang <= 0, 1.0, 0.5 ** (e ** 2)))
+        cth = rf * tf
+        w = np.minimum(cth, 0.01)
+        n = cth - w
+        m = np.where(n > 0, n * ((0.01 + cth) / 2 + 0.49), 0.0) + w * 3
+    return soa["raw"] * m
+
+
+def missile_matrix(soa, proj, d):
+    d = np.asarray(d, float)[None, :]
+    if proj is not None:
+        sp, sg = proj.at(d[0])
+        sp, sg = sp[None, :], sg[None, :]
+    else:
+        sp, sg = np.zeros_like(d), np.full(d.shape, INF)
+    er, ev, drf = soa["er"], soa["ev"], soa["drf"]
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        rf = np.where(d <= soa["lo"], 1.0, np.where(d <= soa["hi"], soa["hc"], 0.0))
+        f = np.ones(np.broadcast(rf, sg).shape)
+        f = np.where(er > 0, np.minimum(f, sg / np.where(er > 0, er, 1.0)), f)
+        ok = (sp > 0) & (er > 0)
+        f = np.where(ok, np.minimum(f, ((ev * sg) / np.where(ok, er * sp, 1.0)) ** drf), f)
+    return np.where(rf == 0, 0.0, soa["raw"] * rf * f)
+
+
+def _pick(mat, prio=None):
+    """Pyfa best-charge rule per column: first strict maximum (> 0); launchers prefer lower damage priority on ties"""
+    mx = mat.max(axis=0)
+    if prio is None:
+        idx = mat.argmax(axis=0)
+    else:
+        cand = np.where(mat == mx[None, :], prio, np.inf)
+        idx = cand.argmin(axis=0)
+    idx = np.where(mx > 0, idx, -1)
+    return mx, idx
+
+
+def transitions_v(cds, matf, max_d, prio=None, launcher=False):
+    if not cds:
+        return []
+    res = sample_step(max_d)
+    grid = np.arange(0, max_d + 1, res, dtype=np.int64) if max_d >= 0 else np.zeros(1, np.int64)
+    if len(grid) == 0 or grid[0] != 0:
+        grid = np.zeros(1, np.int64)
+    mx, idx = _pick(matf(grid.astype(float)), prio)
+    tid = [None if k < 0 else cds[k]["tid"] for k in idx.tolist()]
+    tr = [(0, max(int(idx[0]), 0), tid[0], float(mx[0]))]
+    cur = tid[0]
+    for j in range(1, len(grid)):
+        d = int(grid[j])
+        bv, bn, bi = float(mx[j]), tid[j], max(int(idx[j]), 0)
+        if bn != cur:
+            lo, hi = d - res, d
+            while hi - lo > 10:
+                mid = (lo + hi) // 2
+                _, mi = _pick(matf(np.array([float(mid)])), prio)
+                mn = None if mi[0] < 0 else cds[int(mi[0])]["tid"]
+                if mn == cur:
+                    lo = mid
+                else:
+                    hi = mid
+            hv, _ = _pick(matf(np.array([float(hi)])), prio)
+            bv = float(hv[0])
+            tr.append((hi, bi, bn, bv))
+            cur = bn
+        if launcher and bv < 0.01:
+            tr.append((d, -1, None, 0))
+            break
+    return tr
+
+
+def turret_matrix_diag(soa, base, tp, proj, d):
+    """one charge per distance: soa rows are [1, N] aligned with d"""
+    return _diag(turret_matrix, soa, d, base, tp, proj)
+
+
+def missile_matrix_diag(soa, proj, d):
+    return _diag(missile_matrix, soa, d, proj)
+
+
+def _diag(fn, soa, d, *a):
+    # the kernels broadcast [C,1] x [1,N]; with [1,N] parameter rows they evaluate element-wise
+    if fn is turret_matrix:
+        return fn(soa, a[0], a[1], a[2], d)[0]
+    return fn(soa, a[0], d)[0]
+
+
 # ---------------------------------------------------------------- graph
 def run(eng, req, c, xs, ys, params, settings):
     tgt = Target(eng, req, settings)
@@ -409,28 +517,32 @@ def run(eng, req, c, xs, ys, params, settings):
     groups, proj, tp, wtype = cache
     out = {y: np.zeros(n) for y in ys}
     ids = {y: [None] * n for y in ys}
-    for gi, gr in enumerate(groups.values()):
-        dists = [t[0] for t in gr["tr"]]
-        for j, d in enumerate(x.tolist()):
-            if d < 0:
-                continue
-            k = max(bisect_right(dists, d) - 1, 0)
-            ci = gr["tr"][k][1]
-            if gr["kind"] == "turret":
-                cd = gr["cds"][ci]
-                v = _turret_volley(cd, d, gr["base"], tp, proj)
+    xc = np.maximum(x, 0.0)
+    for gr in groups.values():
+        dists = np.array([t[0] for t in gr["tr"]], float)
+        k = np.maximum(np.searchsorted(dists, xc, side="right") - 1, 0)
+        ci = np.array([t[1] for t in gr["tr"]], np.int64)[k]
+        valid = (ci >= 0) & (x >= 0)
+        cis = np.where(valid, ci, 0)
+        row = {kk: v[:, 0][cis] for kk, v in gr["soa"].items()}
+        soa = {kk: v[None, :] for kk, v in row.items()}
+        if gr["kind"] == "turret":
+            v = turret_matrix_diag(soa, gr["base"], tp, proj, xc)
+        else:
+            v = missile_matrix_diag(soa, gr["pj"], xc)
+        v = np.where(valid, v, 0.0)
+        cyc = gr["cycle"]
+        for y in ys:
+            if y == "dps":
+                out[y] += (v / (cyc / 1000) if cyc > 0 else 0 * v) * gr["count"]
             else:
-                if ci < 0 or ci >= len(gr["cds"]):
-                    continue
-                cd = gr["cds"][ci]
-                v = _missile_volley(cd, d, proj if tp is not None else None)
-            for y in ys:
-                if y == "dps":
-                    out[y][j] += (v / (gr["cycle"] / 1000) if gr["cycle"] > 0 else 0) * gr["count"]
-                else:
-                    out[y][j] += v * gr["count"]
-                if ids[y][j] is None:
-                    ids[y][j] = cd["tid"]
+                out[y] += v * gr["count"]
+        tids = [cd["tid"] for cd in gr["cds"]]
+        for y in ys:
+            col = ids[y]
+            for j in np.flatnonzero(valid).tolist():
+                if col[j] is None:
+                    col[j] = tids[cis[j]]
     r = {y: np.where(x < 0, NAN, out[y]) for y in ys}
     for y in ys:
         r[y + "_charge_type_id"] = ids[y]
@@ -482,13 +594,19 @@ def _build(eng, c, tgt, settings, tier, res, tspeed, aspeed, aang, tang, sig, sh
         i0, info = infos[tid]
         if wtype == "turret":
             gr = dict(info)
-            gr["tr"] = _transitions(gr["cds"], lambda cd, d: _turret_volley(cd, d, gr["base"], tp, proj), gr["max_eff"])
+            gr["soa"] = _soa(gr["cds"], ("opt", "fall", "track", "raw"))
+            gr["tr"] = transitions_v(gr["cds"], lambda d, g=gr: turret_matrix(g["soa"], g["base"], tp, proj, d),
+                                     gr["max_eff"])
         else:
             gr = _launcher_group(eng, c, i0, tier, res, ship_r)
             if gr is None:
                 continue
             pj = proj if tp is not None else None
-            gr["tr"] = _transitions(gr["cds"], lambda cd, d: _missile_volley(cd, d, pj), int(gr["range"]), True)
+            gr["pj"] = pj
+            gr["soa"] = _soa(gr["cds"], ("lo", "hi", "hc", "er", "ev", "drf", "raw"))
+            prio = np.array([cd["prio"] for cd in gr["cds"]], float)[:, None]
+            gr["tr"] = transitions_v(gr["cds"], lambda d, g=gr: missile_matrix(g["soa"], pj, d), int(gr["range"]),
+                                     prio, True)
         gr["count"] = 1
         groups[tid] = gr
     return groups, proj, tp, wtype
