@@ -188,8 +188,8 @@ fn main() {
             }
         }
         "batch" => {
-            // stateless requests -> embarrassingly parallel: chunks of lines are computed on N threads and
-            // written back in input order. --threads 1 (or $EVE_DOGMA_THREADS=1) for strictly sequential.
+            // stateless requests -> embarrassingly parallel: lines stream to N worker threads and results are
+            // written back in input order by a writer thread. --threads 1 (or $EVE_DOGMA_THREADS=1) for strictly sequential.
             let threads: usize = take_flag(&mut args, "--threads")
                 .or_else(|| std::env::var("EVE_DOGMA_THREADS").ok())
                 .and_then(|v| v.parse().ok())
