@@ -14,7 +14,7 @@ level is evaluated with vector ops for all fits at once. See [DESIGN.md](DESIGN.
 * Dataset: `dataset-3569502.json.gz` (EX-CT/eve-sde-pipeline release `sde-3569502`; on the EXCT box:
   `/workspace/exct-eve/data/dataset-3569502.json.gz`). On first use a derived cache (pickled NumPy columns,
   keyed by the sha256 of the .gz) is written to `$EVE_DOGMA_G_CACHE` or `~/.cache/eve-dogma-g/` (≈0.6 s once;
-  afterwards loading takes ≈25 ms).
+  afterwards loading takes ≈10–20 ms). Also works with the `-r2` dataset revision (identical results).
 
 ```bash
 # "build" = check NumPy and warm the dataset cache
@@ -30,10 +30,14 @@ export EVE_DOGMA_DATASET=/workspace/exct-eve/data/dataset-3569502.json.gz   # or
 ./bin/eve-dogma-g calc request.json > response.json
 ./bin/eve-dogma-g batch < requests.jsonl > responses.jsonl     # JSONL, same order; evaluated 256 at a time
 ./bin/eve-dogma-g batch --chunk 1024 < requests.jsonl > out.jsonl
-./bin/eve-dogma-g serve-stdio                                   # JSONL RPC: calc | meta | type | search
+./bin/eve-dogma-g serve-stdio            # JSONL RPC: calc | eft_parse | eft_export | search | type | meta
+./bin/eve-dogma-g eft fit.txt [--calc] [--skills 5]             # EFT text -> FitRequest (or FitStats)
 ./bin/eve-dogma-g meta | type 587 | search "Hammerhead"
 ./bin/eve-dogma-g bench request.json -n 500                     # per-calc time, single vs batched
 ```
+
+`calc` exits 2 on a request error (the `{"error":…}` JSON is still printed on stdout); `batch` keeps going and
+exits 0. `eft_export` writes Pyfa's EFT format byte for byte; `search` follows the contract's interim spec.
 
 `bin/eve-dogma-g` is a 3-line shell wrapper for `python3 -m evedogma_g` (put `variant-g/` on `PYTHONPATH`
 to use it as a library: `from evedogma_g.calc import calc, calc_many`).
@@ -44,8 +48,10 @@ Errors are JSON (`{"error":{"code","message","path"}}` with `BAD_JSON`, `BAD_REQ
 ## Tests
 
 ```bash
-python3 tests/run_tests.py        # Pyfa parity on the bench corpus, batch==single, determinism, errors, unit checks
-python3 tests/compare_ref.py      # every response leaf vs the reference engine (variant A) binary
+python3 tests/run_tests.py [--bench DIR]   # Pyfa parity on the bench corpus, batch==single, determinism, errors,
+                                           # capsim fast-path fuzz, EFT import vs reference, EFT export vs Pyfa
+python3 tests/compare_ref.py --ref A_BINARY --cases DIR/cases   # every response leaf vs the reference engine
+python3 tests/compare_prev.py BASELINE_DIR [CASES]               # byte-identical check for refactors
 ```
 
 Bench manifest: [bench.yaml](bench.yaml) (used by `eve-dogma-bench/bench.py`).

@@ -17,7 +17,8 @@ requests ──parse──► Batch.add_fit (per fit, Python: items + base-value
              ─ resolve targets: direct (self/ship/char/other)
                + equi-join on (fit, class, group|skill) table
              register_python  (per fit, small): propulsion, MJD, slot/hardpoint modifiers,
-               projected ewar / reps / neuts, fleet + local burst buffs, RAH
+               projected ewar (webs, paints, damps, ECM, TD/GD/remote tracking computers onto the
+               target's gunnery modules / missile charges) / reps / neuts, fighters, fleet + burst buffs, RAH
                          │
                          ▼
              evaluate  (vectorised, whole batch)
@@ -33,7 +34,9 @@ requests ──parse──► Batch.add_fit (per fit, Python: items + base-value
 ### Data layout
 
 * **Dataset cache** (`dataset.py`): the gz JSON is flattened once into column arrays and pickled
-  (`~/.cache/eve-dogma-g/<sha256(gz)[:16]>-v4.pkl`). Per type: attributes as CSR (`t_attr_ptr/ids/vals`,
+  (`~/.cache/eve-dogma-g/<sha256(gz)[:16]>-v8.pkl`). Per-type Python tables that only some requests
+  need (effects lists, required skills, effect infos, names, search/EFT facts) are stored as marshal blobs and
+  decoded per entry on first access (`LazySeq` / `LazyMap` / lazy whole), so a cold `calc` decodes only what it touches. Per type: attributes as CSR (`t_attr_ptr/ids/vals`,
   type-level mass/capacity/volume/radius merged in like the reference), effects, required skills, inferred slot,
   and a **modifier-template table** `tm` (CSR by type): one row per `(effect, modifier)` with the effect
   category/default flag, `func, domain, modified, modifying, op, extra`, plus marker rows for the hand-written
@@ -41,8 +44,10 @@ requests ──parse──► Batch.add_fit (per fit, Python: items + base-value
 * **Batch** (`engine.py`): item columns over all fits (`fit, type, kind, location, owned, state, parent, charge`).
   All published skills of every fit are created as a NumPy block (512 per fit) rather than Python objects.
   Skills, implants, boosters, modes and beacons are *pruned* items: only attributes that are referenced
-  (modifier sources/targets, overrides, skill level) become nodes; ships, modules, charges, drones, fighters,
-  projected items and the character materialise all their attributes (they are read by the stats layer).
+  (modifier sources/targets, overrides) become nodes — a skill's level is a node only where a modifier reads it.
+  For ships, modules, charges, drones, fighters, projected items and the character only attributes that the
+  evaluation changes (modifier targets, min/max-capped, cpu/power rounding) are nodes; `Values` serves every
+  other attribute from the shared type table (`Evaluated.full`).
 * **Modifiers**: columns `tgt, attr, op, pen, kind, a, b, c, const, factor, mul, o1, o2`. `kind` is the
   source expression: `ATTR` (value of node `a`), `CONST`, `PROP` (AB/MWD speed factor from nodes a,b and ship
   mass c), `PROJ` (projected value scaled by range factor and target resistance node c). `pen` = the
@@ -79,7 +84,7 @@ level everything is vectorised over all nodes of all fits:
 rows in the reference's registration order: rows are sorted by `(o1, o2)`, unpenalised factors are applied first,
 then the penalised positive list, then the negative list (each sorted, stable), with the in-order unbuffered
 `ufunc.at` (`np.multiply.at(v, idx, f)`) so `v` is multiplied sequentially exactly like `val *= m`. With
-this, all 249 corpus responses are identical to the reference to 1e-6 relative on every leaf.
+this, all 297 corpus responses (bench 1.6.0) are identical to the reference on every leaf (`tests/compare_ref.py`).
 
 ### Evaluation-dependent effects
 
@@ -105,18 +110,24 @@ simulation, navigation, targeting, drones, validation, attribute dumps. Attribut
 dicts built lazily from the sorted node arrays.
 
 **Capacitor simulation** (`capsim.py`): the event-heap algorithm of Pyfa's capSim (as in the reference).
-Fast path for the common case (no injectors, no clips): events are `offset + k·duration`, so each window of
-events is generated and sorted with NumPy (same tie order as the heap: time, duration, cap need) and the
-decay factors `exp(−Δt/τ)` are precomputed; only the nonlinear recurrence remains a Python loop. Injector /
-reload cases use the general heap loop.
+Fast path for the common case (no injectors, no clips): every drain's event times are built as an exact running
+sum (`t, t+d, (t+d)+d, …` like the heap, not `k·d`), each window of events is sorted with NumPy (same tie order
+as the heap: time, duration, cap need), the decay factors `exp(−Δt/τ)` are precomputed with libm `math.exp`
+(NumPy's SIMD exp can differ in the last ulp), and windows grow geometrically. Only the nonlinear recurrence
+remains a tight Python loop (recharge ≡ new time step, `t_last`/iteration count recovered from the loop position,
+`y*y` like Rust `powi(2)`). Injector / reload cases use the general heap loop; `tests/run_tests.py` fuzzes the fast
+path against the heap loop on 300 random drain sets (bit-identical).
 
 ## Trade-offs
 
 * **Batch vs latency.** Per-call overhead (NumPy call setup, ~100 small array ops per evaluation pass, Python
-  stats) dominates a single fit (~4–5 ms); batching amortises the vectorised part (dogma evaluation of a
-  249-fit batch ≈ 0.3 s, ~1–2 ms/fit). The per-fit Python stats and the capacitor simulation are now the
-  largest share — they are the obvious next vectorisation targets (most stats are gathers + segment sums).
-* **Cold start** is Python + NumPy import (~120 ms) + cache load (~25 ms); worse than compiled variants.
+  stats) dominates a single fit; batching amortises the vectorised part. In-process on the 297-case corpus
+  (≈0.85 s, ~350 fits/s): capacitor simulation ≈ 25 % (sequential recurrence, ~410k events), vectorised dogma
+  evaluation ≈ 27 %, per-fit Python stats ≈ 20 %, registration + item setup ≈ 15 %. 500 identical rifters:
+  ≈ 2.0 ms/fit. Remaining targets: the capsim recurrence (inherently sequential; only a compiled kernel would
+  help), and vectorising the per-fit stats (most are gathers + segment sums).
+* **Cold start** ≈ 110–120 ms: Python + `import numpy` (~80–90 ms on this box; OpenBLAS/OMP threads are pinned
+  to 1 before the import), cache unpickle ~10 ms, first calc ~7 ms. Worse than compiled variants by design.
 * **Readability.** The engine core is ~1100 lines of plain Python/NumPy; the dogma semantics (operator order,
   penalty, caps, targeting) are each one visible block of array code instead of a recursive lazy evaluator.
 * **Memory.** Eager evaluation computes every materialised node (≈6k per fit), not only requested ones. Fine
@@ -128,9 +139,16 @@ reload cases use the general heap loop.
 
 * The reference engine is the semantic spec where the contract is silent (e.g. registration order, booster/
   projected fit handling, warnings' text). Variant G reproduces its output byte-for-byte except `meta.engine`.
-* `eft`/`eft_parse`/`eft_export` helpers and `serve-stdio` methods `eft_*` are **not implemented** (the bench
-  only needs `calc`/`batch`; EFT import is a front-end concern). `serve-stdio` supports `calc, meta, type, search`.
-* `options.sources` is accepted and ignored (the reference also does not emit sources yet).
+* EFT: `eft [FILE] [--calc] [--skills N]` and RPC `eft_parse` / `eft_export` (`evedogma_g/eft.py`). Import is
+  identical to the reference on the test texts; export is Pyfa's `exportEft` byte for byte (contract 1.4.1 ruling
+  4: racks with `[Empty X slot]` fillers from the evaluated slot counts, Pyfa drone/fighter/implant/booster/cargo
+  order, ` /offline`, mutation block with Pyfa float formatting; no T3D mode line): 297/297 vs Pyfa
+  (`expected_extra/eft_export.jsonl`, T3C maxSubSystems data divergence accepted like the bench), identical to A.
+* `serve-stdio` methods: `calc, eft_parse, eft_export, search, type, meta`. `search` follows the interim spec
+  (published ship/module/charge/drone/fighter/implant/booster/subsystem/skill, English or Chinese name,
+  exact > prefix > substring, typeID ties, limit 20, optional `kinds`).
+* `calc` with an error prints the `{"error":…}` JSON on stdout and exits 2 (contract 1.4.1); `batch` exits 0.
+* `options.sources` is accepted and ignored (the reference also does not emit sources).
 * Batch mode isolates errors per line (a bad line yields an error object, the others are unaffected).
 * The dataset cache is derived only from the official dataset file and keyed by its sha256 (allowed by the brief).
 
