@@ -471,24 +471,34 @@ def transitions_v(cds, matf, max_d, prio=None, launcher=False):
     mx, idx = _pick(matf(grid.astype(float)), prio)
     tid = [None if k < 0 else cds[k]["tid"] for k in idx.tolist()]
     tr = [(0, max(int(idx[0]), 0), tid[0], float(mx[0]))]
-    cur = tid[0]
+    # every change of best charge between grid[j-1] and grid[j] is bisected independently (the current charge
+    # at j is always the grid best at j-1), so all bisections run as one batch per step
+    J = [j for j in range(1, len(grid)) if tid[j] != tid[j - 1]]
+    hv = {}
+    if J:
+        lo = grid[J] - res
+        hi = grid[J].copy()
+        cur = [tid[j - 1] for j in J]
+        while True:
+            act = np.flatnonzero(hi - lo > 10)
+            if len(act) == 0:
+                break
+            mid = (lo[act] + hi[act]) // 2
+            _, mi = _pick(matf(mid.astype(float)), prio)
+            for q, m, k in zip(act.tolist(), mid.tolist(), mi.tolist()):
+                mn = None if k < 0 else cds[k]["tid"]
+                if mn == cur[q]:
+                    lo[q] = m
+                else:
+                    hi[q] = m
+        hvals, _ = _pick(matf(hi.astype(float)), prio)
+        hv = {j: (int(h), float(v)) for j, h, v in zip(J, hi.tolist(), hvals.tolist())}
     for j in range(1, len(grid)):
         d = int(grid[j])
         bv, bn, bi = float(mx[j]), tid[j], max(int(idx[j]), 0)
-        if bn != cur:
-            lo, hi = d - res, d
-            while hi - lo > 10:
-                mid = (lo + hi) // 2
-                _, mi = _pick(matf(np.array([float(mid)])), prio)
-                mn = None if mi[0] < 0 else cds[int(mi[0])]["tid"]
-                if mn == cur:
-                    lo = mid
-                else:
-                    hi = mid
-            hv, _ = _pick(matf(np.array([float(hi)])), prio)
-            bv = float(hv[0])
-            tr.append((hi, bi, bn, bv))
-            cur = bn
+        if j in hv:
+            h, bv = hv[j]
+            tr.append((h, bi, bn, bv))
         if launcher and bv < 0.01:
             tr.append((d, -1, None, 0))
             break
