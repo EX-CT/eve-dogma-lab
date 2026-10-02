@@ -621,6 +621,35 @@ impl<'a> Fit<'a> {
                     }
                     continue;
                 }
+                if it.kind == Kind::Fighter && eff.mods.is_empty() {
+                    // fighter self-buff abilities (no modifierInfo in the SDE): stacking-penalised percent boosts
+                    let self_mods: &[(&str, &str, i32)] = match eff.name.as_str() {
+                        "fighterAbilityAfterburner" => &[("maxVelocity", "fighterAbilityAfterburnerSpeedBonus", 6)],
+                        "fighterAbilityMicroWarpDrive" => &[
+                            ("maxVelocity", "fighterAbilityMicroWarpDriveSpeedBonus", 6),
+                            ("signatureRadius", "fighterAbilityMicroWarpDriveSignatureRadiusBonus", 6),
+                        ],
+                        "fighterAbilityEvasiveManeuvers" => &[
+                            ("maxVelocity", "fighterAbilityEvasiveManeuversSpeedBonus", 6),
+                            ("signatureRadius", "fighterAbilityEvasiveManeuversSignatureRadiusBonus", 6),
+                            ("shieldEmDamageResonance", "fighterAbilityEvasiveManeuversEmResonance", 4),
+                            ("shieldThermalDamageResonance", "fighterAbilityEvasiveManeuversThermResonance", 4),
+                            ("shieldKineticDamageResonance", "fighterAbilityEvasiveManeuversKinResonance", 4),
+                            ("shieldExplosiveDamageResonance", "fighterAbilityEvasiveManeuversExpResonance", 4),
+                        ],
+                        _ => &[],
+                    };
+                    if !self_mods.is_empty() {
+                        for &(t, s, op) in self_mods {
+                            let (ta, sa) = (ds.attr_id(t), ds.attr_id(s));
+                            if ta != 0 && sa != 0 {
+                                // Pyfa applies these with stacking penalties even on stackable attributes
+                                pend.push(PendingMod { target: e, attr: ta, m: Mod { op: op as i8, penalized: true, src: Src::Attr { e, attr: sa } } });
+                            }
+                        }
+                        continue;
+                    }
+                }
                 if eid == ef.mjd {
                     // MJD sig bloom is not stacking-penalised (unlike the MWD's)
                     self.pending(ship, a.sig, 6, Src::Attr { e, attr: a.sig_bonus_percent }, 6, &mut pend);

@@ -74,6 +74,8 @@ pub struct TypeInfo {
     pub attrs: Vec<(u32, f64)>,
     pub effects: Vec<(u32, bool)>,
     pub req_skills: Vec<u32>,
+    pub meta_level: Option<i64>,
+    pub name_zh: Option<String>,
 }
 
 impl TypeInfo {
@@ -99,6 +101,14 @@ pub struct DbuffInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MutaInfo {
     pub attrs: HashMap<String, (f64, f64)>,
+    #[serde(default)]
+    pub mapping: Vec<MutaMapping>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MutaMapping {
+    pub inputs: Vec<u32>,
+    pub output: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -135,6 +145,8 @@ struct RawDs {
     dbuffs: HashMap<String, DbuffInfo>,
     #[serde(default)]
     mutaplasmids: HashMap<String, MutaInfo>,
+    #[serde(default)]
+    names: HashMap<String, HashMap<String, String>>,
 }
 #[derive(Deserialize)]
 struct RawSde {
@@ -190,6 +202,8 @@ struct RawType {
     attrs: HashMap<String, f64>,
     #[serde(default)]
     effects: Vec<(u32, u8)>,
+    #[serde(default)]
+    meta_level: Option<f64>,
 }
 
 /// requiredSkill1..6
@@ -243,7 +257,7 @@ impl Dataset {
             bytes.to_vec()
         };
         let sha256 = crate::sha256::hex(&json);
-        let raw: RawDs = serde_json::from_slice(&json).map_err(|e| format!("dataset json: {e}"))?;
+        let mut raw: RawDs = serde_json::from_slice(&json).map_err(|e| format!("dataset json: {e}"))?;
         if raw.format != "exct-eve-dataset" || raw.format_version != 1 {
             return Err(format!("unsupported dataset format {} v{}", raw.format, raw.format_version));
         }
@@ -301,6 +315,7 @@ impl Dataset {
         let mut type_by_name = FxHashMap::default();
         let mut published_skills = Vec::new();
         let mut t3d_modes = Vec::new();
+        let mut zh = raw.names.remove("zh").unwrap_or_default();
         let mut raw_types: Vec<(u32, RawType)> = raw.types.into_iter().map(|(k, t)| (k.parse().unwrap_or(0), t)).collect();
         raw_types.sort_by_key(|x| x.0);
         for (id, t) in raw_types {
@@ -339,6 +354,8 @@ impl Dataset {
                     attrs: a,
                     effects: t.effects.into_iter().map(|(e, d)| (e, d != 0)).collect(),
                     req_skills,
+                    meta_level: t.meta_level.map(|m| m as i64),
+                    name_zh: zh.remove(&id.to_string()),
                 },
             );
         }

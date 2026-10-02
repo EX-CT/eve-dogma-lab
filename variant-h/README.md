@@ -18,6 +18,11 @@ cargo build --release          # Rust >= 1.85
 ```
 
 Dataset: `--dataset PATH`, else `$EVE_DOGMA_DATASET`, else `./dataset.json.gz`, else the shared box copy.
-Other commands: `serve-stdio` (JSONL RPC, methods `calc`, `meta`), `meta`, `bench FILE -n N`.
+Other commands:
+
+- `serve-stdio`: JSONL RPC `{"id","method","params"}` → `{"id","result"}`. Methods: `calc`, `eft_parse` `{text, skills?}`,
+  `eft_export` `{fit, name?}`, `search` `{query, limit?}`, `type` `{id}` (id or name), `meta`.
+- `eft FILE [--calc] [--skills N]`: EFT text → FitRequest JSON. With `--calc` it computes the stats instead.
+- `search QUERY [--limit N]`, `type ID|NAME`, `meta`, `bench FILE -n N`.
 
 See [DESIGN.md](DESIGN.md) for the architecture and [RESULTS.md](RESULTS.md) for scores.

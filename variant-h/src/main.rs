@@ -1,4 +1,5 @@
 //! eve-dogma-h CLI — stateless: JSON FitRequest in, JSON FitStats out (contract v1).
+use eve_dogma_h::tools;
 use eve_dogma_h::{calc, calc_json, Dataset, FitRequest};
 use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
@@ -12,7 +13,11 @@ const USAGE: &str = "eve-dogma-h <command> [--dataset PATH] [args]
 Commands:
   calc [FILE]          FitRequest JSON (file or stdin) -> FitStats JSON
   batch                JSONL FitRequests on stdin -> JSONL FitStats on stdout (same order)
-  serve-stdio          JSONL RPC {\"id\",\"method\":\"calc|meta\",\"params\"} -> {\"id\",\"result\"}
+  serve-stdio          JSONL RPC {\"id\",\"method\",\"params\"} -> {\"id\",\"result\"}; methods calc, eft_parse {text},
+                       eft_export {fit,name?}, search {query,limit?}, type {id}, meta
+  eft [FILE]           EFT text (file or stdin) -> FitRequest JSON (--calc: compute it, --skills N: all skills at N)
+  search QUERY         search types by name (--limit N)
+  type ID|NAME         type with base attributes and effects
   meta                 dataset info
   bench [FILE] [-n N]  time N calculations of one request
 
@@ -68,6 +73,14 @@ fn main() {
     };
     let dataset = take("--dataset");
     let n: usize = take("-n").and_then(|v| v.parse().ok()).unwrap_or(1000);
+    let skills: Option<u8> = take("--skills").and_then(|v| v.parse().ok());
+    let limit: Option<usize> = take("--limit").and_then(|v| v.parse().ok());
+    let do_calc = if let Some(p) = args.iter().position(|a| a == "--calc") {
+        args.remove(p);
+        true
+    } else {
+        false
+    };
     let cmd = args.first().cloned().unwrap_or_default();
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
@@ -110,6 +123,31 @@ fn main() {
                                 Err(e) => json!({"error": {"code": "BAD_REQUEST", "message": e.to_string()}}),
                             },
                             "meta" => meta(&ds),
+                            "eft_parse" => {
+                                let text = p.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                let sk = p.get("skills").and_then(|t| t.as_u64()).map(|x| x.min(5) as u8);
+                                tools::eft_parse(&ds, text, sk).unwrap_or_else(|e| json!({"error": {"code": "EFT_PARSE", "message": e.0}}))
+                            }
+                            "eft_export" => {
+                                let name = p.get("name").and_then(|t| t.as_str()).map(str::to_string);
+                                match serde_json::from_value::<FitRequest>(p.get("fit").cloned().unwrap_or(Value::Null)) {
+                                    Ok(r) => json!({"text": tools::eft_export(&ds, &r, name.as_deref())}),
+                                    Err(e) => json!({"error": {"code": "BAD_REQUEST", "message": e.to_string()}}),
+                                }
+                            }
+                            "search" => {
+                                let q = p.get("query").and_then(|t| t.as_str()).unwrap_or("");
+                                tools::search(&ds, q, p.get("limit").and_then(|l| l.as_u64()).map(|l| l as usize))
+                            }
+                            "type" => {
+                                let key = match p.get("id") {
+                                    Some(Value::String(s)) => s.clone(),
+                                    Some(v) => v.to_string(),
+                                    None => String::new(),
+                                };
+                                tools::type_info(&ds, &key)
+                                    .unwrap_or_else(|| json!({"error": {"code": "UNKNOWN_TYPE", "message": format!("unknown type '{key}'")}}))
+                            }
                             m => json!({"error": {"code": "UNKNOWN_METHOD", "message": m}}),
                         };
                         json!({"id": id, "result": result})
@@ -117,6 +155,45 @@ fn main() {
                 };
                 writeln!(out, "{}", serde_json::to_string(&resp).unwrap()).unwrap();
                 out.flush().unwrap();
+            }
+        }
+        "eft" => {
+            let text = read_input(args.get(1));
+            let ds = load(dataset);
+            match tools::eft_parse(&ds, &text, skills) {
+                Ok(req) => {
+                    let res = if do_calc {
+                        match serde_json::from_value::<FitRequest>(req) {
+                            Ok(r) => calc(&ds, &r),
+                            Err(e) => json!({"error": {"code": "BAD_REQUEST", "message": e.to_string()}}),
+                        }
+                    } else {
+                        req
+                    };
+                    writeln!(out, "{}", serde_json::to_string_pretty(&res).unwrap()).unwrap();
+                }
+                Err(e) => {
+                    writeln!(out, "{}", json!({"error": {"code": "EFT_PARSE", "message": e.0}})).unwrap();
+                    out.flush().unwrap();
+                    std::process::exit(2);
+                }
+            }
+        }
+        "search" => {
+            let ds = load(dataset);
+            let q = args[1..].join(" ");
+            writeln!(out, "{}", serde_json::to_string_pretty(&tools::search(&ds, &q, limit.or(Some(25)))).unwrap()).unwrap();
+        }
+        "type" => {
+            let ds = load(dataset);
+            let key = args[1..].join(" ");
+            match tools::type_info(&ds, &key) {
+                Some(v) => writeln!(out, "{}", serde_json::to_string_pretty(&v).unwrap()).unwrap(),
+                None => {
+                    writeln!(out, "{}", json!({"error": {"code": "UNKNOWN_TYPE", "message": format!("unknown type '{key}'")}})).unwrap();
+                    out.flush().unwrap();
+                    std::process::exit(2);
+                }
             }
         }
         "meta" => {

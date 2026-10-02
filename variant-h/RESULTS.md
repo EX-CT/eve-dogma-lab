@@ -44,7 +44,7 @@ Every output leaf was compared, abs 1e-6 / rel 1e-9, against A's working-tree bu
 
 | step | Ir |
 |---|---|
-| per-access `World::get` (before views) | ~1.75 G |
+| per-access `World::get` (before views; estimate from the earlier ~7 M/calc profile) | ~1.75 G |
 | views + mimalloc | 1.27 G |
 | prebuilt skill slots, query_mut security pass | 1.07 G |
 | capsim ranks, batch skill spawn, in-place tidy | 1.01 G |
