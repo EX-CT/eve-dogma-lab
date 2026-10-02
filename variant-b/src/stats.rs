@@ -170,6 +170,12 @@ pub fn py_round2(v: f64) -> f64 {
     if !v.is_finite() {
         return v;
     }
+    let x = v * 100.0;
+    // (eve-dogma-rs 8122ddd) away from a .5 tie the scaled rounding is exact; near a tie use the correctly
+    // rounded decimal formatting
+    if ((x - x.trunc()).abs() - 0.5).abs() > 1e-6 {
+        return x.round() / 100.0;
+    }
     format!("{v:.2}").parse().unwrap_or(v)
 }
 
@@ -956,6 +962,9 @@ impl<'a> Fit<'a> {
         let vids = &self.prep.vids;
         let groups_attrs = &vids.can_fit_group;
         let types_attrs = &vids.can_fit_type;
+        let (a_mgf, a_mtf, a_mgo, a_mga) =
+            (ds.attr_id("maxGroupFitted"), ds.attr_id("maxTypeFitted"), ds.attr_id("maxGroupOnline"), ds.attr_id("maxGroupActive"));
+        let (a_rig, a_csize) = (ds.attr_id("rigSize"), ds.attr_id("chargeSize"));
         let mut fitted_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut fitted_type: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut active_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
@@ -974,7 +983,7 @@ impl<'a> Fit<'a> {
                 push("SHIP_RESTRICTION", format!("{name} cannot be fitted to {}", ship_t.name), idx);
             }
             if it.slot == Some(Slot::Rig) {
-                let rs = mt.attr(ds.attr_id("rigSize")).unwrap_or(0.0);
+                let rs = mt.attr(a_rig).unwrap_or(0.0);
                 let srs = g(ship, "rigSize");
                 if rs != 0.0 && rs != srs {
                     push("RIG_SIZE", format!("{name} rig size {rs} != ship rig size {srs}"), idx);
@@ -988,22 +997,21 @@ impl<'a> Fit<'a> {
             if it.state >= State::Active {
                 *active_group.entry(it.group).or_default() += 1;
             }
-            let check = |attr: &str, map: &rustc_hash::FxHashMap<u32, u32>, key: u32| -> Option<(f64, u32)> {
-                let a = ds.attr_id(attr);
+            let check = |a: u32, map: &rustc_hash::FxHashMap<u32, u32>, key: u32| -> Option<(f64, u32)> {
                 let lim = mt.attr(a)?;
                 let n = *map.get(&key).unwrap_or(&0);
                 if lim > 0.0 && n as f64 > lim { Some((lim, n)) } else { None }
             };
-            if let Some((lim, n)) = check("maxGroupFitted", &fitted_group, it.group) {
+            if let Some((lim, n)) = check(a_mgf, &fitted_group, it.group) {
                 push("MAX_GROUP_FITTED", format!("{name}: {n} fitted of group, max {lim}"), idx);
             }
-            if let Some((lim, n)) = check("maxTypeFitted", &fitted_type, it.type_id) {
+            if let Some((lim, n)) = check(a_mtf, &fitted_type, it.type_id) {
                 push("MAX_TYPE_FITTED", format!("{name}: {n} fitted, max {lim}"), idx);
             }
-            if let Some((lim, n)) = check("maxGroupOnline", &online_group, it.group) {
+            if let Some((lim, n)) = check(a_mgo, &online_group, it.group) {
                 push("MAX_GROUP_ONLINE", format!("{name}: {n} online of group, max {lim}"), idx);
             }
-            if let Some((lim, n)) = check("maxGroupActive", &active_group, it.group) {
+            if let Some((lim, n)) = check(a_mga, &active_group, it.group) {
                 push("MAX_GROUP_ACTIVE", format!("{name}: {n} active of group, max {lim}"), idx);
             }
             if let Some(c) = it.charge {
@@ -1012,8 +1020,8 @@ impl<'a> Fit<'a> {
                 if !cg.contains(&ct.group) {
                     push("CHARGE_GROUP", format!("{} cannot be loaded into {name}", ct.name), idx);
                 }
-                let ms = mt.attr(ds.attr_id("chargeSize"));
-                let cs = ct.attr(ds.attr_id("chargeSize"));
+                let ms = mt.attr(a_csize);
+                let cs = ct.attr(a_csize);
                 if let (Some(a), Some(b)) = (ms, cs) {
                     if a != b {
                         push("CHARGE_SIZE", format!("{} size {b} != launcher size {a}", ct.name), idx);
@@ -1025,7 +1033,8 @@ impl<'a> Fit<'a> {
             }
         }
         // skills
-        let mut have: rustc_hash::FxHashMap<u32, f64> = Default::default();
+        let mut have: rustc_hash::FxHashMap<u32, f64> =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(self.skills.len(), Default::default());
         for &(s, l) in &self.skills {
             have.insert(s, l as f64);
         }
