@@ -50,7 +50,7 @@ impl<'w> Calc<'w> {
             match self.type_base(a, attr) {
                 Some(v) => {
                     self.memo.borrow_mut().insert(k, None);
-                    self.post(e, attr, v)
+                    self.post(e, attr, v, false)
                 }
                 None => return self.ds.attr_default(attr),
             }
@@ -86,12 +86,13 @@ impl<'w> Calc<'w> {
         v
     }
 
-    fn post(&self, e: Entity, attr: u32, mut val: f64) -> f64 {
+    fn post(&self, e: Entity, attr: u32, mut val: f64, capped: bool) -> f64 {
+        // Pyfa only caps values it calculated: an attribute with no modifiers is returned as is
         if let Some(info) = self.ds.attrs.get(&attr) {
-            if let Some(mn) = info.min_attr {
+            if let (true, Some(mn)) = (capped, info.min_attr) {
                 val = val.max(self.get(e, mn));
             }
-            if let Some(mx) = info.max_attr {
+            if let (true, Some(mx)) = (capped, info.max_attr) {
                 val = val.min(self.get(e, mx));
             }
             if info.round2 {
@@ -194,7 +195,7 @@ impl<'w> Calc<'w> {
                 val = v;
             }
         }
-        self.post(e, attr, val)
+        self.post(e, attr, val, !s.mods.is_empty())
     }
 }
 
