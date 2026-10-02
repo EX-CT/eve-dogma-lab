@@ -19,3 +19,9 @@ EX-CT/eve-dogma-rs (LGPL-3.0-or-later, variant A); the engine core (`spec.rs`, `
 No Pyfa (GPL) code is included; Pyfa is only used as a black-box oracle by the bench.
 
 Bench results: see `bench/` (eve-dogma-bench scorecards).
+
+## Dataset cache (disclosure)
+Loading the dataset JSON.gz takes ~140 ms, so variant I keeps a *derived* binary cache, which the brief allows ("you may add a derived cache").
+The first load writes `$TMPDIR/eve-dogma-i-<version>-<hash>.bin`, keyed by a hash of the exact dataset file bytes, and later processes read it in ~10 ms.
+A corrupt or stale cache is ignored and rewritten. `EVE_I_NO_CACHE=1` disables the cache and `EVE_I_CACHE_DIR=...` moves it.
+Cold-start numbers in the scorecard are measured with a warm cache, because the first bench process creates it.

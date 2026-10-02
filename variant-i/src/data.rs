@@ -130,6 +130,8 @@ pub struct Dataset {
     pub sha256: String,
     pub types: FxHashMap<u32, TypeInfo>,
     pub groups: FxHashMap<u32, GroupInfo>,
+    /// category id -> English name
+    pub categories: FxHashMap<u32, String>,
     pub attrs: FxHashMap<u32, AttrInfo>,
     pub effects: FxHashMap<u32, EffectInfo>,
     pub dbuffs: FxHashMap<u32, DbuffInfo>,
@@ -149,6 +151,8 @@ struct RawDs {
     format_version: u32,
     sde: RawSde,
     groups: HashMap<String, RawGroup>,
+    #[serde(default)]
+    categories: HashMap<String, RawCategory>,
     attributes: HashMap<String, RawAttr>,
     effects: HashMap<String, RawEffect>,
     types: HashMap<String, RawType>,
@@ -163,6 +167,11 @@ struct RawDs {
 struct RawSde {
     build: u64,
     release_date: Option<String>,
+}
+#[derive(Deserialize)]
+struct RawCategory {
+    #[serde(default)]
+    name: Option<String>,
 }
 #[derive(Deserialize)]
 struct RawGroup {
@@ -256,7 +265,46 @@ fn domain_of(c: i32) -> Domain {
 impl Dataset {
     pub fn load_path(path: &str) -> Result<Dataset, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-        Self::load_bytes(&bytes)
+        if std::env::var_os("EVE_I_NO_CACHE").is_some() {
+            return Self::load_bytes(&bytes);
+        }
+        let cp = crate::bincache::cache_path(crate::bincache::key_of(&bytes));
+        if let Ok(b) = std::fs::read(&cp) {
+            if let Some(ds) = crate::bincache::decode(&b) {
+                return Ok(ds);
+            }
+        }
+        let ds = Self::load_bytes(&bytes)?;
+        let enc = crate::bincache::encode(&ds);
+        let tmp = cp.with_extension(format!("tmp{}", std::process::id()));
+        if std::fs::write(&tmp, &enc).is_ok() && std::fs::rename(&tmp, &cp).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        Ok(ds)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        build: u64,
+        release_date: Option<String>,
+        sha256: String,
+        types: FxHashMap<u32, TypeInfo>,
+        groups: FxHashMap<u32, GroupInfo>,
+        categories: FxHashMap<u32, String>,
+        attrs: FxHashMap<u32, AttrInfo>,
+        effects: FxHashMap<u32, EffectInfo>,
+        dbuffs: FxHashMap<u32, DbuffInfo>,
+        mutaplasmids: FxHashMap<u32, MutaInfo>,
+        names_zh: FxHashMap<u32, String>,
+        type_by_name: FxHashMap<String, u32>,
+        skills: Vec<u32>,
+    ) -> Dataset {
+        let attr_by_name = attrs.values().map(|a| (a.name.clone(), a.id)).collect();
+        let effect_by_name = effects.values().map(|e| (e.name.clone(), e.id)).collect();
+        Dataset { build, release_date, sha256, types, groups, categories, attrs, effects, dbuffs, mutaplasmids, names_zh, attr_by_name, effect_by_name, type_by_name, skills }
+    }
+    pub(crate) fn type_by_name_map(&self) -> &FxHashMap<String, u32> {
+        &self.type_by_name
     }
 
     pub fn load_bytes(bytes: &[u8]) -> Result<Dataset, String> {
@@ -268,7 +316,9 @@ impl Dataset {
         } else {
             bytes.to_vec()
         };
+        let t0 = std::time::Instant::now();
         let sha256 = sha256_hex(&json);
+        let t1 = std::time::Instant::now();
         let raw: RawDs = serde_json::from_slice(&json).map_err(|e| format!("dataset json: {e}"))?;
         if raw.format != "exct-eve-dataset" || raw.format_version != 1 {
             return Err(format!("unsupported dataset format {} v{}", raw.format, raw.format_version));
@@ -333,6 +383,7 @@ impl Dataset {
         for (k, g) in raw.groups {
             groups.insert(k.parse().unwrap_or(0), GroupInfo { name: g.name.unwrap_or_default(), category: g.category });
         }
+        let categories = raw.categories.into_iter().map(|(k, c)| (k.parse().unwrap_or(0), c.name.unwrap_or_default())).collect();
         let mut types = FxHashMap::default();
         let mut type_by_name = FxHashMap::default();
         let mut skills = Vec::new();
@@ -369,6 +420,9 @@ impl Dataset {
             );
         }
         skills.sort();
+        if std::env::var_os("EVE_I_PROF").is_some() {
+            eprintln!("sha {:?} parse+build {:?}", t1 - t0, t1.elapsed());
+        }
         let dbuffs = raw.dbuffs.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect();
         let mutaplasmids = raw.mutaplasmids.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect();
         let names_zh = raw
@@ -382,6 +436,7 @@ impl Dataset {
             sha256,
             types,
             groups,
+            categories,
             attrs,
             effects,
             dbuffs,

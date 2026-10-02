@@ -536,6 +536,8 @@ fn is_basic_projection(name: &str) -> bool {
         || name.starts_with("remoteSensorDamp")
         || name == "structureModuleEffectRemoteSensorDampener"
         || name.starts_with("remoteSensorBoost")
+        || name == "shipModuleTrackingDisruptor"
+        || name == "shipModuleGuidanceDisruptor"
 }
 
 fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &mut Vec<Out>) {
@@ -587,6 +589,27 @@ fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &m
         } else if name.starts_with("remoteSensorDamp") || name == "structureModuleEffectRemoteSensorDampener" {
             push(out, c.max_target_range, 6, pj(c.max_target_range_bonus, 6));
             push(out, c.scan_res, 6, pj(c.scan_res_bonus, 6));
+        } else if name == "shipModuleTrackingDisruptor" || name == "shipModuleGuidanceDisruptor" {
+            // Pyfa Effect6424 / Effect6423: modify the target's gunnery modules / missile charges
+            if target_offense_ok {
+                let (skill, charges, pairs): (&str, bool, &[(&str, &str)]) = if name == "shipModuleTrackingDisruptor" {
+                    ("Gunnery", false, &[("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"), ("falloffBonus", "falloff")])
+                } else {
+                    ("Missile Launcher Operation", true, &[("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"), ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay")])
+                };
+                let sk = ds.type_by_name(skill).unwrap_or(0);
+                let tf = crate::stats::range_factor(pbase("maxRange"), pbase("falloffEffectiveness"), sp.distance, true);
+                for it in index(db, fit).items.iter() {
+                    let kind_ok = if charges { it.kind == Kind::Charge } else { it.kind == Kind::Module };
+                    if it.loc == Loc::Ship && it.owned && kind_ok && it.req_skills.contains(&sk) {
+                        for (src_a, tgt_a) in pairs {
+                            let ta = ds.attr_id(tgt_a);
+                            let src = Src::Projected { item: i, attr: ds.attr_id(src_a), factor: F(tf), target: ship, resist, mul: false };
+                            out.push(Out { target: it.slot, attr: ta, m: AMod { op: 6, penalized: penalized(ds, ta, src_cat), src } });
+                        }
+                    }
+                }
+            }
         } else if name.starts_with("remoteSensorBoost") {
             push(out, c.max_target_range, 6, pj(c.max_target_range_bonus, 6));
             push(out, c.scan_res, 6, pj(c.scan_res_bonus, 6));

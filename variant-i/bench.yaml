@@ -1,3 +1,4 @@
 build: cargo build --release
 cmd: ./target/release/eve-dogma-i calc --dataset {dataset}
 batch_cmd: ./target/release/eve-dogma-i batch --dataset {dataset}
+rpc_cmd: ./target/release/eve-dogma-i serve-stdio --dataset {dataset}

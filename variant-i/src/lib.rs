@@ -1,6 +1,7 @@
 //! eve-dogma-salsa (EX-CT dogma lab, variant I): EVE Online fitting engine built on the salsa
 //! incremental-computation framework. Stateless contract (same request -> same bytes), but a `Session`
 //! keeps memoised attribute queries across requests and only recomputes what a change invalidates.
+pub mod bincache;
 pub mod capsim;
 pub mod data;
 pub mod eft;
