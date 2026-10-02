@@ -2,3 +2,4 @@
 build: cargo build --release && ./target/release/eve-dogma-h --dataset {dataset} meta > /dev/null
 cmd: ./target/release/eve-dogma-h --dataset {dataset} calc
 batch_cmd: ./target/release/eve-dogma-h --dataset {dataset} batch
+rpc_cmd: ./target/release/eve-dogma-h --dataset {dataset} serve-stdio
