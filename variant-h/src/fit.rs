@@ -244,6 +244,14 @@ impl<'a> Fit<'a> {
         if matches!(slot, Some(Slot::Rig) | Some(Slot::Subsystem)) && state != State::Offline {
             state = State::Online;
         }
+        // Pyfa isValidState: active needs an active-type effect, overheated an overload effect; an invalid
+        // requested state falls back to online (not to the highest valid state)
+        if let Some(t) = t {
+            let cat = |c: &[u8]| t.effects.iter().any(|&(eid, _)| self.ds.effects.get(&eid).map(|x| c.contains(&x.category)).unwrap_or(false));
+            if (state == State::Overheated && !cat(&[5])) || (state >= State::Active && !cat(&[1, 2, 3])) {
+                state = State::Online;
+            }
+        }
         let e = self.spawn_item(m.type_id, Kind::Module, Loc::Ship, state, &path)?;
         if let Some(mu) = &m.mutation {
             self.apply_mutation(e, mu);
@@ -988,12 +996,13 @@ impl<'a> Fit<'a> {
                 if matches!(name, "shipModuleTrackingDisruptor" | "shipModuleGuidanceDisruptor" | "shipModuleRemoteTrackingComputer" | "npcEntityWeaponDisruptor" | "doomsdayAOETrack" | "structureModuleEffectWeaponDisruption") {
                     // Pyfa Effect6424 / 6423: the target's turrets (requiring Gunnery) or missile charges (requiring
                     // Missile Launcher Operation), postPercent x range factor, stacking-penalised, remote resistance.
-                    // Effect6428 (remote tracking computer): the same turret boost, no resistance, blocked by
-                    // the target's disallowAssistance instead of disallowOffensive.
+                    // Effect6428 (remote tracking computer): the same turret boost, blocked by the target's
+                    // disallowAssistance instead of disallowOffensive.
                     let rtc = name == "shipModuleRemoteTrackingComputer";
-                    // Effect6694 (TD drones): full strength within the drone's maxRange, nothing beyond, no resistance
+                    // Effect6694 (TD drones): full strength within the drone's maxRange, nothing beyond
                     let npc = name == "npcEntityWeaponDisruptor";
-                    let resist = if rtc || npc { 0 } else { resist };
+                    // resistance as for every projected effect (the RTC's is remoteAssistanceImpedance, which Bastion zeroes)
+                    let _ = rtc;
                     let factor = if npc {
                         let c = self.calc();
                         let r = if c.has(e, a.max_range) { c.get(e, a.max_range) } else { 0.0 };
