@@ -74,6 +74,9 @@ interface AttrPost { min: number | null; max: number | null; round2: boolean; hi
 /** per-dataset memo of AttrPost by attribute id (shared by all fits of a dataset) */
 interface PostTable { post: (AttrPost | null)[]; known: Uint8Array }
 const POST = new WeakMap<Dataset, PostTable>();
+/** evaluation stack for modifier source values (see evalCell) */
+let scratch = new Float64Array(1024);
+let scratchTop = 0;
 
 export class AttrGraph {
   items: Item[] = [];
@@ -81,6 +84,7 @@ export class AttrGraph {
   private pt: PostTable;
 
   constructor(public ds: Dataset) {
+    scratchTop = 0; // a new fit never inherits an aborted evaluation stack
     let pt = POST.get(ds);
     if (pt === undefined) POST.set(ds, (pt = { post: [], known: new Uint8Array(0) }));
     this.pt = pt;
@@ -124,7 +128,7 @@ export class AttrGraph {
     if (it.cells === null) it.cells = new Map();
     let c = it.cells.get(a);
     if (c === undefined) {
-      c = { base: this.base(i, a), mods: [], val: NaN, epoch: 0, busy: false }; // base() already falls back to the default
+      c = { base: NaN, mods: [], val: NaN, epoch: 0, busy: false }; // base read on first evaluation (NaN = not yet)
       it.cells.set(a, c);
     }
     return c;
@@ -202,6 +206,7 @@ export class AttrGraph {
 
   private evalCell(i: number, a: number, c: Cell): number {
     if (c.epoch === this.epoch) return c.val;
+    if (c.base !== c.base) c.base = this.base(i, a); // falls back to the attribute default
     if (c.busy) return c.base; // dogma cycle guard
     c.busy = true;
     const p = this.attrPost(a);
@@ -210,14 +215,19 @@ export class AttrGraph {
     const n = mods.length;
     if (n > 0) {
       // pull every source value once, remember which operator slots are present
-      const vals = new Float64Array(n);
+      // source values live in a shared stack buffer (evaluation recurses through srcValue)
+      const v0 = scratchTop;
+      if (v0 + n > scratch.length) { const g = new Float64Array(Math.max(scratch.length * 2, v0 + n)); g.set(scratch); scratch = g; }
+      scratchTop = v0 + n;
       let present = 0;
       for (let j = 0; j < n; j++) {
         const s = OP_SLOT(mods[j].op);
         if (s < 0 || s >= N_OPS) continue;
         present |= 1 << s;
-        vals[j] = this.srcValue(mods[j]);
+        const sv = this.srcValue(mods[j]);
+        scratch[v0 + j] = sv;
       }
+      const vals = scratch;
       const hig = p === null ? true : p.highIsGood;
       for (let s = 0; s < N_OPS; s++) {
         if ((present & (1 << s)) === 0) continue;
@@ -227,19 +237,19 @@ export class AttrGraph {
           let x = NaN;
           for (let j = 0; j < n; j++) {
             if (mods[j].op !== code) continue;
-            const v = vals[j];
+            const v = vals[v0 + j];
             x = x !== x ? v : hig ? Math.max(x, v) : Math.min(x, v);
           }
           val = x;
         } else if (def.kind === 'add') {
-          for (let j = 0; j < n; j++) if (mods[j].op === code) val += def.transform(vals[j]);
+          for (let j = 0; j < n; j++) if (mods[j].op === code) val += def.transform(vals[v0 + j]);
         } else {
           let pos: number[] | null = null;
           let neg: number[] | null = null;
           for (let j = 0; j < n; j++) {
             const m = mods[j];
             if (m.op !== code) continue;
-            const mv = def.transform(vals[j]);
+            const mv = def.transform(vals[v0 + j]);
             if (m.pen) {
               if (mv > 1) (pos ??= []).push(mv);
               else if (mv < 1) (neg ??= []).push(mv);
@@ -249,6 +259,7 @@ export class AttrGraph {
           if (neg !== null) val = applyPenalised(val, neg);
         }
       }
+      scratchTop = v0;
     }
     if (p !== null) val = this.finish(i, val, p);
     c.busy = false;

@@ -38,10 +38,16 @@ export const roundHalfAway = (x: number): number => (x < 0 ? -Math.round(-x) : M
  * Python round(x, n) for n >= 0: correctly rounded on the exact binary value, ties to even. A tie needs
  * x * 2^(n+1) to be an integer; toFixed (exact, ties away from zero) does the rest.
  */
+const POW10 = [1, 10, 100, 1000, 1e4, 1e5, 1e6];
 export function pyRound(x: number, n: number): number {
   if (!Number.isFinite(x)) return x;
   if (n < 0) { const p = Math.pow(10, -n); return roundHalfAway(x / p) * p; }
   if (n > 99) return x;
+  if (n <= 6) {
+    // fast path away from ties: the nearest k / 10^n is unambiguous, and k / 10^n is the correctly rounded double
+    const p = POW10[n], y = x * p, f = Math.abs(y - Math.trunc(y));
+    if (Math.abs(f - 0.5) > 1e-6 && Math.abs(y) < 2 ** 52) return roundHalfAway(y) / p;
+  }
   // an exact tie has at most n + 1 binary fraction digits (x * 2^(n+1) integral, exact), so toFixed(n + 1) is exact
   const t = Number.isInteger(x * Math.pow(2, n + 1)) ? x.toFixed(n + 1) : '';
   if (t.endsWith('5')) {
