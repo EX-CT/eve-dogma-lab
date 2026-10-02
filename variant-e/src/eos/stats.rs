@@ -717,6 +717,21 @@ impl<'a> Fit<'a> {
         None
     }
 
+    /// weapon category label (contract `offense.weapons[].kind`)
+    fn weapon_kind(&self, m: It) -> &'static str {
+        if self.has_effect_name(m, "turretFitted") {
+            "turret"
+        } else if self.has_effect_name(m, "launcherFitted") {
+            "missile"
+        } else if self.has_effect_name(m, "empWave") {
+            "smartbomb"
+        } else if self.has_effect_name(m, "ChainLightning") {
+            "vorton"
+        } else {
+            "other"
+        }
+    }
+
     fn effectivify(&self, pattern: [f64; 4], amount: f64, layer: &str) -> f64 {
         let r = self.resonances(layer);
         let tot: f64 = pattern.iter().sum();
@@ -788,7 +803,7 @@ impl<'a> Fit<'a> {
             w_dps.add(&d);
             if self.items[m].state >= ACTIVE && d.total() > 0.0 {
                 let c = self.items[m].charge;
-                let mut w = obj(vec![("module_index", Value::from(self.items[m].req_index)), ("type_id", Value::from(self.items[m].t.id)), ("name", Value::from(self.items[m].t.name.clone())), ("charge_type_id", Value::from(if c != NONE { Some(self.items[c].t.id) } else { None })), ("volley", Value::from(v.json())), ("dps", Value::from(d.json())), ("cycle_time_ms", Value::from(self.cycle_avg(m, None)))]);
+                let mut w = obj(vec![("module_index", Value::from(self.items[m].req_index)), ("type_id", Value::from(self.items[m].t.id)), ("name", Value::from(self.items[m].t.name.clone())), ("kind", Value::from(self.weapon_kind(m))), ("charge_type_id", Value::from(if c != NONE { Some(self.items[c].t.id) } else { None })), ("volley", Value::from(v.json())), ("dps", Value::from(d.json())), ("cycle_time_ms", Value::from(self.cycle_avg(m, None)))]);
                 match self.hardpoint(m) {
                     1 => {
                         w["optimal_m"] = Value::from(self.max_range(m));
@@ -939,6 +954,8 @@ impl<'a> Fit<'a> {
         let sus = self.sustainable_tank([shield_rep, armor_rep, hull_rep], cap_stable, used, recharge);
         defense["tank"]["sustained"] = obj(vec![("passive_shield", Value::from(passive)), ("shield_repair", Value::from(sus[0])),
             ("armor_repair", Value::from(sus[1])), ("hull_repair", Value::from(sus[2]))]);
+        defense["tank"]["sustained_effective"] = obj(vec![("passive_shield", Value::from(self.effectivify(pat, passive, "shield"))), ("shield_repair", Value::from(self.effectivify(pat, sus[0], "shield"))),
+            ("armor_repair", Value::from(self.effectivify(pat, sus[1], "armor"))), ("hull_repair", Value::from(self.effectivify(pat, sus[2], "hull")))]);
 
         // ---------------- navigation
         let speed_limit = s("speedLimit");

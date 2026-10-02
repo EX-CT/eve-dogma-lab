@@ -75,7 +75,8 @@ fn main() {
             let v = api::calc_str(&ds, &s);
             out(&v);
             if v.get("error").is_some() {
-                std::process::exit(1);
+                // contract 1.4.1: calc/input error -> exit 2 (error JSON already on stdout)
+                std::process::exit(2);
             }
         }
         "batch" => {
