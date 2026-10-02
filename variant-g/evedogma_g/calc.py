@@ -1,7 +1,7 @@
 """Public API: calc_many(ds, requests) evaluates many FitRequests as one NumPy batch."""
 import json
 
-from . import engine
+from . import capsim, engine
 from .request import RequestError, parse
 from .stats import FitStats
 
@@ -91,11 +91,17 @@ def calc_many(ds, reqs):
             parsed.append(e)
     batch, vals, fits = _batch(ds, parsed)
     out = []
-    for f in fits:
-        if isinstance(f, RequestError):
-            out.append(_err(f.code, f.message, f.path))
-        else:
-            out.append(FitStats(batch, f, vals).compute())
+    # the capacitor-simulation memo is scoped to this batch (identical simulations of fits in the same batch run
+    # once); nothing is carried over to later requests
+    capsim._MEMO.clear()
+    try:
+        for f in fits:
+            if isinstance(f, RequestError):
+                out.append(_err(f.code, f.message, f.path))
+            else:
+                out.append(FitStats(batch, f, vals).compute())
+    finally:
+        capsim._MEMO.clear()
     return out
 
 

@@ -3,10 +3,31 @@ import heapq
 import math
 
 FAST_PATH = True  # tests switch this off to check the NumPy fast path against the plain event loop
+MEMO = True  # tests switch this off when they compare implementations
+
+
+_MEMO = {}
+_MEMO_MAX = 4096
 
 
 def simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_ms):
-    """drains: list of dicts duration, cap_need, clip_size, reload_ms, is_injector, disable_stagger"""
+    """drains: list of tuples (duration, cap_need, clip_size, reload_ms, is_injector, disable_stagger).
+    The simulation is a pure function of its inputs; identical simulations inside one process (fit variations
+    that differ only in non-capacitor aspects, e.g. damage pattern or projected webs) are memoised. The key is the
+    repr of the inputs, so it distinguishes every float bit pattern that repr does (incl. -0.0)."""
+    if not MEMO:
+        return _simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_ms)
+    key = repr((capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_ms))
+    r = _MEMO.get(key)
+    if r is None:
+        r = _simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_ms)
+        if len(_MEMO) >= _MEMO_MAX:
+            _MEMO.clear()
+        _MEMO[key] = r
+    return dict(r)
+
+
+def _simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_ms):
     tau = recharge_ms / 5.0
     heap = []
     seq = 0

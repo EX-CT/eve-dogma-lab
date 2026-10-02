@@ -98,6 +98,7 @@ def main():
     from evedogma_g import capsim
     rnd = random.Random(7)
     bad = 0
+    capsim.MEMO = False
     for _ in range(300):
         drains = [(float(rnd.choice([1000, 2500, 3000, 4000, 5000, 6000, 8000, 10000, 12500, 15000, 45000])),
                    rnd.uniform(0, 400), 0, 0.0, False, rnd.random() < 0.2) for _ in range(rnd.randint(1, 8))]
@@ -109,7 +110,16 @@ def main():
         b = capsim.simulate(*args)
         capsim.FAST_PATH = True
         bad += a != b
+    capsim.MEMO = True
     check(bad == 0, f"capsim fast path differs in {bad}/300 random cases")
+    # memoised result == fresh simulation, and callers get independent dicts
+    capsim._MEMO.clear()
+    r1 = capsim.simulate(*args)
+    r1["stable"] = None
+    r2 = capsim.simulate(*args)
+    capsim.MEMO = False
+    check(r2 == capsim.simulate(*args), "capsim memo differs from a fresh simulation")
+    capsim.MEMO = True
     print("unit checks done")
 
     # 7. EFT import: outputs recorded from the reference engine (eve-dogma-rs 0e5a1ce) for tests/eft/*.txt
