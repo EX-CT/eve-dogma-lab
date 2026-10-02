@@ -4,6 +4,7 @@
 use crate::data::{Dataset, TypeInfo};
 use crate::request::{FitRequest, ModuleReq, Slot, State};
 use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 /// requiredSkill1..6
 pub const REQ_SKILL_ATTRS: [u32; 6] = [182, 183, 184, 1285, 1289, 1290];
@@ -91,64 +92,96 @@ pub struct EngineError {
     pub path: String,
 }
 
+/// Per-session cache of type templates and (skill, level) specs, so the ~500 skill items of every
+/// request are shared `Arc`s (pointer-equal across requests -> no diff, no re-validation).
+#[derive(Default)]
+pub struct SpecCache {
+    types: FxHashMap<u32, Arc<ItemSpec>>,
+    skills: FxHashMap<(u32, u8), Arc<ItemSpec>>,
+    modes: Option<Vec<(u32, String)>>,
+}
+
 struct B<'a> {
     ds: &'a Dataset,
+    cache: &'a mut SpecCache,
     keys: Vec<ItemKey>,
-    items: Vec<ItemSpec>,
-    attrs: Vec<FxHashMap<u32, f64>>,
+    items: Vec<Arc<ItemSpec>>,
     warnings: Vec<String>,
 }
 
 pub struct Built {
     pub keys: Vec<ItemKey>,
-    pub items: Vec<ItemSpec>,
+    pub items: Vec<Arc<ItemSpec>>,
     pub warnings: Vec<String>,
     pub is_structure: bool,
 }
 
+fn template(ds: &Dataset, t: &TypeInfo) -> ItemSpec {
+    let mut attrs: FxHashMap<u32, f64> = FxHashMap::default();
+    set_type_attrs(&mut attrs, t);
+    let mut v: Vec<(u32, f64)> = attrs.into_iter().collect();
+    v.sort_unstable_by_key(|x| x.0);
+    let _ = ds;
+    ItemSpec {
+        type_id: t.id,
+        group: t.group,
+        category: t.category,
+        kind: Kind::Module,
+        state: State::Online,
+        loc: Loc::Nowhere,
+        owned: false,
+        parent: None,
+        charge: None,
+        slot: None,
+        req_index: None,
+        quantity: 1,
+        active_count: 0,
+        attrs: v,
+        req_skills: REQ_SKILL_ATTRS.iter().filter_map(|a| t.attr(*a)).map(|v| v as u32).filter(|v| *v != 0).collect(),
+        effects: t.effects.clone(),
+        fighter_abilities: None,
+        booster_side_effects: Vec::new(),
+        spool: None,
+        distance: None,
+    }
+}
+
+impl ItemSpec {
+    pub fn set(&mut self, a: u32, v: f64) {
+        match self.attrs.binary_search_by_key(&a, |x| x.0) {
+            Ok(i) => self.attrs[i].1 = v,
+            Err(i) => self.attrs.insert(i, (a, v)),
+        }
+    }
+}
+
 impl<'a> B<'a> {
     fn new_item(&mut self, key: ItemKey, type_id: u32, kind: Kind, loc: Loc, path: &str) -> Result<usize, EngineError> {
-        let t = self.ds.types.get(&type_id).ok_or_else(|| EngineError {
-            code: "UNKNOWN_TYPE",
-            message: format!("unknown type_id {type_id}"),
-            path: path.to_string(),
-        })?;
-        let mut attrs: FxHashMap<u32, f64> = FxHashMap::default();
-        set_type_attrs(&mut attrs, t);
-        let req_skills = REQ_SKILL_ATTRS.iter().filter_map(|a| t.attr(*a)).map(|v| v as u32).filter(|v| *v != 0).collect();
-        self.items.push(ItemSpec {
-            type_id,
-            group: t.group,
-            category: t.category,
-            kind,
-            state: State::Online,
-            loc,
-            owned: matches!(kind, Kind::Module | Kind::Charge | Kind::Drone | Kind::Fighter | Kind::Ship),
-            parent: None,
-            charge: None,
-            slot: None,
-            req_index: None,
-            quantity: 1,
-            active_count: 0,
-            attrs: Vec::new(),
-            req_skills,
-            effects: t.effects.clone(),
-            fighter_abilities: None,
-            booster_side_effects: Vec::new(),
-            spool: None,
-            distance: None,
-        });
-        self.attrs.push(attrs);
+        let Some(t) = self.ds.types.get(&type_id) else {
+            return Err(EngineError { code: "UNKNOWN_TYPE", message: format!("unknown type_id {type_id}"), path: path.to_string() });
+        };
+        let ds = self.ds;
+        let tm = self.cache.types.entry(type_id).or_insert_with(|| Arc::new(template(ds, t)));
+        let mut sp: ItemSpec = (**tm).clone();
+        sp.kind = kind;
+        sp.loc = loc;
+        sp.owned = matches!(kind, Kind::Module | Kind::Charge | Kind::Drone | Kind::Fighter | Kind::Ship);
+        self.items.push(Arc::new(sp));
         self.keys.push(key);
         Ok(self.items.len() - 1)
+    }
+
+    #[inline]
+    fn m(&mut self, idx: usize) -> &mut ItemSpec {
+        Arc::make_mut(&mut self.items[idx])
     }
 
     fn apply_mutation(&mut self, idx: usize, m: &crate::request::Mutation) {
         let ds = self.ds;
         if let Some(base) = ds.types.get(&m.base_type_id) {
-            let own = self.items[idx].effects.clone();
-            let item = &mut self.items[idx];
-            let attrs = &mut self.attrs[idx];
+            let item = self.m(idx);
+            let own = item.effects.clone();
+            let mut attrs: FxHashMap<u32, f64> = item.attrs.iter().copied().collect();
             for (a, v) in &base.attrs {
                 attrs.insert(*a, *v);
             }
@@ -166,6 +199,9 @@ impl<'a> B<'a> {
             if attrs.get(&4).copied().unwrap_or(0.0) == 0.0 && base.mass != 0.0 {
                 attrs.insert(4, base.mass);
             }
+            let mut v: Vec<(u32, f64)> = attrs.into_iter().collect();
+            v.sort_unstable_by_key(|x| x.0);
+            item.attrs = v;
         }
         let muta = m.mutaplasmid_type_id.and_then(|id| ds.mutaplasmids.get(&id));
         let base_t = ds.types.get(&m.base_type_id);
@@ -181,14 +217,14 @@ impl<'a> B<'a> {
                     }
                 }
             }
-            self.attrs[idx].insert(aid, val);
+            self.m(idx).set(aid, val);
         }
     }
 
     fn add_module(&mut self, i: usize, m: &ModuleReq, path: &str) -> Result<usize, EngineError> {
         let idx = self.new_item(ItemKey::Module(i as u32), m.type_id, Kind::Module, Loc::Ship, path)?;
         let slot = m.slot.or_else(|| infer_slot(self.ds, &self.ds.types[&m.type_id]));
-        let it = &mut self.items[idx];
+        let it = Arc::make_mut(&mut self.items[idx]);
         it.slot = slot;
         it.req_index = Some(i);
         it.spool = m.spool;
@@ -201,27 +237,49 @@ impl<'a> B<'a> {
         }
         if let Some(c) = m.charge_type_id {
             let cidx = self.new_item(ItemKey::Charge(i as u32), c, Kind::Charge, Loc::Ship, &format!("{path}/charge_type_id"))?;
-            self.items[cidx].parent = Some(idx);
-            self.items[cidx].req_index = Some(i);
-            self.items[idx].charge = Some(cidx);
+            self.m(cidx).parent = Some(idx);
+            self.m(cidx).req_index = Some(i);
+            self.m(idx).charge = Some(cidx);
         }
         Ok(idx)
     }
 }
 
 /// Build the canonical item list for a request (same order as the reference engine registers modifiers).
-/// Frozen projected-fit item: (type id, copies, evaluated attribute values).
-pub type Frozen = Vec<(u32, u32, Vec<(u32, f64)>)>;
+/// Frozen projected-fit item: (type id, copies, evaluated attribute values, kind, quantity, fighter abilities).
+pub type Frozen = Vec<(u32, u32, Vec<(u32, f64)>, Kind, u32, Option<Vec<u32>>)>;
 
-pub fn build(ds: &Dataset, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &FitRequest) -> Result<Frozen, EngineError>) -> Result<Built, EngineError> {
-    let mut b = B { ds, keys: Vec::with_capacity(600), items: Vec::with_capacity(600), attrs: Vec::with_capacity(600), warnings: Vec::new() };
+/// Pyfa default: standard attack on; other abilities (except MWD/evasive/MJD) on only if they come before the
+/// standard attack in effect order.
+pub fn default_fighter_abilities(ds: &Dataset, effects: &[(u32, bool)]) -> Vec<u32> {
+    let mut ids: Vec<u32> = effects.iter().map(|(e, _)| *e).collect();
+    ids.sort();
+    let mut on = Vec::new();
+    let mut std_seen = false;
+    for e in ids {
+        let Some(n) = ds.effects.get(&e).map(|x| x.name.as_str()) else { continue };
+        if !n.starts_with("fighterAbility") {
+            continue;
+        }
+        if n == "fighterAbilityAttackM" {
+            on.push(e);
+            std_seen = true;
+        } else if !std_seen && !matches!(n, "fighterAbilityMicroWarpDrive" | "fighterAbilityEvasiveManeuvers" | "fighterAbilityMicroJumpDrive") {
+            on.push(e);
+        }
+    }
+    on
+}
+
+pub fn build(ds: &Dataset, cache: &mut SpecCache, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &FitRequest) -> Result<Frozen, EngineError>) -> Result<Built, EngineError> {
+    let mut b = B { ds, cache, keys: Vec::with_capacity(600), items: Vec::with_capacity(600), warnings: Vec::new() };
     let ship = b.new_item(ItemKey::Ship, req.ship.type_id, Kind::Ship, Loc::Ship, "/ship/type_id")?;
     let is_structure = b.items[ship].category == 65;
     let ch = b.new_item(ItemKey::Char, 1373, Kind::Char, Loc::Char, "/character")?;
     if let Some(sec) = req.character.security_status {
         let a = ds.attr_id("pilotSecurityStatus");
         if a != 0 {
-            b.attrs[ch].insert(a, sec);
+            b.m(ch).set(a, sec);
         }
     }
     let default_level = req.character.skills.default_level.unwrap_or(0);
@@ -244,24 +302,37 @@ pub fn build(ds: &Dataset, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &Fi
         if !ds.types.contains_key(&s) {
             continue;
         }
-        let idx = b.new_item(ItemKey::Skill(s), s, Kind::Skill, Loc::Char, "/character/skills")?;
-        b.attrs[idx].insert(ATTR_SKILL_LEVEL, l.min(5) as f64);
-        b.items[idx].owned = false;
+        let lvl = l.min(5);
+        let sp = match b.cache.skills.get(&(s, lvl)) {
+            Some(sp) => sp.clone(),
+            None => {
+                let idx = b.new_item(ItemKey::Skill(s), s, Kind::Skill, Loc::Char, "/character/skills")?;
+                b.m(idx).set(ATTR_SKILL_LEVEL, lvl as f64);
+                b.m(idx).owned = false;
+                let sp = b.items.pop().unwrap();
+                b.keys.pop();
+                b.cache.skills.insert((s, lvl), sp.clone());
+                sp
+            }
+        };
+        b.items.push(sp);
+        b.keys.push(ItemKey::Skill(s));
     }
     let mode_id = req.ship.mode_type_id.or_else(|| {
         let ship_name = ds.types.get(&req.ship.type_id)?.name.to_lowercase();
-        let m = ds
-            .types
-            .iter()
-            .filter(|(_, t)| t.group == 1306 && t.name.to_lowercase().starts_with(&ship_name))
-            .map(|(id, _)| *id)
-            .min()?;
+        let modes = b.cache.modes.get_or_insert_with(|| {
+            let mut m: Vec<(u32, String)> = ds.types.iter().filter(|(_, t)| t.group == 1306).map(|(id, t)| (*id, t.name.to_lowercase())).collect();
+            m.sort();
+            m
+        });
+        // sorted by id: the first match is the lowest type id
+        let m = modes.iter().find(|(_, n)| n.starts_with(&ship_name)).map(|(id, _)| *id)?;
         b.warnings.push(format!("no tactical mode given; defaulted to type {m}"));
         Some(m)
     });
     if let Some(mode) = mode_id {
         let idx = b.new_item(ItemKey::Mode, mode, Kind::Mode, Loc::Nowhere, "/ship/mode_type_id")?;
-        b.items[idx].owned = false;
+        b.m(idx).owned = false;
     }
     for (i, m) in req.modules.iter().enumerate() {
         b.add_module(i, m, &format!("/modules/{i}"))?;
@@ -271,7 +342,7 @@ pub fn build(ds: &Dataset, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &Fi
         if let Some(mu) = &d.mutation {
             b.apply_mutation(idx, mu);
         }
-        let it = &mut b.items[idx];
+        let it = Arc::make_mut(&mut b.items[idx]);
         it.quantity = d.quantity.max(1);
         it.active_count = d.active.unwrap_or(0).min(it.quantity);
         it.state = if it.active_count > 0 { State::Active } else { State::Offline };
@@ -280,52 +351,32 @@ pub fn build(ds: &Dataset, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &Fi
     for (i, f) in req.fighters.iter().enumerate() {
         let idx = b.new_item(ItemKey::Fighter(i as u32), f.type_id, Kind::Fighter, Loc::Space, &format!("/fighters/{i}"))?;
         let sq = ds.attr_id("fighterSquadronMaxSize");
-        let maxsq = b.attrs[idx].get(&sq).map(|a| *a as u32).unwrap_or(1);
-        let it = &mut b.items[idx];
+        let maxsq = b.items[idx].base(sq).map(|a| a as u32).unwrap_or(1);
+        let it = Arc::make_mut(&mut b.items[idx]);
         it.quantity = f.quantity.unwrap_or(maxsq).clamp(1, maxsq.max(1));
         if f.quantity.unwrap_or(0) > maxsq {
             b.warnings.push(format!("fighters/{i}: squadron size {} capped to {maxsq}", f.quantity.unwrap_or(0)));
         }
-        let it = &mut b.items[idx];
+        let it = Arc::make_mut(&mut b.items[idx]);
         it.active_count = if f.active { it.quantity } else { 0 };
         it.state = if f.active { State::Active } else { State::Offline };
-        it.fighter_abilities = f.abilities.clone().or_else(|| {
-            let mut ids: Vec<u32> = it.effects.iter().map(|(e, _)| *e).collect();
-            ids.sort();
-            let mut on = Vec::new();
-            let mut std_seen = false;
-            for e in ids {
-                let Some(n) = ds.effects.get(&e).map(|x| x.name.as_str()) else { continue };
-                if !n.starts_with("fighterAbility") {
-                    continue;
-                }
-                if n == "fighterAbilityAttackM" {
-                    on.push(e);
-                    std_seen = true;
-                } else if !std_seen
-                    && !matches!(n, "fighterAbilityMicroWarpDrive" | "fighterAbilityEvasiveManeuvers" | "fighterAbilityMicroJumpDrive")
-                {
-                    on.push(e);
-                }
-            }
-            Some(on)
-        });
+        it.fighter_abilities = f.abilities.clone().or_else(|| Some(default_fighter_abilities(ds, &it.effects)));
         it.req_index = Some(i);
     }
     for (i, imp) in req.implants.iter().enumerate() {
         let idx = b.new_item(ItemKey::Implant(i as u32), *imp, Kind::Implant, Loc::Char, &format!("/implants/{i}"))?;
-        b.items[idx].owned = false;
-        b.items[idx].req_index = Some(i);
+        b.m(idx).owned = false;
+        b.m(idx).req_index = Some(i);
     }
     for (i, bo) in req.boosters.iter().enumerate() {
         let idx = b.new_item(ItemKey::Booster(i as u32), bo.type_id, Kind::Booster, Loc::Char, &format!("/boosters/{i}"))?;
-        b.items[idx].owned = false;
-        b.items[idx].booster_side_effects = bo.side_effects.clone();
-        b.items[idx].req_index = Some(i);
+        b.m(idx).owned = false;
+        b.m(idx).booster_side_effects = bo.side_effects.clone();
+        b.m(idx).req_index = Some(i);
     }
     for (i, e) in req.environment.effect_type_ids.iter().enumerate() {
         let idx = b.new_item(ItemKey::Beacon(i as u32), *e, Kind::Beacon, Loc::Nowhere, &format!("/environment/effect_type_ids/{i}"))?;
-        b.items[idx].owned = false;
+        b.m(idx).owned = false;
     }
     for (i, p) in req.projected.iter().enumerate() {
         match p.kind.as_str() {
@@ -333,16 +384,16 @@ pub fn build(ds: &Dataset, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &Fi
                 if let Some(m) = &p.module {
                     for k in 0..p.amount.max(1) {
                         let idx = b.new_item(ItemKey::Projected(i as u32, k as u32), m.type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
-                        let it = &mut b.items[idx];
+                        let it = Arc::make_mut(&mut b.items[idx]);
                         it.owned = false;
                         it.state = m.state.unwrap_or(State::Active);
                         it.distance = p.distance_m;
                         it.req_index = Some(i);
                         if let Some(c) = m.charge_type_id {
                             let cidx = b.new_item(ItemKey::ProjCharge(i as u32, k as u32), c, Kind::Charge, Loc::Nowhere, &format!("/projected/{i}/module/charge_type_id"))?;
-                            b.items[cidx].parent = Some(idx);
-                            b.items[cidx].owned = false;
-                            b.items[idx].charge = Some(cidx);
+                            b.m(cidx).parent = Some(idx);
+                            b.m(cidx).owned = false;
+                            b.m(idx).charge = Some(cidx);
                         }
                     }
                 }
@@ -351,10 +402,27 @@ pub fn build(ds: &Dataset, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &Fi
                 if let Some(d) = &p.drone {
                     for k in 0..(p.amount.max(1) * d.quantity.max(1)) {
                         let idx = b.new_item(ItemKey::Projected(i as u32, k as u32), d.type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
-                        let it = &mut b.items[idx];
+                        let it = Arc::make_mut(&mut b.items[idx]);
                         it.owned = false;
                         it.state = State::Active;
                         it.distance = p.distance_m;
+                    }
+                }
+            }
+            "fighter" => {
+                if let Some(f) = &p.fighter {
+                    for k in 0..p.amount.max(1) {
+                        let idx = b.new_item(ItemKey::Projected(i as u32, k as u32), f.type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
+                        let sq = ds.attr_id("fighterSquadronMaxSize");
+                        let maxsq = b.items[idx].base(sq).map(|a| a as u32).unwrap_or(1).max(1);
+                        let it = Arc::make_mut(&mut b.items[idx]);
+                        it.owned = false;
+                        it.state = if f.active { State::Active } else { State::Offline };
+                        it.quantity = f.quantity.unwrap_or(maxsq).clamp(1, maxsq);
+                        it.active_count = it.quantity;
+                        it.distance = p.distance_m;
+                        it.req_index = Some(i);
+                        it.fighter_abilities = f.abilities.clone().or_else(|| Some(default_fighter_abilities(ds, &it.effects)));
                     }
                 }
             }
@@ -370,17 +438,22 @@ pub fn build(ds: &Dataset, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &Fi
                         }
                     };
                     let mut k = 0u32;
-                    for (type_id, copies, vals) in frozen {
+                    for (type_id, copies, vals, kind, qty, abil) in frozen {
                         for _ in 0..copies * p.amount.max(1) {
                             let idx = b.new_item(ItemKey::Projected(i as u32, k), type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
                             k += 1;
-                            let it = &mut b.items[idx];
+                            let it = Arc::make_mut(&mut b.items[idx]);
                             it.owned = false;
                             it.state = State::Active;
                             it.distance = p.distance_m;
                             it.req_index = Some(i);
+                            if kind == Kind::Fighter {
+                                it.quantity = qty;
+                                it.active_count = qty;
+                                it.fighter_abilities = abil.clone();
+                            }
                             for (a, v) in &vals {
-                                b.attrs[idx].insert(*a, *v);
+                                b.m(idx).set(*a, *v);
                             }
                         }
                     }
@@ -401,25 +474,22 @@ pub fn build(ds: &Dataset, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &Fi
             }
         };
         let (src_id, dst_id) = (ds.attr_id(src), ds.attr_id("securityModifier"));
-        for a in b.attrs.iter_mut() {
-            if let Some(v) = a.get(&src_id).copied() {
-                a.insert(dst_id, v);
+        for i in 0..b.items.len() {
+            if let Some(v) = b.items[i].base(src_id) {
+                if b.items[i].base(dst_id) != Some(v) {
+                    b.m(i).set(dst_id, v);
+                }
             }
         }
     }
     for o in &req.overrides {
-        for (it, a) in b.items.iter().zip(b.attrs.iter_mut()) {
-            if it.type_id == o.type_id {
-                a.insert(o.attribute_id, o.value);
+        for i in 0..b.items.len() {
+            if b.items[i].type_id == o.type_id {
+                b.m(i).set(o.attribute_id, o.value);
             }
         }
     }
-    let B { keys, mut items, attrs, warnings, .. } = b;
-    for (it, a) in items.iter_mut().zip(attrs) {
-        let mut v: Vec<(u32, f64)> = a.into_iter().collect();
-        v.sort_unstable_by_key(|x| x.0);
-        it.attrs = v;
-    }
+    let B { keys, items, warnings, .. } = b;
     Ok(Built { keys, items, warnings, is_structure })
 }
 

@@ -39,6 +39,8 @@ pub struct Session {
     pub calcs: u64,
     pub max_slots: usize,
     subs: FxHashMap<(u8, u32), Box<Session>>,
+    spec_cache: spec::SpecCache,
+    capmemo: std::cell::RefCell<FxHashMap<Vec<u64>, crate::capsim::CapResult>>,
 }
 
 /// Facade item consumed by stats (canonical order; indices are canonical positions).
@@ -67,7 +69,7 @@ pub struct Fit<'a> {
     pub ds: &'a Dataset,
     pub db: &'a EngineDb,
     pub fit: FitIn,
-    pub items: Vec<Item>,
+    pub items: Vec<Arc<ItemSpec>>,
     pub slot_of: Vec<u32>,
     pub ship: usize,
     pub char: usize,
@@ -76,12 +78,21 @@ pub struct Fit<'a> {
     pub layer: u32,
     /// incoming remote reps / cap transfers / neuts (canonical item indices), evaluated in stats
     pub proj_special: Vec<ProjSpecial>,
+    /// per-view memo of evaluated values (skips salsa interning/validation on repeated reads)
+    pub vcache: std::cell::RefCell<FxHashMap<u64, f64>>,
+    pub capmemo: &'a std::cell::RefCell<FxHashMap<Vec<u64>, crate::capsim::CapResult>>,
 }
 
 impl<'a> Fit<'a> {
     #[inline]
     pub fn get(&self, item: usize, attr: u32) -> f64 {
-        engine::value(self.db, self.fit, self.slot_of[item], attr, self.layer)
+        let k = ((item as u64) << 32) | attr as u64;
+        if let Some(v) = self.vcache.borrow().get(&k) {
+            return *v;
+        }
+        let v = engine::value(self.db, self.fit, self.slot_of[item], attr, self.layer);
+        self.vcache.borrow_mut().insert(k, v);
+        v
     }
     pub fn get_opt(&self, item: usize, attr: u32) -> Option<f64> {
         if self.has(item, attr) { Some(self.get(item, attr)) } else { None }
@@ -97,6 +108,25 @@ impl<'a> Fit<'a> {
         let it = self.fit.slots(self.db)[self.slot_of[item] as usize];
         it.spec(self.db).base(attr).unwrap_or_else(|| self.ds.attr_default(attr))
     }
+    /// capacitor simulation, memoised on its exact (bitwise) inputs: a pure function, so a hit is exact
+    #[allow(clippy::too_many_arguments)]
+    pub fn cap_sim(&self, capacity: f64, recharge_ms: f64, drains: &[crate::capsim::Drain], start: f64, reload: bool, stagger: bool, t_max: f64) -> crate::capsim::CapResult {
+        let mut k: Vec<u64> = vec![capacity.to_bits(), recharge_ms.to_bits(), start.to_bits(), reload as u64 | (stagger as u64) << 1, t_max.to_bits()];
+        for d in drains {
+            k.extend([d.duration.to_bits(), d.cap_need.to_bits(), d.clip_size as u64, d.reload_ms.to_bits(), d.is_injector as u64 | (d.disable_stagger as u64) << 1]);
+        }
+        if let Some(r) = self.capmemo.borrow().get(&k) {
+            return r.clone();
+        }
+        let r = crate::capsim::simulate(capacity, recharge_ms, drains, start, reload, stagger, t_max);
+        let mut m = self.capmemo.borrow_mut();
+        if m.len() > 4096 {
+            m.clear();
+        }
+        m.insert(k, r.clone());
+        r
+    }
+
     pub fn attr_keys(&self, item: usize) -> Vec<u32> {
         let s = self.slot_of[item];
         let it = self.fit.slots(self.db)[s as usize];
@@ -118,7 +148,7 @@ impl<'a> Fit<'a> {
 impl Session {
     pub fn new(ds: Arc<Dataset>) -> Session {
         let consts = Arc::new(Consts::new(&ds));
-        Session { db: EngineDb { storage: salsa::Storage::default(), ds, consts }, fit: None, slots: Vec::new(), slot_of: FxHashMap::default(), calcs: 0, max_slots: 20_000, subs: FxHashMap::default() }
+        Session { db: EngineDb { storage: salsa::Storage::default(), ds, consts }, fit: None, slots: Vec::new(), slot_of: FxHashMap::default(), calcs: 0, max_slots: 20_000, subs: FxHashMap::default(), spec_cache: Default::default(), capmemo: Default::default() }
     }
 
     pub fn ds(&self) -> &Dataset {
@@ -134,7 +164,12 @@ impl Session {
     /// Full stats for one request. Output is a pure function of (dataset, request).
     pub fn calc(&mut self, req: &FitRequest) -> Value {
         match self.view(req) {
-            Ok(v) => v.compute_stats(req),
+            Ok(v) => {
+                let t0 = std::time::Instant::now();
+                let r = v.compute_stats(req);
+                prof(2, t0);
+                r
+            }
             Err(e) => json!({"error": {"code": e.code, "message": e.message, "path": e.path}}),
         }
     }
@@ -152,6 +187,7 @@ impl Session {
         self.calcs += 1;
         let ds_arc = self.db.ds.clone();
         let ds: &Dataset = &ds_arc;
+        let mut cache = std::mem::take(&mut self.spec_cache);
         // projected fits: evaluate each source fit on its own sub-session, freeze active modules / drones
         let mut proj = |i: usize, sreq: &FitRequest| -> Result<spec::Frozen, spec::EngineError> {
             let sub = self.sub((0, i as u32));
@@ -161,17 +197,22 @@ impl Session {
                 let copies = match it.kind {
                     Kind::Module if it.state >= crate::request::State::Active => 1,
                     Kind::Drone => it.active_count,
+                    Kind::Fighter if it.state >= crate::request::State::Active => 1,
                     _ => 0,
                 };
                 if copies == 0 {
                     continue;
                 }
                 let vals: Vec<(u32, f64)> = v.attr_keys(si).into_iter().map(|a| (a, v.get(si, a))).collect();
-                frozen.push((it.type_id, copies, vals));
+                frozen.push((it.type_id, copies, vals, it.kind, it.quantity, it.fighter_abilities.clone()));
             }
             Ok(frozen)
         };
-        let built = spec::build(ds, req, &mut proj)?;
+        let t0 = std::time::Instant::now();
+        let built = spec::build(ds, &mut cache, req, &mut proj);
+        self.spec_cache = cache;
+        let built = built?;
+        prof(0, t0);
         // fleet booster fits: strongest warfare buffs of their active modules
         let mut offers: Vec<(u32, F)> = Vec::new();
         let mut boost_warn = Vec::new();
@@ -198,7 +239,9 @@ impl Session {
                 Err(e) => boost_warn.push(format!("fleet.booster_fits[{k}]: {e:?}")),
             }
         }
+        let t0 = std::time::Instant::now();
         let fit = self.load(req, &built, offers);
+        prof(1, t0);
         let db = &self.db;
         let ds: &Dataset = &self.db.ds;
         let n = built.items.len();
@@ -213,30 +256,9 @@ impl Session {
         }
         warnings.extend(buff_warnings(ds, req));
         warnings.extend(boost_warn);
-        let items: Vec<Item> = built
-            .items
-            .iter()
-            .map(|s| Item {
-                type_id: s.type_id,
-                group: s.group,
-                category: s.category,
-                kind: s.kind,
-                state: s.state,
-                owned: s.owned,
-                parent: s.parent,
-                charge: s.charge,
-                slot: s.slot,
-                req_index: s.req_index,
-                quantity: s.quantity,
-                active_count: s.active_count,
-                effects: s.effects.clone(),
-                fighter_abilities: s.fighter_abilities.clone(),
-                spool: s.spool,
-                skill_level: s.base(spec::ATTR_SKILL_LEVEL).unwrap_or(0.0),
-            })
-            .collect();
+        let items: Vec<Arc<ItemSpec>> = built.items.clone();
         let layer = engine::plan(db, fit).final_layer;
-        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special })
+        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special, vcache: Default::default(), capmemo: &self.capmemo })
     }
 
     fn load(&mut self, req: &FitRequest, b: &spec::Built, offers: Vec<(u32, F)>) -> FitIn {
@@ -245,24 +267,31 @@ impl Session {
             if !self.slot_of.contains_key(k) {
                 let s = self.slots.len() as u32;
                 self.slot_of.insert(*k, s);
-                let placeholder = Arc::new(b.items[0].clone());
+                let placeholder = b.items[0].clone();
                 self.slots.push(ItemIn::new(&self.db, s, placeholder));
             }
         }
         let slot_of: Vec<u32> = b.keys.iter().map(|k| self.slot_of[k]).collect();
         for (i, sp) in b.items.iter().enumerate() {
-            let mut sp: ItemSpec = sp.clone();
-            sp.parent = sp.parent.map(|p| slot_of[p] as usize);
-            sp.charge = sp.charge.map(|c| slot_of[c] as usize);
+            let sp: Arc<ItemSpec> = if sp.parent.is_some() || sp.charge.is_some() {
+                let mut x: ItemSpec = (**sp).clone();
+                x.parent = x.parent.map(|p| slot_of[p] as usize);
+                x.charge = x.charge.map(|c| slot_of[c] as usize);
+                Arc::new(x)
+            } else {
+                sp.clone()
+            };
             let h = self.slots[slot_of[i] as usize];
-            if **h.spec(&self.db) != sp {
-                h.set_spec(&mut self.db).to(Arc::new(sp));
+            let old = h.spec(&self.db);
+            if !Arc::ptr_eq(old, &sp) && **old != *sp {
+                h.set_spec(&mut self.db).to(sp);
             }
         }
         let ctx = Arc::new(make_ctx(&self.db.ds, req, slot_of[0], slot_of.get(1).copied().unwrap_or(slot_of[0]), b.is_structure, offers));
+        let core = engine::Core { ship: ctx.ship, char: ctx.char, is_structure: ctx.is_structure };
         match self.fit {
             None => {
-                let f = FitIn::new(&self.db, self.slots.clone(), slot_of, ctx);
+                let f = FitIn::new(&self.db, self.slots.clone(), slot_of, ctx, core);
                 self.fit = Some(f);
                 f
             }
@@ -275,6 +304,9 @@ impl Session {
                 }
                 if **f.ctx(&self.db) != *ctx {
                     f.set_ctx(&mut self.db).to(ctx);
+                }
+                if f.core(&self.db) != core {
+                    f.set_core(&mut self.db).to(core);
                 }
                 f
             }
@@ -329,14 +361,13 @@ pub enum ProjSpecial {
     Rep { item: usize, layer: u8, amount: u32, mult: f64, factor: f64 },
     /// capacitor drain (sign +1) or fill (sign -1) per cycle of `duration` attr
     Drain { item: usize, amount: u32, duration: u32, factor: f64, resist: u32, sign: f64 },
+    /// ECM jam strength vs the target's strongest sensor type (Pyfa addProjectedEcm / jamChance)
+    Ecm { item: usize, fighter: bool, factor: f64, resist: u32 },
 }
 
 /// Remote reps / cap transfer / neut handlers (semantics of EX-CT/eve-dogma-rs, which follows Pyfa eos/effects.py).
 fn proj_special_for(ds: &Dataset, b: &spec::Built, i: usize, out: &mut Vec<ProjSpecial>) {
     let it = &b.items[i];
-    if it.state < crate::request::State::Active {
-        return;
-    }
     let a = |n: &str| ds.attr_id(n);
     let base = |n: &str| it.base(ds.attr_id(n)).unwrap_or(0.0);
     let dist = it.distance;
@@ -344,12 +375,18 @@ fn proj_special_for(ds: &Dataset, b: &spec::Built, i: usize, out: &mut Vec<ProjS
     let gate = |opt: f64| if opt < dist.unwrap_or(0.0) { 0.0 } else { 1.0 };
     let no_assist = b.items[0].base(a("disallowAssistance")).map(|x| x != 0.0).unwrap_or(false);
     let paste = it.charge.map(|c| ds.types.get(&b.items[c].type_id).map(|t| t.name == "Nanite Repair Paste").unwrap_or(false)).unwrap_or(false);
-    for &(eid, _) in &it.effects {
-        let Some(e) = ds.effects.get(&eid) else { continue };
-        if (e.category != 2 && e.category != 3) || !e.mods.is_empty() {
+    let no_offense = b.items[0].base(a("disallowOffensiveModifiers")).map(|x| x != 0.0).unwrap_or(false);
+    let qty = it.quantity.max(1) as f64;
+    for e in engine::proj_effects(ds, it) {
+        if !e.mods.is_empty() {
             continue;
         }
-        let resist = e.resistance_attr.unwrap_or_else(|| it.base(a("remoteResistanceID")).map(|v| v as u32).unwrap_or(0));
+        let resist = engine::proj_resist(ds, it, e);
+        let ecm = |out: &mut Vec<ProjSpecial>, fighter: bool, factor: f64| {
+            if !no_offense {
+                out.push(ProjSpecial::Ecm { item: i, fighter, factor, resist })
+            }
+        };
         let rep = |out: &mut Vec<ProjSpecial>, layer: u8, amt: &str, mult: f64, factor: f64| {
             if !no_assist {
                 out.push(ProjSpecial::Rep { item: i, layer, amount: a(amt), mult, factor })
@@ -372,10 +409,30 @@ fn proj_special_for(ds: &Dataset, b: &spec::Built, i: usize, out: &mut Vec<ProjS
                 }
             }
             "energyNeutralizerFalloff" => drain(out, "energyNeutralizerAmount", "duration", falloff_factor(), 1.0),
+            "fighterAbilityEnergyNeutralizer" => {
+                let f = crate::stats::range_factor(base("fighterAbilityEnergyNeutralizerOptimalRange"), base("fighterAbilityEnergyNeutralizerFalloffRange"), dist, true);
+                drain(out, "fighterAbilityEnergyNeutralizerAmount", "fighterAbilityEnergyNeutralizerDuration", f * qty, 1.0)
+            }
+            "remoteECMFalloff" | "structureModuleEffectECM" => ecm(out, false, falloff_factor()),
+            "entityECMFalloff" => ecm(out, false, gate(base("ECMRangeOptimal"))),
+            "ECMBurstJammer" => ecm(out, false, gate(base("ecmBurstRange"))),
+            "fighterAbilityECM" => {
+                let f = crate::stats::range_factor(base("fighterAbilityECMRangeOptimal"), base("fighterAbilityECMRangeFalloff"), dist, true);
+                ecm(out, true, f * qty)
+            }
             "energyNosferatuFalloff" => drain(out, "powerTransferAmount", "duration", falloff_factor(), 1.0),
             "structureEnergyNeutralizerFalloff" => drain(out, "energyNeutralizerAmount", "duration", 1.0, 1.0),
             "entityEnergyNeutralizerFalloff" => drain(out, "energyNeutralizerAmount", "energyNeutralizerDuration", gate(base("energyNeutralizerRangeOptimal")), 1.0),
             _ => {}
         }
     }
+}
+
+static PROF: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+fn prof(k: usize, t0: std::time::Instant) {
+    PROF[k].fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn prof_report() -> String {
+    format!("build {:.1}ms load {:.1}ms stats {:.1}ms", PROF[0].load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6,
+        PROF[1].load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6, PROF[2].load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6)
 }

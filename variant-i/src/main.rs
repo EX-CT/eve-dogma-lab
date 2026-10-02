@@ -226,6 +226,7 @@ fn main() {
                 std::hint::black_box(sess.calc(&req));
             }
             let el = t1.elapsed().as_secs_f64();
+            eprintln!("{}", eve_dogma_salsa::session::prof_report());
             writeln!(out, "{}", json!({"dataset_load_ms": load_ms, "iterations": n, "total_s": el, "per_calc_us": el / n as f64 * 1e6})).unwrap();
         }
         "bench-edit" => {
@@ -252,6 +253,7 @@ fn main() {
                 std::hint::black_box(sess.calc(r));
             }
             let el = t1.elapsed().as_secs_f64();
+            eprintln!("{}", eve_dogma_salsa::session::prof_report());
             // correctness: incremental result == fresh result
             let same = Session::new(ds.clone()).calc(&alt) == { let mut s2 = Session::new(ds.clone()); let _ = s2.calc(&req); s2.calc(&alt) };
             writeln!(out, "{}", json!({"iterations": n, "per_edit_us": el / n as f64 * 1e6, "incremental_equals_fresh": same})).unwrap();

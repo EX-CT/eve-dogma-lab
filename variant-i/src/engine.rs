@@ -112,9 +112,26 @@ pub struct Consts {
     pub armor_res: [u32; 4],
     pub shift: u32,
     pub rounded: Vec<u32>,
+    /// sorted ids of attributes with min/max caps
+    pub capped: Vec<u32>,
+    pub v: ValidateIds,
+}
+
+pub struct ValidateIds {
+    pub can_fit_groups: Vec<u32>,
+    pub can_fit_types: Vec<u32>,
+    pub charge_groups: Vec<u32>,
+    pub req_skill: [u32; 6],
+    pub req_level: [u32; 6],
 }
 
 impl Consts {
+    /// attribute with a min/max cap or output rounding (always evaluated through `attr_value`)
+    #[inline]
+    pub fn special(&self, attr: u32) -> bool {
+        self.capped.binary_search(&attr).is_ok() || self.rounded.contains(&attr)
+    }
+
     pub fn new(ds: &Dataset) -> Consts {
         let a = |n: &str| ds.attr_id(n);
         let e = |n: &str| ds.effect_id(n);
@@ -146,6 +163,18 @@ impl Consts {
             armor_res: [a(ARMOR_RES[0]), a(ARMOR_RES[1]), a(ARMOR_RES[2]), a(ARMOR_RES[3])],
             shift: a("resistanceShiftAmount"),
             rounded: ["cpu", "power", "cpuOutput", "powerOutput"].iter().map(|n| a(n)).filter(|x| *x != 0).collect(),
+            capped: {
+                let mut v: Vec<u32> = ds.attrs.values().filter(|i| i.min_attr.is_some() || i.max_attr.is_some()).map(|i| i.id).collect();
+                v.sort();
+                v
+            },
+            v: ValidateIds {
+                can_fit_groups: (1..=20).map(|k| a(&format!("canFitShipGroup{k:02}"))).filter(|x| *x != 0).collect(),
+                can_fit_types: (1..=11).map(|k| a(&format!("canFitShipType{k}"))).filter(|x| *x != 0).collect(),
+                charge_groups: (1..=5).map(|k| a(&format!("chargeGroup{k}"))).collect(),
+                req_skill: [a("requiredSkill1"), a("requiredSkill2"), a("requiredSkill3"), a("requiredSkill4"), a("requiredSkill5"), a("requiredSkill6")],
+                req_level: [a("requiredSkill1Level"), a("requiredSkill2Level"), a("requiredSkill3Level"), a("requiredSkill4Level"), a("requiredSkill5Level"), a("requiredSkill6Level")],
+            },
         }
     }
 }
@@ -168,6 +197,8 @@ pub struct FitIn {
     pub order: Vec<u32>,
     #[returns(ref)]
     pub ctx: Arc<Ctx>,
+    #[returns(copy)]
+    pub core: Core,
 }
 
 #[salsa::interned]
@@ -201,21 +232,77 @@ pub struct IdxItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Index {
     pub items: Vec<IdxItem>,
-    /// slot -> position in `items`
-    pub pos: FxHashMap<u32, u32>,
+    /// target sets in canonical order: (set kind, filter) -> slots
+    pub sets: FxHashMap<(u8, u32), Vec<u32>>,
+}
+
+/// set kinds for `target_set`
+pub const S_SHIP_ALL: u8 = 0;
+pub const S_SHIP_GROUP: u8 = 1;
+pub const S_SHIP_SKILL: u8 = 2;
+pub const S_OWNED_SKILL: u8 = 3;
+pub const S_CHAR_ALL: u8 = 4;
+pub const S_CHAR_GROUP: u8 = 5;
+pub const S_CHAR_SKILL: u8 = 6;
+
+#[salsa::interned]
+pub struct TKey<'db> {
+    #[returns(copy)]
+    pub kind: u8,
+    #[returns(copy)]
+    pub extra: u32,
+}
+
+/// One modifier target set; backdates when unchanged, so an item's `outgoing` only re-runs when a set it
+/// actually targets changes (e.g. a skill bonus to "modules requiring Gunnery" when a turret is added).
+#[salsa::tracked(returns(ref))]
+pub fn target_set<'db>(db: &'db dyn Db, fit: FitIn, k: TKey<'db>) -> Arc<Vec<u32>> {
+    Arc::new(index(db, fit).sets.get(&(k.kind(db), k.extra(db))).cloned().unwrap_or_default())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Core {
+    pub ship: u32,
+    pub char: u32,
+    pub is_structure: bool,
 }
 
 #[salsa::tracked(returns(ref))]
 pub fn index(db: &dyn Db, fit: FitIn) -> Arc<Index> {
     let slots = fit.slots(db);
     let mut items = Vec::with_capacity(fit.order(db).len());
-    let mut pos = FxHashMap::default();
+    let mut sets: FxHashMap<(u8, u32), Vec<u32>> = FxHashMap::default();
     for &s in fit.order(db) {
         let sp = slots[s as usize].spec(db);
-        pos.insert(s, items.len() as u32);
+        let mut add = |k: u8, e: u32| sets.entry((k, e)).or_default().push(s);
+        if sp.loc == Loc::Ship {
+            add(S_SHIP_ALL, 0);
+            add(S_SHIP_GROUP, sp.group);
+            for &r in &sp.req_skills {
+                add(S_SHIP_SKILL, r);
+            }
+        }
+        if sp.owned {
+            for &r in &sp.req_skills {
+                add(S_OWNED_SKILL, r);
+            }
+        }
+        if sp.loc == Loc::Char {
+            add(S_CHAR_ALL, 0);
+            add(S_CHAR_GROUP, sp.group);
+        }
+        if (sp.owned || sp.loc == Loc::Char) && sp.kind != Kind::Skill {
+            for &r in &sp.req_skills {
+                add(S_CHAR_SKILL, r);
+            }
+        }
         items.push(IdxItem { slot: s, kind: sp.kind, loc: sp.loc, group: sp.group, owned: sp.owned, type_id: sp.type_id, req_skills: sp.req_skills.clone() });
     }
-    Arc::new(Index { items, pos })
+    // req_skills may repeat a skill: keep each slot once per set (the reference filters items, it doesn't duplicate)
+    for v in sets.values_mut() {
+        v.dedup();
+    }
+    Arc::new(Index { items, sets })
 }
 
 /// charge/parent links (slot ids) - separate query so link changes don't touch everything else
@@ -240,7 +327,8 @@ fn penalized(ds: &Dataset, attr: u32, source_cat: u32) -> bool {
     !stackable && !EXEMPT_CATEGORIES.contains(&source_cat)
 }
 
-fn targets(ix: &Index, ctx: &Ctx, src: u32, links: (Option<u32>, Option<u32>), func: Func, domain: Domain, extra: u32, out: &mut Vec<u32>) {
+fn targets(db: &dyn Db, fit: FitIn, core: Core, src: u32, links: (Option<u32>, Option<u32>), func: Func, domain: Domain, extra: u32, out: &mut Vec<u32>) {
+    let set = |k: u8, e: u32, out: &mut Vec<u32>| out.extend_from_slice(target_set(db, fit, TKey::new(db, k, e)));
     match domain {
         Domain::Item => {
             if func == Func::Item {
@@ -255,52 +343,23 @@ fn targets(ix: &Index, ctx: &Ctx, src: u32, links: (Option<u32>, Option<u32>), f
             }
         }
         Domain::Ship | Domain::Structure => {
-            if domain == Domain::Structure && !ctx.is_structure {
+            if domain == Domain::Structure && !core.is_structure {
                 return;
             }
             match func {
-                Func::Item => out.push(ctx.ship),
-                Func::Location | Func::LocationGroup | Func::LocationRequiredSkill => {
-                    for it in &ix.items {
-                        if it.loc != Loc::Ship {
-                            continue;
-                        }
-                        let ok = match func {
-                            Func::Location => true,
-                            Func::LocationGroup => it.group == extra,
-                            _ => it.req_skills.contains(&extra),
-                        };
-                        if ok {
-                            out.push(it.slot)
-                        }
-                    }
-                }
-                Func::OwnerRequiredSkill => {
-                    for it in &ix.items {
-                        if it.owned && it.req_skills.contains(&extra) {
-                            out.push(it.slot)
-                        }
-                    }
-                }
+                Func::Item => out.push(core.ship),
+                Func::Location => set(S_SHIP_ALL, 0, out),
+                Func::LocationGroup => set(S_SHIP_GROUP, extra, out),
+                Func::LocationRequiredSkill => set(S_SHIP_SKILL, extra, out),
+                Func::OwnerRequiredSkill => set(S_OWNED_SKILL, extra, out),
                 Func::EffectStopper => {}
             }
         }
         Domain::Char => match func {
-            Func::Item => out.push(ctx.char),
-            Func::Location | Func::LocationGroup => {
-                for it in &ix.items {
-                    if it.loc == Loc::Char && (func == Func::Location || it.group == extra) {
-                        out.push(it.slot)
-                    }
-                }
-            }
-            Func::LocationRequiredSkill | Func::OwnerRequiredSkill => {
-                for it in &ix.items {
-                    if (it.owned || it.loc == Loc::Char) && it.kind != Kind::Skill && it.req_skills.contains(&extra) {
-                        out.push(it.slot)
-                    }
-                }
-            }
+            Func::Item => out.push(core.char),
+            Func::Location => set(S_CHAR_ALL, 0, out),
+            Func::LocationGroup => set(S_CHAR_GROUP, extra, out),
+            Func::LocationRequiredSkill | Func::OwnerRequiredSkill => set(S_CHAR_SKILL, extra, out),
             Func::EffectStopper => {}
         },
         _ => {}
@@ -329,14 +388,14 @@ pub fn outgoing(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<Vec<Out>> {
     let c = db.consts();
     let sp = item.spec(db).clone();
     let i = item.slot(db);
-    let ctx = fit.ctx(db).clone();
+    let ctx = fit.core(db);
     let mut out: Vec<Out> = Vec::new();
     let push = |out: &mut Vec<Out>, target: u32, attr: u32, op: i32, src: Src, cat: u32| {
         out.push(Out { target, attr, m: AMod { op: op as i8, penalized: penalized(ds, attr, cat), src } });
     };
     let kind = sp.kind;
     if kind == Kind::Projected {
-        projected(db, &sp, i, &ctx, &mut out);
+        projected(db, fit, &sp, i, &ctx, &mut out);
         return Arc::new(out);
     }
     if ctx.is_structure && matches!(kind, Kind::Drone | Kind::Implant | Kind::Booster) {
@@ -344,7 +403,6 @@ pub fn outgoing(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<Vec<Out>> {
     }
     let state = effective_state(db, fit, &sp);
     let src_cat = sp.category;
-    let ix = index(db, fit).clone();
     let lk = links(db, item);
     let ship = ctx.ship;
     let mut tg: Vec<u32> = Vec::new();
@@ -370,6 +428,28 @@ pub fn outgoing(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<Vec<Out>> {
         }
         if !state_ok(e.category, state) {
             continue;
+        }
+        if kind == Kind::Fighter && e.mods.is_empty() {
+            // fighter self abilities (Pyfa hand-written handlers, eos LGPL; as in eve-dogma-rs)
+            let fm: &[(&str, &str, i32)] = match e.name.as_str() {
+                "fighterAbilityMicroWarpDrive" => &[("maxVelocity", "fighterAbilityMicroWarpDriveSpeedBonus", 6), ("signatureRadius", "fighterAbilityMicroWarpDriveSignatureRadiusBonus", 6)],
+                "fighterAbilityAfterburner" => &[("maxVelocity", "fighterAbilityAfterburnerSpeedBonus", 6)],
+                "fighterAbilityEvasiveManeuvers" => &[
+                    ("maxVelocity", "fighterAbilityEvasiveManeuversSpeedBonus", 6),
+                    ("signatureRadius", "fighterAbilityEvasiveManeuversSignatureRadiusBonus", 6),
+                    ("shieldEmDamageResonance", "fighterAbilityEvasiveManeuversEmResonance", 4),
+                    ("shieldThermalDamageResonance", "fighterAbilityEvasiveManeuversThermResonance", 4),
+                    ("shieldKineticDamageResonance", "fighterAbilityEvasiveManeuversKinResonance", 4),
+                    ("shieldExplosiveDamageResonance", "fighterAbilityEvasiveManeuversExpResonance", 4),
+                ],
+                _ => &[],
+            };
+            if !fm.is_empty() {
+                for (t, a, op) in fm {
+                    push(&mut out, i, ds.attr_id(t), *op, Src::Attr { item: i, attr: ds.attr_id(a) }, src_cat);
+                }
+                continue;
+            }
         }
         if eid == c.e_ab || eid == c.e_mwd {
             push(&mut out, ship, 4, 2, Src::Attr { item: i, attr: c.mass_addition }, src_cat);
@@ -405,7 +485,7 @@ pub fn outgoing(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<Vec<Out>> {
             }
             let extra = if m.extra == 0 && matches!(m.func, Func::LocationRequiredSkill | Func::OwnerRequiredSkill) { sp.type_id } else { m.extra };
             tg.clear();
-            targets(&ix, &ctx, i, lk, m.func, m.domain, extra, &mut tg);
+            targets(db, fit, ctx, i, lk, m.func, m.domain, extra, &mut tg);
             let cat = if eid == c.e_bastion && HULL_RESONANCES.contains(&m.modified) { 6 } else { src_cat };
             for &t in &tg {
                 push(&mut out, t, m.modified, m.op, Src::Attr { item: i, attr: m.modifying }, cat);
@@ -415,52 +495,103 @@ pub fn outgoing(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<Vec<Out>> {
     Arc::new(out)
 }
 
-fn projected(db: &dyn Db, sp: &ItemSpec, i: u32, ctx: &Ctx, out: &mut Vec<Out>) {
+/// Effects of a projected item that take part in projection (category / state / fighter-ability filters).
+pub fn proj_effects<'a>(ds: &'a Dataset, sp: &ItemSpec) -> Vec<&'a crate::data::EffectInfo> {
+    let mut v = Vec::new();
+    for &(eid, _) in &sp.effects {
+        let Some(e) = ds.effects.get(&eid) else { continue };
+        if e.category != 2 && e.category != 3 && e.name != "ECMBurstJammer" {
+            continue;
+        }
+        if let Some(ab) = &sp.fighter_abilities {
+            if e.name.starts_with("fighterAbility") && !ab.contains(&eid) {
+                continue;
+            }
+        }
+        if sp.state < State::Active {
+            continue;
+        }
+        v.push(e);
+    }
+    v
+}
+
+pub fn proj_resist(ds: &Dataset, sp: &ItemSpec, e: &crate::data::EffectInfo) -> u32 {
+    e.resistance_attr.unwrap_or_else(|| {
+        let look = |n: &str| sp.base(ds.attr_id(n)).map(|a| a as u32).unwrap_or(0);
+        if e.name.starts_with("fighterAbility") {
+            let r = look(&format!("{}ResistanceID", e.name));
+            if r != 0 { r } else { look(&format!("{}RemoteResistanceID", e.name)) }
+        } else {
+            look("remoteResistanceID")
+        }
+    })
+}
+
+fn is_basic_projection(name: &str) -> bool {
+    name.starts_with("remoteWebifier")
+        || name == "structureModuleEffectStasisWebifier"
+        || name.starts_with("remoteTargetPaint")
+        || name == "structureModuleEffectTargetPainter"
+        || name.starts_with("remoteSensorDamp")
+        || name == "structureModuleEffectRemoteSensorDampener"
+        || name.starts_with("remoteSensorBoost")
+}
+
+fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &mut Vec<Out>) {
     let ds = db.ds();
     let c = db.consts();
     let src_cat = sp.category;
     let ship = ctx.ship;
-    if sp.state < State::Active {
-        return;
-    }
-    for &(eid, _) in &sp.effects {
-        let Some(e) = ds.effects.get(&eid) else { continue };
-        if e.category != 2 && e.category != 3 {
-            continue;
-        }
+    let ship_sp = fit.slots(db)[ship as usize].spec(db);
+    let target_offense_ok = ship_sp.base(ds.attr_id("disallowOffensiveModifiers")).map(|a| a == 0.0).unwrap_or(true);
+    let qty = sp.quantity.max(1) as f64;
+    for e in proj_effects(ds, sp) {
         let opt = e.range_attr.and_then(|a| sp.base(a)).unwrap_or(0.0);
         let fo = e.falloff_attr.and_then(|a| sp.base(a)).unwrap_or(0.0);
         let factor = crate::stats::range_factor(opt, fo, sp.distance, true);
-        let resist = e.resistance_attr.unwrap_or_else(|| sp.base(c.remote_resist).map(|v| v as u32).unwrap_or(0));
-        let mut push = |target_attr: u32, src_attr: u32, op: i32| {
-            let mul = op == 4 || op == 0;
-            out.push(Out {
-                target: ship,
-                attr: target_attr,
-                m: AMod { op: op as i8, penalized: penalized(ds, target_attr, src_cat), src: Src::Projected { item: i, attr: src_attr, factor: F(factor), target: ship, resist, mul } },
-            });
+        let resist = proj_resist(ds, sp, e);
+        let push = |out: &mut Vec<Out>, target_attr: u32, op: i32, src: Src| {
+            out.push(Out { target: ship, attr: target_attr, m: AMod { op: op as i8, penalized: penalized(ds, target_attr, src_cat), src } });
         };
+        let pj = |src_attr: u32, op: i32| Src::Projected { item: i, attr: src_attr, factor: F(factor), target: ship, resist, mul: op == 4 || op == 0 };
         if !e.mods.is_empty() {
             for m in &e.mods {
                 if matches!(m.domain, Domain::TargetId | Domain::Target | Domain::Ship) && m.func == Func::Item {
-                    push(m.modified, m.modifying, m.op);
+                    push(out, m.modified, m.op, pj(m.modifying, m.op));
                 }
             }
             continue;
         }
         let name = e.name.as_str();
+        let pbase = |n: &str| sp.base(ds.attr_id(n)).unwrap_or(0.0);
+        if name == "fighterAbilityStasisWebifier" {
+            if target_offense_ok {
+                let f = crate::stats::range_factor(pbase("fighterAbilityStasisWebifierOptimalRange"), pbase("fighterAbilityStasisWebifierFalloffRange"), sp.distance, true) * qty;
+                let src = Src::Projected { item: i, attr: ds.attr_id("fighterAbilityStasisWebifierSpeedPenalty"), factor: F(f), target: ship, resist, mul: false };
+                push(out, c.max_velocity, 6, src);
+            }
+            continue;
+        }
+        if name == "fighterAbilityWarpDisruption" {
+            if target_offense_ok && pbase("fighterAbilityWarpDisruptionRange") >= sp.distance.unwrap_or(0.0) {
+                let src = Src::Projected { item: i, attr: ds.attr_id("fighterAbilityWarpDisruptionPointStrength"), factor: F(qty), target: ship, resist, mul: false };
+                push(out, ds.attr_id("warpScrambleStatus"), 2, src);
+            }
+            continue;
+        }
         if name.starts_with("remoteWebifier") || name == "structureModuleEffectStasisWebifier" {
-            push(c.max_velocity, c.speed_factor, 6);
+            push(out, c.max_velocity, 6, pj(c.speed_factor, 6));
         } else if name.starts_with("remoteTargetPaint") || name == "structureModuleEffectTargetPainter" {
-            push(c.sig, c.sig_bonus, 6);
+            push(out, c.sig, 6, pj(c.sig_bonus, 6));
         } else if name.starts_with("remoteSensorDamp") || name == "structureModuleEffectRemoteSensorDampener" {
-            push(c.max_target_range, c.max_target_range_bonus, 6);
-            push(c.scan_res, c.scan_res_bonus, 6);
+            push(out, c.max_target_range, 6, pj(c.max_target_range_bonus, 6));
+            push(out, c.scan_res, 6, pj(c.scan_res_bonus, 6));
         } else if name.starts_with("remoteSensorBoost") {
-            push(c.max_target_range, c.max_target_range_bonus, 6);
-            push(c.scan_res, c.scan_res_bonus, 6);
+            push(out, c.max_target_range, 6, pj(c.max_target_range_bonus, 6));
+            push(out, c.scan_res, 6, pj(c.scan_res_bonus, 6));
             for t in ["Gravimetric", "Ladar", "Magnetometric", "Radar"] {
-                push(ds.attr_id(&format!("scan{t}Strength")), ds.attr_id(&format!("scan{t}StrengthPercent")), 6);
+                push(out, ds.attr_id(&format!("scan{t}Strength")), 6, pj(ds.attr_id(&format!("scan{t}StrengthPercent")), 6));
             }
         }
     }
@@ -472,27 +603,20 @@ pub const DAMAGE_EFFECTS: &[&str] = &["projectileFired", "targetAttack", "useMis
 pub const PROJ_SPECIAL_EFFECTS: &[&str] = &["shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster", "shipModuleRemoteArmorRepairer",
     "ShipModuleRemoteArmorMutadaptiveRepairer", "shipModuleAncillaryRemoteArmorRepairer", "shipModuleRemoteHullRepairer",
     "npcEntityRemoteShieldBooster", "npcEntityRemoteArmorRepairer", "npcEntityRemoteHullRepairer", "shipModuleRemoteCapacitorTransmitter",
-    "energyNeutralizerFalloff", "energyNosferatuFalloff", "structureEnergyNeutralizerFalloff", "entityEnergyNeutralizerFalloff"];
+    "energyNeutralizerFalloff", "energyNosferatuFalloff", "structureEnergyNeutralizerFalloff", "entityEnergyNeutralizerFalloff",
+    "fighterAbilityEnergyNeutralizer", "remoteECMFalloff", "structureModuleEffectECM", "entityECMFalloff", "ECMBurstJammer", "fighterAbilityECM"];
 
 /// warnings that the reference emits during registration (projected effects not modelled)
 pub fn projected_warnings(ds: &Dataset, sp: &ItemSpec) -> Vec<String> {
     let mut w = Vec::new();
-    if sp.state < State::Active {
-        return w;
-    }
-    for &(eid, _) in &sp.effects {
-        let Some(e) = ds.effects.get(&eid) else { continue };
-        if (e.category != 2 && e.category != 3) || !e.mods.is_empty() {
+    for e in proj_effects(ds, sp) {
+        if !e.mods.is_empty() {
             continue;
         }
         let name = e.name.as_str();
-        if !(name.starts_with("remoteWebifier")
-            || name == "structureModuleEffectStasisWebifier"
-            || name.starts_with("remoteTargetPaint")
-            || name == "structureModuleEffectTargetPainter"
-            || name.starts_with("remoteSensorDamp")
-            || name == "structureModuleEffectRemoteSensorDampener"
-            || name.starts_with("remoteSensorBoost")
+        if !(name == "fighterAbilityStasisWebifier"
+            || name == "fighterAbilityWarpDisruption"
+            || is_basic_projection(name)
             || PROJ_SPECIAL_EFFECTS.contains(&name)
             || DAMAGE_EFFECTS.contains(&name))
         {
@@ -502,7 +626,8 @@ pub fn projected_warnings(ds: &Dataset, sp: &ItemSpec) -> Vec<String> {
     w
 }
 
-fn buff_mods(ds: &Dataset, ix: &Index, ctx: &Ctx, id: u32, src: Src, out: &mut Vec<Out>) {
+fn buff_mods(db: &dyn Db, fit: FitIn, ctx: Core, id: u32, src: Src, out: &mut Vec<Out>) {
+    let ds = db.ds();
     let Some(info) = ds.dbuffs.get(&id) else { return };
     let op = info.op as i8;
     let mut push = |t: u32, a: u32| out.push(Out { target: t, attr: a, m: AMod { op, penalized: penalized(ds, a, 0), src } });
@@ -512,21 +637,21 @@ fn buff_mods(ds: &Dataset, ix: &Index, ctx: &Ctx, id: u32, src: Src, out: &mut V
     let mut tg = Vec::new();
     for &a in &info.location {
         tg.clear();
-        targets(ix, ctx, ctx.ship, (None, None), Func::Location, Domain::Ship, 0, &mut tg);
+        targets(db, fit, ctx, ctx.ship, (None, None), Func::Location, Domain::Ship, 0, &mut tg);
         for &t in &tg {
             push(t, a);
         }
     }
     for &(a, g) in &info.location_group {
         tg.clear();
-        targets(ix, ctx, ctx.ship, (None, None), Func::LocationGroup, Domain::Ship, g, &mut tg);
+        targets(db, fit, ctx, ctx.ship, (None, None), Func::LocationGroup, Domain::Ship, g, &mut tg);
         for &t in &tg {
             push(t, a);
         }
     }
     for &(a, s) in &info.location_skill {
         tg.clear();
-        targets(ix, ctx, ctx.ship, (None, None), Func::LocationRequiredSkill, Domain::Ship, s, &mut tg);
+        targets(db, fit, ctx, ctx.ship, (None, None), Func::LocationRequiredSkill, Domain::Ship, s, &mut tg);
         for &t in &tg {
             push(t, a);
         }
@@ -558,7 +683,7 @@ pub fn item_mods(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<ModMap> {
 pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
     let c = db.consts();
     let ctx = fit.ctx(db);
-    let ix = index(db, fit);
+    let core = fit.core(db);
     let slots = fit.slots(db);
     let mut out = Vec::new();
     // Pyfa keeps, per buff id, the strongest (|value|) source among own bursts and booster fits;
@@ -604,7 +729,7 @@ pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
     }
     best.sort_by_key(|b| b.0);
     for (id, _, src) in best {
-        buff_mods(db.ds(), ix, ctx, id, src, &mut out);
+        buff_mods(db, fit, core, id, src, &mut out);
     }
     Arc::new(out)
 }
@@ -656,9 +781,10 @@ pub fn layer_mods<'db>(db: &'db dyn Db, fit: FitIn, l: LKey<'db>) -> Arc<LayerMa
     let ds = db.ds();
     let c = db.consts();
     let ctx = fit.ctx(db);
+    let core = fit.core(db);
     let prev = layer - 1;
     let attrs = c.armor_res;
-    let ship = ctx.ship;
+    let ship = core.ship;
     let mut res: Vec<f64> = attrs.iter().map(|&a| value(db, fit, mo, a, prev)).collect();
     if !ctx.rah_disable {
         let pattern = [ctx.pattern[0].0, ctx.pattern[1].0, ctx.pattern[2].0, ctx.pattern[3].0];
@@ -719,8 +845,23 @@ pub fn has(db: &dyn Db, fit: FitIn, item: u32, attr: u32) -> bool {
     it.spec(db).base(attr).is_some() || item_mods(db, fit, it).contains_key(&attr)
 }
 
+/// Evaluated attribute. Fast path: an attribute without modifiers, caps or rounding is its base value, so no
+/// memoised query (and no interned key) is created for it; the caller then depends on `item_mods` + the spec.
 #[inline]
 pub fn value(db: &dyn Db, fit: FitIn, item: u32, attr: u32, layer: u32) -> f64 {
+    let it = fit.slots(db)[item as usize];
+    if !item_mods(db, fit, it).contains_key(&attr) && !db.consts().special(attr) {
+        let mut plain = true;
+        for l in 1..=layer {
+            if layer_mods(db, fit, LKey::new(db, l)).contains_key(&(item, attr)) {
+                plain = false;
+                break;
+            }
+        }
+        if plain {
+            return it.spec(db).base(attr).unwrap_or_else(|| db.ds().attr_default(attr));
+        }
+    }
     attr_value(db, fit, AKey::new(db, item, attr, layer)).0
 }
 

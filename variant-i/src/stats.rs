@@ -1,6 +1,6 @@
 //! Fit statistics on top of the dogma attribute queries.
 //! Derived from EX-CT/eve-dogma-rs src/stats.rs (LGPL-3.0-or-later); adapted to the salsa engine facade.
-use crate::capsim::{self, Drain};
+use crate::capsim::Drain;
 use crate::session::Fit;
 use crate::spec::Kind;
 use crate::request::{FitRequest, Resists, Slot, Spool, SpoolType, State};
@@ -116,19 +116,24 @@ fn round6(v: f64) -> f64 {
 }
 
 /// Recursively round floats for stable, readable output.
-fn tidy(v: Value) -> Value {
+fn tidy(mut v: Value) -> Value {
+    tidy_mut(&mut v);
+    v
+}
+
+/// in-place version (no tree rebuild)
+fn tidy_mut(v: &mut Value) {
     match v {
         Value::Number(n) => {
-            if let Some(f) = n.as_f64() {
-                if n.is_f64() {
-                    return json!(round6(f));
+            if n.is_f64() {
+                if let Some(f) = n.as_f64() {
+                    *v = json!(round6(f));
                 }
             }
-            Value::Number(n)
         }
-        Value::Array(a) => Value::Array(a.into_iter().map(tidy).collect()),
-        Value::Object(o) => Value::Object(o.into_iter().map(|(k, v)| (k, tidy(v))).collect()),
-        x => x,
+        Value::Array(a) => a.iter_mut().for_each(tidy_mut),
+        Value::Object(o) => o.values_mut().for_each(tidy_mut),
+        _ => {}
     }
 }
 
@@ -386,7 +391,9 @@ impl<'a> Fit<'a> {
             let dps = v.scale(1000.0 / cyc);
             d_vol.add(&v);
             d_dps.add(&dps);
-            drone_out.push(json!({"drone_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "count": n, "volley": v.json(), "dps": dps.json()}));
+            drone_out.push(json!({"drone_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "count": n, "volley": v.json(), "dps": dps.json(),
+                "optimal_m": g(i, "maxRange"), "falloff_m": g(i, "falloff"), "tracking": g(i, "trackingSpeed"),
+                "max_velocity": g(i, "maxVelocity"), "signature_radius": g(i, "signatureRadius")}));
         }
         let mut f_vol = Dmg::default();
         let mut f_dps = Dmg::default();
@@ -426,7 +433,8 @@ impl<'a> Fit<'a> {
             if fv.total() > 0.0 {
                 f_vol.add(&fv);
                 f_dps.add(&fd);
-                fighter_out.push(json!({"fighter_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "squadron_size": n, "volley": fv.json(), "dps": fd.json()}));
+                fighter_out.push(json!({"fighter_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "squadron_size": n, "volley": fv.json(), "dps": fd.json(),
+                    "max_velocity": g(i, "maxVelocity"), "signature_radius": g(i, "signatureRadius")}));
             }
         }
         let mut t_vol = w_vol;
@@ -516,7 +524,7 @@ impl<'a> Fit<'a> {
         }
         let shield_rr_s = g(ship, "shieldRechargeRate") / 1000.0;
         let passive = if shield_rr_s > 0.0 { 10.0 / shield_rr_s * 0.5 * 0.5 * hp_s } else { 0.0 };
-        let defense = json!({
+        let mut defense = json!({
             "hp": {"shield": hp_s, "armor": hp_a, "hull": hp_h, "total": hp_s + hp_a + hp_h},
             "resonance": {"shield": res_json(rs), "armor": res_json(ra), "hull": res_json(rh)},
             "ehp": {"shield": e_s, "armor": e_a, "hull": e_h, "total": e_s + e_a + e_h},
@@ -556,7 +564,8 @@ impl<'a> Fit<'a> {
                 row["cycle_time_ms"] = json!(cyc_raw);
             }
             if active(i) && cap_need != 0.0 && full > 0.0 {
-                let avg = self.avg_cycle_ms(i, &id, factor_reload);
+                // Pyfa forces reload into capacitor boosters' average cycle (module.forceReload)
+                let avg = self.avg_cycle_ms(i, &id, factor_reload || is_inj);
                 let use_ = if avg > 0.0 { cap_need / (avg / 1000.0) } else { 0.0 };
                 if use_ > 0.0 { cap_used += use_ } else { cap_added -= use_ }
                 row["cap_use_gj_s"] = json!(use_);
@@ -585,6 +594,7 @@ impl<'a> Fit<'a> {
                 }
                 let dur = self.get(item, duration);
                 if need != 0.0 && dur > 0.0 {
+                    if need > 0.0 { cap_used += need / (dur.trunc() / 1000.0) } else { cap_added -= need / (dur.trunc() / 1000.0) }
                     drains.push(Drain { duration: dur.trunc(), cap_need: need, clip_size: 0, reload_ms: 0.0, is_injector: false, disable_stagger: false });
                 }
             }
@@ -596,7 +606,7 @@ impl<'a> Fit<'a> {
             capj["stable_percent"] = json!(100.0);
         } else {
             let o = &req.options.cap_sim;
-            let r = capsim::simulate(cap, rr, &drains, 1.0, o.reload || factor_reload, true, o.max_time_s.unwrap_or(6.0 * 3600.0) * 1000.0);
+            let r = self.cap_sim(cap, rr, &drains, 1.0, o.reload || factor_reload, true, o.max_time_s.unwrap_or(6.0 * 3600.0) * 1000.0);
             let st = (r.stable_low + r.stable_high) / 2.0;
             capj["stable"] = json!(r.stable && st > 0.0);
             if r.stable && st > 0.0 {
@@ -606,6 +616,92 @@ impl<'a> Fit<'a> {
             }
             capj["eve_stable_percent"] = json!(r.eve_stable * 100.0);
             capj["sim_iterations"] = json!(r.iterations);
+        }
+
+        // ---------------- sustainable tank (Pyfa Fit.sustainableTank, eos LGPL): when the capacitor is not
+        // stable (or reload is factored), local cap-using repairers only run as far as peak recharge allows.
+        {
+            let stable_now = capj["stable"].as_bool().unwrap_or(true);
+            let mut sus = [shield_rep, armor_rep, hull_rep];
+            if !stable_now || factor_reload {
+                let grp_of = |i: usize| ds.groups.get(&self.items[i].group).map(|g| g.name.as_str()).unwrap_or("");
+                let spec = |gname: &str| -> Option<(usize, &'static str)> {
+                    match gname {
+                        "Shield Booster" | "Ancillary Shield Booster" => Some((0, "shieldBonus")),
+                        "Armor Repair Unit" | "Ancillary Armor Repairer" => Some((1, "armorDamageAmount")),
+                        "Hull Repair Unit" => Some((2, "structureDamageAmount")),
+                        _ => None,
+                    }
+                };
+                let mut adj = [0.0f64; 3];
+                let mut used = cap_used;
+                let mut reps: Vec<(usize, usize, &'static str, f64)> = Vec::new();
+                for layer in 0..3 {
+                    for &i in &modules {
+                        if !active(i) {
+                            continue;
+                        }
+                        let gname = grp_of(i);
+                        let Some((l, attr)) = spec(gname) else { continue };
+                        if l != layer {
+                            continue;
+                        }
+                        let cap_need = self.get(i, id.cap_need);
+                        let avg = self.avg_cycle_ms(i, &id, factor_reload);
+                        let cap_use = if cap_need != 0.0 && avg > 0.0 { cap_need / (avg / 1000.0) } else { 0.0 };
+                        let cyc = self.raw_cycle_ms(i, &id);
+                        if cyc <= 0.0 {
+                            continue;
+                        }
+                        let amount = g(i, attr);
+                        let charge = self.items[i].charge;
+                        let paste = charge.map(|c| ds.types[&self.items[c].type_id].name == "Nanite Repair Paste").unwrap_or(false);
+                        if cap_use != 0.0 {
+                            used -= cap_use;
+                            let mult = if paste { let m = g(i, "chargedArmorDamageMultiplier"); if m == 0.0 { 1.0 } else { m } } else { 1.0 };
+                            adj[l] -= amount * mult / (cyc / 1000.0);
+                            reps.push((i, l, attr, cap_use));
+                        } else if gname == "Ancillary Shield Booster" {
+                            let reload = if factor_reload && charge.is_some() { self.get(i, id.reload) } else { 0.0 };
+                            let shots = self.num_shots(i, &id).max(1) as f64;
+                            let off = reload / (shots * cyc + reload);
+                            adj[l] -= amount * off / (cyc / 1000.0);
+                        }
+                    }
+                }
+                let eff = |i: usize, attr: &str| {
+                    let m = g(i, "chargedArmorDamageMultiplier");
+                    g(i, attr) * if m == 0.0 { 1.0 } else { m } / self.get(i, id.cap_need)
+                };
+                reps.sort_by(|a, b| eff(b.0, b.2).partial_cmp(&eff(a.0, a.2)).unwrap_or(std::cmp::Ordering::Equal));
+                let total_peak = peak + cap_added;
+                for (i, l, attr, cap_use) in reps {
+                    if used > total_peak {
+                        break;
+                    }
+                    let charge = self.items[i].charge;
+                    let reload = if factor_reload && charge.is_some() { self.get(i, id.reload) } else { 0.0 };
+                    let cyc = self.raw_cycle_ms(i, &id);
+                    let sustain = ((total_peak - used) / cap_use).min(1.0);
+                    let amount = g(i, attr);
+                    if charge.is_none() {
+                        adj[l] += sustain * amount / (cyc / 1000.0);
+                    } else {
+                        let paste = ds.types[&self.items[charge.unwrap()].type_id].name == "Nanite Repair Paste";
+                        let mult = if paste { let m = g(i, "chargedArmorDamageMultiplier"); if m == 0.0 { 1.0 } else { m } } else { 1.0 };
+                        let shots = self.num_shots(i, &id).max(1) as f64;
+                        let on = shots * cyc / (shots * cyc + reload);
+                        adj[l] += sustain * amount * on * mult / (cyc / 1000.0);
+                    }
+                    used += cap_use;
+                }
+                for l in 0..3 {
+                    sus[l] += adj[l];
+                }
+            }
+            defense["tank"]["sustained"] = json!({"passive_shield": passive, "shield_repair": sus[0], "armor_repair": sus[1], "hull_repair": sus[2]});
+            defense["tank"]["sustained_effective"] = json!({"passive_shield": effectivify(passive, rs), "shield_repair": effectivify(sus[0], rs),
+                "armor_repair": effectivify(sus[1], ra), "hull_repair": effectivify(sus[2], rh)});
         }
 
         // ---------------- navigation
@@ -634,6 +730,40 @@ impl<'a> Fit<'a> {
                 best = (n, v);
             }
         }
+        // ECM jam chance (Pyfa Fit.jamChance): strengths vs the strongest sensor type (ties -> multispectral -> 0)
+        let jam = {
+            let mut max_s = -1.0f64;
+            let mut ty: Option<&str> = None;
+            for t in ["Magnetometric", "Ladar", "Radar", "Gravimetric"] {
+                let v = g(ship, &format!("scan{t}Strength"));
+                if v > max_s {
+                    max_s = v;
+                    ty = Some(t);
+                } else if v == max_s {
+                    ty = None;
+                }
+            }
+            let mut retain = 1.0f64;
+            let mut any = false;
+            for ps in &self.proj_special {
+                if let crate::session::ProjSpecial::Ecm { item, fighter, factor, resist } = *ps {
+                    any = true;
+                    let Some(t) = ty else { continue };
+                    let attr = if fighter { format!("fighterAbilityECMStrength{t}") } else { format!("scan{t}StrengthBonus") };
+                    let mut st = g(item, &attr) * factor;
+                    if resist != 0 {
+                        let r = self.get(ship, resist);
+                        if r != 0.0 {
+                            st *= r;
+                        }
+                    }
+                    if max_s > 0.0 {
+                        retain *= 1.0 - (st / max_s).min(1.0);
+                    }
+                }
+            }
+            if any { Some((1.0 - retain) * 100.0) } else { None }
+        };
         let scan_res = g(ship, "scanResolution");
         let lt = |s: f64| lock_time(scan_res, s);
         let ship_targets = g(ship, "maxLockedTargets");
@@ -641,7 +771,7 @@ impl<'a> Fit<'a> {
         let targeting = json!({
             "max_targets": ship_targets.min(char_targets.max(0.0)),
             "max_range_m": g(ship, "maxTargetRange"), "scan_resolution": scan_res,
-            "sensor_strength": best.1, "sensor_type": best.0,
+            "sensor_strength": best.1, "sensor_type": best.0, "jam_chance_percent": jam.unwrap_or(0.0),
             "probe_size": if best.1 > 0.0 { Some((sig / best.1).max(1.08)) } else { None },
             "lock_time_s": {"sig_25m": lt(25.0), "sig_40m": lt(40.0), "sig_125m": lt(125.0), "sig_400m": lt(400.0), "sig_target_profile": tp.signature_radius.and_then(lt)},
         });
@@ -738,8 +868,9 @@ impl<'a> Fit<'a> {
             push("LAUNCHER_HARDPOINTS", format!("launchers {l} > hardpoints {}", g(ship, "launcherSlotsLeft")), None);
         }
         let ship_t = &ds.types[&self.items[ship].type_id];
-        let groups_attrs: Vec<u32> = (1..=20).map(|k| ds.attr_id(&format!("canFitShipGroup{k:02}"))).filter(|x| *x != 0).collect();
-        let types_attrs: Vec<u32> = (1..=11).map(|k| ds.attr_id(&format!("canFitShipType{k}"))).filter(|x| *x != 0).collect();
+        let vc = &crate::engine::Db::consts(self.db).v;
+        let groups_attrs = &vc.can_fit_groups;
+        let types_attrs = &vc.can_fit_types;
         let mut fitted_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut fitted_type: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut active_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
@@ -792,7 +923,7 @@ impl<'a> Fit<'a> {
             }
             if let Some(c) = it.charge {
                 let ct = &ds.types[&self.items[c].type_id];
-                let cg: Vec<u32> = (1..=5).filter_map(|k| mt.attr(ds.attr_id(&format!("chargeGroup{k}")))).map(|v| v as u32).filter(|v| *v != 0).collect();
+                let cg: Vec<u32> = vc.charge_groups.iter().filter_map(|a| mt.attr(*a)).map(|v| v as u32).filter(|v| *v != 0).collect();
                 if !cg.contains(&ct.group) {
                     push("CHARGE_GROUP", format!("{} cannot be loaded into {name}", ct.name), idx);
                 }
@@ -811,22 +942,20 @@ impl<'a> Fit<'a> {
         // skills
         let mut have: rustc_hash::FxHashMap<u32, f64> = Default::default();
         for it in self.items.iter().filter(|i| i.kind == Kind::Skill) {
-            have.insert(it.type_id, it.skill_level);
+            have.insert(it.type_id, it.base(crate::spec::ATTR_SKILL_LEVEL).unwrap_or(0.0));
         }
-        let lvl_attrs = ["requiredSkill1Level", "requiredSkill2Level", "requiredSkill3Level", "requiredSkill4Level", "requiredSkill5Level", "requiredSkill6Level"];
-        let skill_attrs = ["requiredSkill1", "requiredSkill2", "requiredSkill3", "requiredSkill4", "requiredSkill5", "requiredSkill6"];
         let mut missing: Vec<(u32, f64, u32)> = Vec::new();
         for it in &self.items {
             if !matches!(it.kind, Kind::Ship | Kind::Module | Kind::Charge | Kind::Drone | Kind::Fighter | Kind::Implant | Kind::Booster) {
                 continue;
             }
             let t = &ds.types[&it.type_id];
-            for (sa, la) in skill_attrs.iter().zip(lvl_attrs.iter()) {
-                let s = t.attr(ds.attr_id(sa)).unwrap_or(0.0) as u32;
+            for (sa, la) in vc.req_skill.iter().zip(vc.req_level.iter()) {
+                let s = t.attr(*sa).unwrap_or(0.0) as u32;
                 if s == 0 {
                     continue;
                 }
-                let need = t.attr(ds.attr_id(la)).unwrap_or(1.0);
+                let need = t.attr(*la).unwrap_or(1.0);
                 if *have.get(&s).unwrap_or(&0.0) < need && !missing.iter().any(|m| m.0 == s && m.1 >= need) {
                     missing.push((s, need, it.type_id));
                 }

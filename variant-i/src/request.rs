@@ -144,6 +144,8 @@ pub struct Projected {
     pub drone: Option<DroneReq>,
     #[serde(default)]
     pub fit: Option<Box<FitRequest>>,
+    #[serde(default)]
+    pub fighter: Option<FighterReq>,
     #[serde(default = "one")]
     pub amount: u32,
     #[serde(default)]
@@ -205,7 +207,7 @@ pub struct CapSimOpts {
     pub max_time_s: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Options {
     /// Treat local nosferatu as cap income (default) - set true to ignore it (target without cap).
     #[serde(default)]
@@ -224,6 +226,22 @@ pub struct Options {
     pub validate: bool,
     #[serde(default)]
     pub cap_sim: CapSimOpts,
+}
+
+/// `options` missing entirely behaves like `{}`: validate defaults to true (contract v1.4.1).
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            nos_no_target_cap: false,
+            factor_reload: false,
+            default_spool: None,
+            rah: None,
+            include_attributes: None,
+            sources: false,
+            validate: true,
+            cap_sim: CapSimOpts::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
