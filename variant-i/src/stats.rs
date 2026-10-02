@@ -89,6 +89,8 @@ struct Ids {
     charge_rate: u32,
     dmg_mult: u32,
     dmg: [u32; 4],
+    /// extra duration attributes Pyfa folds into a cycle (0 = absent from the dataset)
+    dur_extra: [u32; 5],
 }
 
 fn ids(f: &Fit) -> Ids {
@@ -108,10 +110,17 @@ fn ids(f: &Fit) -> Ids {
         charge_rate: a("chargeRate"),
         dmg_mult: a("damageMultiplier"),
         dmg: [a("emDamage"), a("thermalDamage"), a("kineticDamage"), a("explosiveDamage")],
+        dur_extra: [
+            a("durationHighisGood"),
+            a("durationSensorDampeningBurstProjector"),
+            a("durationTargetIlluminationBurstProjector"),
+            a("durationECMJammerBurstProjector"),
+            a("durationWeaponDisruptionBurstProjector"),
+        ],
     }
 }
 
-fn round6(v: f64) -> f64 {
+pub(crate) fn round6(v: f64) -> f64 {
     if v.is_finite() { (v * 1e6).round() / 1e6 } else { v }
 }
 
@@ -138,8 +147,15 @@ pub fn py_round2(v: f64) -> f64 {
     format!("{v:.2}").parse().unwrap_or(v)
 }
 
+thread_local! {
+    /// set by the JSON-string entry points, which round floats while serialising instead
+    pub(crate) static SKIP_TIDY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn tidy(mut v: Value) -> Value {
-    tidy_mut(&mut v);
+    if !SKIP_TIDY.with(|c| c.get()) {
+        tidy_mut(&mut v);
+    }
     v
 }
 
@@ -166,14 +182,7 @@ impl<'a> Fit<'a> {
 
     fn raw_cycle_ms(&self, i: usize, id: &Ids) -> f64 {
         let mut v: f64 = self.get(i, id.speed).max(self.get(i, id.duration));
-        for n in [
-            "durationHighisGood",
-            "durationSensorDampeningBurstProjector",
-            "durationTargetIlluminationBurstProjector",
-            "durationECMJammerBurstProjector",
-            "durationWeaponDisruptionBurstProjector",
-        ] {
-            let a = self.ds.attr_id(n);
+        for a in id.dur_extra {
             if a != 0 {
                 v = v.max(self.get(i, a));
             }
@@ -901,6 +910,8 @@ impl<'a> Fit<'a> {
         let mut fitted_type: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut active_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut online_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
+        let (a_rig, a_csize) = (ds.attr_id("rigSize"), ds.attr_id("chargeSize"));
+        let (a_mgf, a_mtf, a_mgo, a_mga) = (ds.attr_id("maxGroupFitted"), ds.attr_id("maxTypeFitted"), ds.attr_id("maxGroupOnline"), ds.attr_id("maxGroupActive"));
         for &i in &modules {
             let it = &self.items[i];
             let idx = it.req_index;
@@ -915,7 +926,7 @@ impl<'a> Fit<'a> {
                 push("SHIP_RESTRICTION", format!("{name} cannot be fitted to {}", ship_t.name), idx);
             }
             if it.slot == Some(Slot::Rig) {
-                let rs = mt.attr(ds.attr_id("rigSize")).unwrap_or(0.0);
+                let rs = mt.attr(a_rig).unwrap_or(0.0);
                 let srs = g(ship, "rigSize");
                 if rs != 0.0 && rs != srs {
                     push("RIG_SIZE", format!("{name} rig size {rs} != ship rig size {srs}"), idx);
@@ -929,22 +940,21 @@ impl<'a> Fit<'a> {
             if it.state >= State::Active {
                 *active_group.entry(it.group).or_default() += 1;
             }
-            let check = |attr: &str, map: &rustc_hash::FxHashMap<u32, u32>, key: u32| -> Option<(f64, u32)> {
-                let a = ds.attr_id(attr);
+            let check = |a: u32, map: &rustc_hash::FxHashMap<u32, u32>, key: u32| -> Option<(f64, u32)> {
                 let lim = mt.attr(a)?;
                 let n = *map.get(&key).unwrap_or(&0);
                 if lim > 0.0 && n as f64 > lim { Some((lim, n)) } else { None }
             };
-            if let Some((lim, n)) = check("maxGroupFitted", &fitted_group, it.group) {
+            if let Some((lim, n)) = check(a_mgf, &fitted_group, it.group) {
                 push("MAX_GROUP_FITTED", format!("{name}: {n} fitted of group, max {lim}"), idx);
             }
-            if let Some((lim, n)) = check("maxTypeFitted", &fitted_type, it.type_id) {
+            if let Some((lim, n)) = check(a_mtf, &fitted_type, it.type_id) {
                 push("MAX_TYPE_FITTED", format!("{name}: {n} fitted, max {lim}"), idx);
             }
-            if let Some((lim, n)) = check("maxGroupOnline", &online_group, it.group) {
+            if let Some((lim, n)) = check(a_mgo, &online_group, it.group) {
                 push("MAX_GROUP_ONLINE", format!("{name}: {n} online of group, max {lim}"), idx);
             }
-            if let Some((lim, n)) = check("maxGroupActive", &active_group, it.group) {
+            if let Some((lim, n)) = check(a_mga, &active_group, it.group) {
                 push("MAX_GROUP_ACTIVE", format!("{name}: {n} active of group, max {lim}"), idx);
             }
             if let Some(c) = it.charge {
@@ -953,8 +963,8 @@ impl<'a> Fit<'a> {
                 if !cg.contains(&ct.group) {
                     push("CHARGE_GROUP", format!("{} cannot be loaded into {name}", ct.name), idx);
                 }
-                let ms = mt.attr(ds.attr_id("chargeSize"));
-                let cs = ct.attr(ds.attr_id("chargeSize"));
+                let ms = mt.attr(a_csize);
+                let cs = ct.attr(a_csize);
                 if let (Some(a), Some(b)) = (ms, cs) {
                     if a != b {
                         push("CHARGE_SIZE", format!("{} size {b} != launcher size {a}", ct.name), idx);
@@ -966,7 +976,7 @@ impl<'a> Fit<'a> {
             }
         }
         // skills
-        let mut have: rustc_hash::FxHashMap<u32, f64> = Default::default();
+        let mut have: rustc_hash::FxHashMap<u32, f64> = rustc_hash::FxHashMap::with_capacity_and_hasher(self.items.len(), Default::default());
         for it in self.items.iter().filter(|i| i.kind == Kind::Skill) {
             have.insert(it.type_id, it.base(crate::spec::ATTR_SKILL_LEVEL).unwrap_or(0.0));
         }

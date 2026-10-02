@@ -215,6 +215,8 @@ fn main() {
         "batch" => {
             let ds = load(dataset);
             let mut ws = Workspace::new(ds, pool);
+            // batch output is block-buffered (one write per 256 KiB, flushed at EOF), not line-buffered
+            let mut bout = std::io::BufWriter::with_capacity(1 << 18, &mut out);
             for line in std::io::stdin().lock().lines() {
                 let line = line.unwrap();
                 if line.trim().is_empty() {
@@ -223,8 +225,12 @@ fn main() {
                 if fresh {
                     ws.reset();
                 }
-                writeln!(out, "{}", eve_dogma_salsa::calc_json_ws(&mut ws, &line)).unwrap();
+                let r = eve_dogma_salsa::calc_json_ws(&mut ws, &line);
+                bout.write_all(r.as_bytes()).unwrap();
+                bout.write_all(b"\n").unwrap();
             }
+            bout.flush().unwrap();
+            drop(bout);
             if std::env::var_os("EVE_I_PROF").is_some() {
                 eprintln!("{}", eve_dogma_salsa::engine::qcount_report());
             }

@@ -114,6 +114,8 @@ pub struct Consts {
     pub rounded: Vec<u32>,
     /// sorted ids of attributes with min/max caps
     pub capped: Vec<u32>,
+    /// bitmap of `capped` + `rounded` (attribute id -> bit), for the hot `special` test
+    pub special_bits: Vec<u64>,
     pub v: ValidateIds,
 }
 
@@ -129,14 +131,16 @@ impl Consts {
     /// attribute with a min/max cap or output rounding (always evaluated through `attr_value`)
     #[inline]
     pub fn special(&self, attr: u32) -> bool {
-        self.capped.binary_search(&attr).is_ok() || self.rounded.contains(&attr)
+        let w = (attr >> 6) as usize;
+        w < self.special_bits.len() && self.special_bits[w] & (1u64 << (attr & 63)) != 0
     }
 
     pub fn new(ds: &Dataset) -> Consts {
         let a = |n: &str| ds.attr_id(n);
         let e = |n: &str| ds.effect_id(n);
         let w = |k: u32| (a(&format!("warfareBuff{k}ID")), a(&format!("warfareBuff{k}Value")));
-        Consts {
+        let mut c = Consts {
+            special_bits: Vec::new(),
             e_ab: e("moduleBonusAfterburner"),
             e_mwd: e("moduleBonusMicrowarpdrive"),
             e_slot: e("slotModifier"),
@@ -175,7 +179,14 @@ impl Consts {
                 req_skill: [a("requiredSkill1"), a("requiredSkill2"), a("requiredSkill3"), a("requiredSkill4"), a("requiredSkill5"), a("requiredSkill6")],
                 req_level: [a("requiredSkill1Level"), a("requiredSkill2Level"), a("requiredSkill3Level"), a("requiredSkill4Level"), a("requiredSkill5Level"), a("requiredSkill6Level")],
             },
+        };
+        let max = c.capped.iter().chain(c.rounded.iter()).copied().max().unwrap_or(0) as usize;
+        let mut bits = vec![0u64; max / 64 + 1];
+        for &x in c.capped.iter().chain(c.rounded.iter()) {
+            bits[x as usize / 64] |= 1u64 << (x % 64);
         }
+        c.special_bits = bits;
+        c
     }
 }
 
