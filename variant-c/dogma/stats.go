@@ -804,12 +804,12 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 	shipT := f.Items[ship].T
 	var groupAttrs, typeAttrs []uint32
 	for k := 1; k <= 20; k++ {
-		if a := ds.AttrID(fmt.Sprintf("canFitShipGroup%02d", k)); a != 0 {
+		if a := ds.AttrID(canFitGroupNames[k-1]); a != 0 {
 			groupAttrs = append(groupAttrs, a)
 		}
 	}
 	for k := 1; k <= 11; k++ {
-		if a := ds.AttrID(fmt.Sprintf("canFitShipType%d", k)); a != 0 {
+		if a := ds.AttrID(canFitTypeNames[k-1]); a != 0 {
 			typeAttrs = append(typeAttrs, a)
 		}
 	}
@@ -875,7 +875,7 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 			ct := f.Items[it.Charge].T
 			var cg []uint32
 			for k := 1; k <= 5; k++ {
-				if x, ok := mt.Attr(ds.AttrID(fmt.Sprintf("chargeGroup%d", k))); ok && uint32(x) != 0 {
+				if x, ok := mt.Attr(ds.AttrID(chargeGroupNames[k-1])); ok && uint32(x) != 0 {
 					cg = append(cg, uint32(x))
 				}
 			}
@@ -1063,3 +1063,16 @@ func (f *Fit) sustainableTank(tank obj, stable, factorReload bool, modules []int
 	tank["sustained_effective"] = obj{"passive_shield": eff(passive, 0), "shield_repair": eff(sus[0], 0),
 		"armor_repair": eff(sus[1], 1), "hull_repair": eff(sus[2], 2)}
 }
+
+var canFitGroupNames, canFitTypeNames, chargeGroupNames = func() (g, t, c []string) {
+	for k := 1; k <= 20; k++ {
+		g = append(g, fmt.Sprintf("canFitShipGroup%02d", k))
+	}
+	for k := 1; k <= 11; k++ {
+		t = append(t, fmt.Sprintf("canFitShipType%d", k))
+	}
+	for k := 1; k <= 5; k++ {
+		c = append(c, fmt.Sprintf("chargeGroup%d", k))
+	}
+	return
+}()

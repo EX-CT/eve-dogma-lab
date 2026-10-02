@@ -14,7 +14,7 @@ func (ds *Dataset) skillTemplate() [][]amod {
 		// placeholders for ship and character (never sources here)
 		f.Items = append(f.Items, Item{T: ch, Parent: -1, Charge: -1, ReqIndex: -1}, Item{T: ch, Parent: -1, Charge: -1, ReqIndex: -1})
 		for _, s := range ds.PublishedSkills {
-			idx, err := f.newItem(s, KSkill, LChar, "")
+			idx, err := f.newItem(s, KSkill, LChar, ipath{"", -1, ""})
 			if err != nil {
 				return
 			}

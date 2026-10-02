@@ -75,6 +75,14 @@ func (e *jsonEnc) value(v any, inTree bool) {
 			e.value(el, true)
 		}
 		e.b = append(e.b, ']')
+	case Slot:
+		if x == SlotNone || int(x) >= len(slotNames) {
+			e.b = append(e.b, "null"...)
+		} else {
+			e.b = appendJSONString(e.b, slotNames[x])
+		}
+	case State:
+		e.b = appendJSONString(e.b, stateNames[x])
 	case json.RawMessage:
 		if len(x) == 0 {
 			e.b = append(e.b, "null"...)

@@ -1,6 +1,7 @@
 package dogma
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -21,7 +22,9 @@ func (s State) String() string               { return stateNames[s] }
 func (s State) MarshalJSON() ([]byte, error) { return json.Marshal(stateNames[s]) }
 func (s *State) UnmarshalJSON(b []byte) error {
 	var v string
-	if err := json.Unmarshal(b, &v); err != nil {
+	if n := len(b); n >= 2 && b[0] == '"' && b[n-1] == '"' && bytes.IndexByte(b[1:n-1], '\\') < 0 {
+		v = string(b[1 : n-1]) // fast path: plain string without escapes
+	} else if err := json.Unmarshal(b, &v); err != nil {
 		return err
 	}
 	for i, n := range stateNames {

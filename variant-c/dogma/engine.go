@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -206,10 +207,10 @@ func stateOK(cat uint8, s State) bool {
 
 func nodeKey(item int, attr uint32) uint64 { return uint64(item)<<32 | uint64(attr) }
 
-func (f *Fit) newItem(typeID uint32, kind Kind, loc Loc, path string) (int, error) {
+func (f *Fit) newItem(typeID uint32, kind Kind, loc Loc, path ipath) (int, error) {
 	t := f.DS.typ(typeID)
 	if t == nil {
-		return 0, &EngineError{"UNKNOWN_TYPE", fmt.Sprintf("unknown type_id %d", typeID), path}
+		return 0, &EngineError{"UNKNOWN_TYPE", fmt.Sprintf("unknown type_id %d", typeID), path.String()}
 	}
 	owned := false
 	switch kind {
@@ -283,7 +284,7 @@ func (f *Fit) applyMutation(idx int, m *Mutation) {
 	}
 }
 
-func (f *Fit) addModule(i int, m *ModuleReq, path string) error {
+func (f *Fit) addModule(i int, m *ModuleReq, path ipath) error {
 	idx, err := f.newItem(m.TypeID, KModule, LShip, path)
 	if err != nil {
 		return err
@@ -307,7 +308,7 @@ func (f *Fit) addModule(i int, m *ModuleReq, path string) error {
 		f.applyMutation(idx, m.Mutation)
 	}
 	if m.ChargeTypeID != nil {
-		c, err := f.newItem(*m.ChargeTypeID, KCharge, LShip, path+"/charge_type_id")
+		c, err := f.newItem(*m.ChargeTypeID, KCharge, LShip, path.with("/charge_type_id"))
 		if err != nil {
 			return err
 		}
@@ -323,13 +324,13 @@ func (f *Fit) addModule(i int, m *ModuleReq, path string) error {
 func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 	nItems := 2 + len(ds.PublishedSkills) + 2*len(req.Modules) + len(req.Drones) + len(req.Fighters) + len(req.Implants) + len(req.Boosters) + 4
 	f := acquireFit(ds, nItems)
-	ship, err := f.newItem(req.Ship.TypeID, KShip, LShip, "/ship/type_id")
+	ship, err := f.newItem(req.Ship.TypeID, KShip, LShip, ipath{"/ship/type_id", -1, ""})
 	if err != nil {
 		return nil, err
 	}
 	f.Ship = ship
 	f.IsStructure = f.Items[ship].Category == 65
-	ch, err := f.newItem(1373, KChar, LChar, "/character")
+	ch, err := f.newItem(1373, KChar, LChar, ipath{"/character", -1, ""})
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +389,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		if l > 5 {
 			l = 5
 		}
-		idx, _ := f.newItem(s, KSkill, LChar, "/character/skills")
+		idx, _ := f.newItem(s, KSkill, LChar, ipath{"/character/skills", -1, ""})
 		lvIDs[k], lvVals[k] = attrSkillLevel, float64(l)
 		f.Items[idx].overlay = attrSet{lvIDs[k : k+1 : k+1], lvVals[k : k+1 : k+1]}
 		f.Items[idx].Owned = false
@@ -410,20 +411,20 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		}
 	}
 	if modeID != nil {
-		idx, err := f.newItem(*modeID, KMode, LNowhere, "/ship/mode_type_id")
+		idx, err := f.newItem(*modeID, KMode, LNowhere, ipath{"/ship/mode_type_id", -1, ""})
 		if err != nil {
 			return nil, err
 		}
 		f.Items[idx].Owned = false
 	}
 	for i := range req.Modules {
-		if err := f.addModule(i, &req.Modules[i], fmt.Sprintf("/modules/%d", i)); err != nil {
+		if err := f.addModule(i, &req.Modules[i], ipath{"/modules/", i, ""}); err != nil {
 			return nil, err
 		}
 	}
 	for i := range req.Drones {
 		d := &req.Drones[i]
-		idx, err := f.newItem(d.TypeID, KDrone, LSpace, fmt.Sprintf("/drones/%d", i))
+		idx, err := f.newItem(d.TypeID, KDrone, LSpace, ipath{"/drones/", i, ""})
 		if err != nil {
 			return nil, err
 		}
@@ -444,7 +445,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 	sqAttr := ds.AttrID("fighterSquadronMaxSize")
 	for i := range req.Fighters {
 		fr := &req.Fighters[i]
-		idx, err := f.newItem(fr.TypeID, KFighter, LSpace, fmt.Sprintf("/fighters/%d", i))
+		idx, err := f.newItem(fr.TypeID, KFighter, LSpace, ipath{"/fighters/", i, ""})
 		if err != nil {
 			return nil, err
 		}
@@ -474,7 +475,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		it.ReqIndex = i
 	}
 	for i, imp := range req.Implants {
-		idx, err := f.newItem(imp, KImplant, LChar, fmt.Sprintf("/implants/%d", i))
+		idx, err := f.newItem(imp, KImplant, LChar, ipath{"/implants/", i, ""})
 		if err != nil {
 			return nil, err
 		}
@@ -483,7 +484,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 	}
 	for i := range req.Boosters {
 		b := &req.Boosters[i]
-		idx, err := f.newItem(b.TypeID, KBooster, LChar, fmt.Sprintf("/boosters/%d", i))
+		idx, err := f.newItem(b.TypeID, KBooster, LChar, ipath{"/boosters/", i, ""})
 		if err != nil {
 			return nil, err
 		}
@@ -492,7 +493,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		f.Items[idx].ReqIndex = i
 	}
 	for i, e := range req.Environment.EffectTypeIDs {
-		idx, err := f.newItem(e, KBeacon, LNowhere, fmt.Sprintf("/environment/effect_type_ids/%d", i))
+		idx, err := f.newItem(e, KBeacon, LNowhere, ipath{"/environment/effect_type_ids/", i, ""})
 		if err != nil {
 			return nil, err
 		}
@@ -504,7 +505,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		case "module":
 			if p.Module != nil {
 				for k := uint32(0); k < max(p.Amount, 1); k++ {
-					idx, err := f.newItem(p.Module.TypeID, KProjected, LNowhere, fmt.Sprintf("/projected/%d", i))
+					idx, err := f.newItem(p.Module.TypeID, KProjected, LNowhere, ipath{"/projected/", i, ""})
 					if err != nil {
 						return nil, err
 					}
@@ -517,7 +518,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 					it.Distance = p.DistanceM
 					it.ReqIndex = i
 					if p.Module.ChargeTypeID != nil {
-						c, err := f.newItem(*p.Module.ChargeTypeID, KCharge, LNowhere, fmt.Sprintf("/projected/%d/module/charge_type_id", i))
+						c, err := f.newItem(*p.Module.ChargeTypeID, KCharge, LNowhere, ipath{"/projected/", i, "/module/charge_type_id"})
 						if err != nil {
 							return nil, err
 						}
@@ -530,7 +531,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		case "drone":
 			if p.Drone != nil {
 				for k := uint32(0); k < max(p.Amount, 1)*max(p.Drone.Quantity, 1); k++ {
-					idx, err := f.newItem(p.Drone.TypeID, KProjected, LNowhere, fmt.Sprintf("/projected/%d", i))
+					idx, err := f.newItem(p.Drone.TypeID, KProjected, LNowhere, ipath{"/projected/", i, ""})
 					if err != nil {
 						return nil, err
 					}
@@ -579,7 +580,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 				src.Release()
 				for _, z := range fr {
 					for k := uint32(0); k < z.copies*max(p.Amount, 1); k++ {
-						idx, err := f.newItem(z.typeID, KProjected, LNowhere, fmt.Sprintf("/projected/%d", i))
+						idx, err := f.newItem(z.typeID, KProjected, LNowhere, ipath{"/projected/", i, ""})
 						if err != nil {
 							return nil, err
 						}
@@ -1560,4 +1561,20 @@ func (f *Fit) AttrIDs(i int) []uint32 {
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a] < out[b] })
 	return out
+}
+
+// ipath is a JSON pointer into the request, formatted only when an error needs it.
+type ipath struct {
+	prefix string
+	i      int // -1 = none
+	suffix string
+}
+
+func (p ipath) with(s string) ipath { p.suffix += s; return p }
+
+func (p ipath) String() string {
+	if p.i < 0 {
+		return p.prefix + p.suffix
+	}
+	return p.prefix + strconv.Itoa(p.i) + p.suffix
 }
