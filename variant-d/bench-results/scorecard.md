@@ -1,6 +1,6 @@
 # Scorecard: D
 
-- command: `node dist-cli/eve-dogma-ts.cjs calc --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`, batch: `node dist-cli/eve-dogma-ts.cjs batch --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`
+- command: `node --snapshot-blob dist-cli/eve-dogma-ts.blob calc --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`, batch: `node --snapshot-blob dist-cli/eve-dogma-ts.blob batch --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`
 - cases fully correct: **326/326**
 - values correct: **21051/21051** (100.00 %)
 - engine errors: 0
@@ -18,8 +18,8 @@
 
 | perf | value |
 |---|---|
-| one process per case, median ms (cold start + calc) | 203.1 |
-| batch throughput (corpus x5) fits/s | 772 |
-| latency one fit (exct_rifter) ms/calc | 0.967 |
-| startup + one calc ms | 196.4 |
+| one process per case, median ms (cold start + calc) | 115.4 |
+| batch throughput (corpus x5) fits/s | 518 |
+| latency one fit (exct_rifter) ms/calc | 1.244 |
+| startup + one calc ms | 115.2 |
 | deterministic | True |
