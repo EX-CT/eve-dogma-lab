@@ -48,6 +48,7 @@ pub enum ItemKey {
     Booster(u32),
     Beacon(u32),
     Projected(u32, u32),
+    ProjCharge(u32, u32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -209,7 +210,10 @@ impl<'a> B<'a> {
 }
 
 /// Build the canonical item list for a request (same order as the reference engine registers modifiers).
-pub fn build(ds: &Dataset, req: &FitRequest) -> Result<Built, EngineError> {
+/// Frozen projected-fit item: (type id, copies, evaluated attribute values).
+pub type Frozen = Vec<(u32, u32, Vec<(u32, f64)>)>;
+
+pub fn build(ds: &Dataset, req: &FitRequest, proj_fit: &mut dyn FnMut(usize, &FitRequest) -> Result<Frozen, EngineError>) -> Result<Built, EngineError> {
     let mut b = B { ds, keys: Vec::with_capacity(600), items: Vec::with_capacity(600), attrs: Vec::with_capacity(600), warnings: Vec::new() };
     let ship = b.new_item(ItemKey::Ship, req.ship.type_id, Kind::Ship, Loc::Ship, "/ship/type_id")?;
     let is_structure = b.items[ship].category == 65;
@@ -334,6 +338,12 @@ pub fn build(ds: &Dataset, req: &FitRequest) -> Result<Built, EngineError> {
                         it.state = m.state.unwrap_or(State::Active);
                         it.distance = p.distance_m;
                         it.req_index = Some(i);
+                        if let Some(c) = m.charge_type_id {
+                            let cidx = b.new_item(ItemKey::ProjCharge(i as u32, k as u32), c, Kind::Charge, Loc::Nowhere, &format!("/projected/{i}/module/charge_type_id"))?;
+                            b.items[cidx].parent = Some(idx);
+                            b.items[cidx].owned = false;
+                            b.items[idx].charge = Some(cidx);
+                        }
                     }
                 }
             }
@@ -345,6 +355,34 @@ pub fn build(ds: &Dataset, req: &FitRequest) -> Result<Built, EngineError> {
                         it.owned = false;
                         it.state = State::Active;
                         it.distance = p.distance_m;
+                    }
+                }
+            }
+            "fit" => {
+                if let Some(src_req) = &p.fit {
+                    let mut sreq = (**src_req).clone();
+                    sreq.projected.clear();
+                    let frozen = match proj_fit(i, &sreq) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            b.warnings.push(format!("projected[{i}] fit: {e:?}"));
+                            continue;
+                        }
+                    };
+                    let mut k = 0u32;
+                    for (type_id, copies, vals) in frozen {
+                        for _ in 0..copies * p.amount.max(1) {
+                            let idx = b.new_item(ItemKey::Projected(i as u32, k), type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
+                            k += 1;
+                            let it = &mut b.items[idx];
+                            it.owned = false;
+                            it.state = State::Active;
+                            it.distance = p.distance_m;
+                            it.req_index = Some(i);
+                            for (a, v) in &vals {
+                                b.attrs[idx].insert(*a, *v);
+                            }
+                        }
                     }
                 }
             }

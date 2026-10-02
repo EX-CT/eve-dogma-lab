@@ -72,7 +72,8 @@ pub struct Ctx {
     pub is_structure: bool,
     /// aggregated explicit fleet buffs (id, value), sorted by id
     pub buffs: Vec<(u32, F)>,
-    pub explicit_ids: Vec<u32>,
+    /// (buff id, value) offered by fleet booster fits, in booster-fit order
+    pub booster_offers: Vec<(u32, F)>,
     pub rah_disable: bool,
     pub pattern: [F; 4],
 }
@@ -452,12 +453,26 @@ fn projected(db: &dyn Db, sp: &ItemSpec, i: u32, ctx: &Ctx, out: &mut Vec<Out>) 
             push(c.max_velocity, c.speed_factor, 6);
         } else if name.starts_with("remoteTargetPaint") || name == "structureModuleEffectTargetPainter" {
             push(c.sig, c.sig_bonus, 6);
-        } else if name.starts_with("remoteSensorDamp") || name == "structureModuleEffectRemoteSensorDampener" || name.starts_with("remoteSensorBoost") {
+        } else if name.starts_with("remoteSensorDamp") || name == "structureModuleEffectRemoteSensorDampener" {
             push(c.max_target_range, c.max_target_range_bonus, 6);
             push(c.scan_res, c.scan_res_bonus, 6);
+        } else if name.starts_with("remoteSensorBoost") {
+            push(c.max_target_range, c.max_target_range_bonus, 6);
+            push(c.scan_res, c.scan_res_bonus, 6);
+            for t in ["Gravimetric", "Ladar", "Magnetometric", "Radar"] {
+                push(ds.attr_id(&format!("scan{t}Strength")), ds.attr_id(&format!("scan{t}StrengthPercent")), 6);
+            }
         }
     }
 }
+
+pub const DAMAGE_EFFECTS: &[&str] = &["projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack",
+    "missileLaunchingForEntity", "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari",
+    "superWeaponGallente", "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching"];
+pub const PROJ_SPECIAL_EFFECTS: &[&str] = &["shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster", "shipModuleRemoteArmorRepairer",
+    "ShipModuleRemoteArmorMutadaptiveRepairer", "shipModuleAncillaryRemoteArmorRepairer", "shipModuleRemoteHullRepairer",
+    "npcEntityRemoteShieldBooster", "npcEntityRemoteArmorRepairer", "npcEntityRemoteHullRepairer", "shipModuleRemoteCapacitorTransmitter",
+    "energyNeutralizerFalloff", "energyNosferatuFalloff", "structureEnergyNeutralizerFalloff", "entityEnergyNeutralizerFalloff"];
 
 /// warnings that the reference emits during registration (projected effects not modelled)
 pub fn projected_warnings(ds: &Dataset, sp: &ItemSpec) -> Vec<String> {
@@ -477,7 +492,9 @@ pub fn projected_warnings(ds: &Dataset, sp: &ItemSpec) -> Vec<String> {
             || name == "structureModuleEffectTargetPainter"
             || name.starts_with("remoteSensorDamp")
             || name == "structureModuleEffectRemoteSensorDampener"
-            || name.starts_with("remoteSensorBoost"))
+            || name.starts_with("remoteSensorBoost")
+            || PROJ_SPECIAL_EFFECTS.contains(&name)
+            || DAMAGE_EFFECTS.contains(&name))
         {
             w.push(format!("projected effect '{name}' not modelled yet"));
         }
@@ -528,17 +545,6 @@ pub fn incoming(db: &dyn Db, fit: FitIn) -> Arc<Vec<Arc<ModMap>>> {
             maps[o.target as usize].entry(o.attr).or_default().push(o.m);
         }
     }
-    let ctx = fit.ctx(db);
-    if !ctx.buffs.is_empty() {
-        let ix = index(db, fit);
-        let mut out = Vec::new();
-        for &(id, v) in &ctx.buffs {
-            buff_mods(db.ds(), ix, ctx, id, Src::Const(v), &mut out);
-        }
-        for o in out {
-            maps[o.target as usize].entry(o.attr).or_default().push(o.m);
-        }
-    }
     Arc::new(maps.into_iter().map(Arc::new).collect())
 }
 
@@ -555,6 +561,18 @@ pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
     let ix = index(db, fit);
     let slots = fit.slots(db);
     let mut out = Vec::new();
+    // Pyfa keeps, per buff id, the strongest (|value|) source among own bursts and booster fits;
+    // explicit fleet.buffs override both.
+    let explicit = |id: u32| ctx.buffs.iter().any(|b| b.0 == id);
+    let mut best: Vec<(u32, f64, Src)> = Vec::new();
+    let offer = |best: &mut Vec<(u32, f64, Src)>, id: u32, v: f64, src: Src| match best.iter_mut().find(|b| b.0 == id) {
+        Some(b) if b.1.abs() >= v.abs() => {}
+        Some(b) => {
+            b.1 = v;
+            b.2 = src
+        }
+        None => best.push((id, v, src)),
+    };
     for &s in fit.order(db) {
         let sp = slots[s as usize].spec(db);
         if sp.kind != Kind::Module || sp.state < State::Active {
@@ -562,11 +580,31 @@ pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
         }
         for (ida, vala) in c.warfare {
             let id = if has(db, fit, s, ida) { value(db, fit, s, ida, 0) as u32 } else { 0 };
-            if id == 0 || ctx.explicit_ids.contains(&id) {
+            if id == 0 || explicit(id) {
                 continue;
             }
-            buff_mods(db.ds(), ix, ctx, id, Src::Attr { item: s, attr: vala }, &mut out);
+            let v = value(db, fit, s, vala, 0);
+            offer(&mut best, id, v, Src::Attr { item: s, attr: vala });
         }
+    }
+    for &(id, v) in &ctx.booster_offers {
+        if id == 0 || explicit(id) {
+            continue;
+        }
+        offer(&mut best, id, v.0, Src::Const(v));
+    }
+    for &(id, v) in &ctx.buffs {
+        match best.iter_mut().find(|b| b.0 == id) {
+            Some(b) => {
+                b.1 = v.0;
+                b.2 = Src::Const(v)
+            }
+            None => best.push((id, v.0, Src::Const(v))),
+        }
+    }
+    best.sort_by_key(|b| b.0);
+    for (id, _, src) in best {
+        buff_mods(db.ds(), ix, ctx, id, src, &mut out);
     }
     Arc::new(out)
 }

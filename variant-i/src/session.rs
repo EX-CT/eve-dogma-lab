@@ -38,6 +38,7 @@ pub struct Session {
     /// requests since the database was (re)created; used to bound memory
     pub calcs: u64,
     pub max_slots: usize,
+    subs: FxHashMap<(u8, u32), Box<Session>>,
 }
 
 /// Facade item consumed by stats (canonical order; indices are canonical positions).
@@ -73,6 +74,8 @@ pub struct Fit<'a> {
     pub warnings: Vec<String>,
     pub is_structure: bool,
     pub layer: u32,
+    /// incoming remote reps / cap transfers / neuts (canonical item indices), evaluated in stats
+    pub proj_special: Vec<ProjSpecial>,
 }
 
 impl<'a> Fit<'a> {
@@ -115,7 +118,7 @@ impl<'a> Fit<'a> {
 impl Session {
     pub fn new(ds: Arc<Dataset>) -> Session {
         let consts = Arc::new(Consts::new(&ds));
-        Session { db: EngineDb { storage: salsa::Storage::default(), ds, consts }, fit: None, slots: Vec::new(), slot_of: FxHashMap::default(), calcs: 0, max_slots: 20_000 }
+        Session { db: EngineDb { storage: salsa::Storage::default(), ds, consts }, fit: None, slots: Vec::new(), slot_of: FxHashMap::default(), calcs: 0, max_slots: 20_000, subs: FxHashMap::default() }
     }
 
     pub fn ds(&self) -> &Dataset {
@@ -130,26 +133,86 @@ impl Session {
 
     /// Full stats for one request. Output is a pure function of (dataset, request).
     pub fn calc(&mut self, req: &FitRequest) -> Value {
+        match self.view(req) {
+            Ok(v) => v.compute_stats(req),
+            Err(e) => json!({"error": {"code": e.code, "message": e.message, "path": e.path}}),
+        }
+    }
+
+    fn sub(&mut self, key: (u8, u32)) -> &mut Session {
+        let ds = self.db.ds.clone();
+        self.subs.entry(key).or_insert_with(|| Box::new(Session::new(ds)))
+    }
+
+    /// Build inputs for a request (incl. projected fits / booster fits on sub-sessions) and return a view.
+    pub fn view(&mut self, req: &FitRequest) -> Result<Fit<'_>, spec::EngineError> {
         if self.slots.len() > self.max_slots {
             self.reset();
         }
         self.calcs += 1;
-        let built = match spec::build(&self.db.ds, req) {
-            Ok(b) => b,
-            Err(e) => return json!({"error": {"code": e.code, "message": e.message, "path": e.path}}),
+        let ds_arc = self.db.ds.clone();
+        let ds: &Dataset = &ds_arc;
+        // projected fits: evaluate each source fit on its own sub-session, freeze active modules / drones
+        let mut proj = |i: usize, sreq: &FitRequest| -> Result<spec::Frozen, spec::EngineError> {
+            let sub = self.sub((0, i as u32));
+            let v = sub.view(sreq)?;
+            let mut frozen = Vec::new();
+            for (si, it) in v.items.iter().enumerate() {
+                let copies = match it.kind {
+                    Kind::Module if it.state >= crate::request::State::Active => 1,
+                    Kind::Drone => it.active_count,
+                    _ => 0,
+                };
+                if copies == 0 {
+                    continue;
+                }
+                let vals: Vec<(u32, f64)> = v.attr_keys(si).into_iter().map(|a| (a, v.get(si, a))).collect();
+                frozen.push((it.type_id, copies, vals));
+            }
+            Ok(frozen)
         };
-        let fit = self.load(req, &built);
-        let ds: &Dataset = &self.db.ds;
+        let built = spec::build(ds, req, &mut proj)?;
+        // fleet booster fits: strongest warfare buffs of their active modules
+        let mut offers: Vec<(u32, F)> = Vec::new();
+        let mut boost_warn = Vec::new();
+        let c = self.db.consts.clone();
+        for (k, bf) in req.fleet.booster_fits.iter().enumerate() {
+            let mut breq = bf.clone();
+            breq.fleet.booster_fits.clear();
+            let sub = self.sub((1, k as u32));
+            match sub.view(&breq) {
+                Ok(b) => {
+                    for i in 0..b.items.len() {
+                        if b.items[i].kind != Kind::Module || b.items[i].state < crate::request::State::Active {
+                            continue;
+                        }
+                        for (ida, vala) in c.warfare {
+                            let id = if b.has(i, ida) { b.get(i, ida) as u32 } else { 0 };
+                            if id == 0 {
+                                continue;
+                            }
+                            offers.push((id, F(b.get(i, vala))));
+                        }
+                    }
+                }
+                Err(e) => boost_warn.push(format!("fleet.booster_fits[{k}]: {e:?}")),
+            }
+        }
+        let fit = self.load(req, &built, offers);
         let db = &self.db;
+        let ds: &Dataset = &self.db.ds;
         let n = built.items.len();
         let slot_of: Vec<u32> = built.keys.iter().map(|k| self.slot_of[k]).collect();
         let mut warnings = built.warnings.clone();
-        for it in &built.items {
+        let mut proj_special = Vec::new();
+        for (i, it) in built.items.iter().enumerate() {
             if it.kind == Kind::Projected {
                 warnings.extend(engine::projected_warnings(ds, it));
+                proj_special_for(ds, &built, i, &mut proj_special);
             }
         }
         warnings.extend(buff_warnings(ds, req));
+        warnings.extend(boost_warn);
         let items: Vec<Item> = built
             .items
             .iter()
@@ -173,11 +236,10 @@ impl Session {
             })
             .collect();
         let layer = engine::plan(db, fit).final_layer;
-        let view = Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer };
-        view.compute_stats(req)
+        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special })
     }
 
-    fn load(&mut self, req: &FitRequest, b: &spec::Built) -> FitIn {
+    fn load(&mut self, req: &FitRequest, b: &spec::Built, offers: Vec<(u32, F)>) -> FitIn {
         // allocate slots for new keys
         for k in &b.keys {
             if !self.slot_of.contains_key(k) {
@@ -197,7 +259,7 @@ impl Session {
                 h.set_spec(&mut self.db).to(Arc::new(sp));
             }
         }
-        let ctx = Arc::new(make_ctx(&self.db.ds, req, slot_of[0], slot_of.get(1).copied().unwrap_or(slot_of[0]), b.is_structure));
+        let ctx = Arc::new(make_ctx(&self.db.ds, req, slot_of[0], slot_of.get(1).copied().unwrap_or(slot_of[0]), b.is_structure, offers));
         match self.fit {
             None => {
                 let f = FitIn::new(&self.db, self.slots.clone(), slot_of, ctx);
@@ -220,7 +282,7 @@ impl Session {
     }
 }
 
-fn make_ctx(ds: &Dataset, req: &FitRequest, ship: u32, ch: u32, is_structure: bool) -> Ctx {
+fn make_ctx(ds: &Dataset, req: &FitRequest, ship: u32, ch: u32, is_structure: bool, booster_offers: Vec<(u32, F)>) -> Ctx {
     let mut agg: FxHashMap<u32, f64> = FxHashMap::default();
     for b in &req.fleet.buffs {
         let Some(info) = ds.dbuffs.get(&b.buff_id) else { continue };
@@ -238,7 +300,7 @@ fn make_ctx(ds: &Dataset, req: &FitRequest, ship: u32, ch: u32, is_structure: bo
         char: ch,
         is_structure,
         buffs,
-        explicit_ids: req.fleet.buffs.iter().map(|b| b.buff_id).collect(),
+        booster_offers,
         rah_disable: req.options.rah.as_deref() == Some("disable"),
         pattern: [F(dp.em), F(dp.thermal), F(dp.kinetic), F(dp.explosive)],
     }
@@ -257,5 +319,63 @@ pub fn buff_warnings(ds: &Dataset, req: &FitRequest) -> Vec<String> {
 impl Session {
     pub fn db_ds(&self) -> Arc<Dataset> {
         self.db.ds.clone()
+    }
+}
+
+/// A projected effect that feeds tank or capacitor stats instead of modifying attributes (Pyfa: fit._armorRr, addDrain).
+#[derive(Debug, Clone, Copy)]
+pub enum ProjSpecial {
+    /// layer 0 shield, 1 armor, 2 hull; amount attr * mult * factor every `duration`
+    Rep { item: usize, layer: u8, amount: u32, mult: f64, factor: f64 },
+    /// capacitor drain (sign +1) or fill (sign -1) per cycle of `duration` attr
+    Drain { item: usize, amount: u32, duration: u32, factor: f64, resist: u32, sign: f64 },
+}
+
+/// Remote reps / cap transfer / neut handlers (semantics of EX-CT/eve-dogma-rs, which follows Pyfa eos/effects.py).
+fn proj_special_for(ds: &Dataset, b: &spec::Built, i: usize, out: &mut Vec<ProjSpecial>) {
+    let it = &b.items[i];
+    if it.state < crate::request::State::Active {
+        return;
+    }
+    let a = |n: &str| ds.attr_id(n);
+    let base = |n: &str| it.base(ds.attr_id(n)).unwrap_or(0.0);
+    let dist = it.distance;
+    let falloff_factor = || crate::stats::range_factor(base("maxRange"), base("falloffEffectiveness"), dist, true);
+    let gate = |opt: f64| if opt < dist.unwrap_or(0.0) { 0.0 } else { 1.0 };
+    let no_assist = b.items[0].base(a("disallowAssistance")).map(|x| x != 0.0).unwrap_or(false);
+    let paste = it.charge.map(|c| ds.types.get(&b.items[c].type_id).map(|t| t.name == "Nanite Repair Paste").unwrap_or(false)).unwrap_or(false);
+    for &(eid, _) in &it.effects {
+        let Some(e) = ds.effects.get(&eid) else { continue };
+        if (e.category != 2 && e.category != 3) || !e.mods.is_empty() {
+            continue;
+        }
+        let resist = e.resistance_attr.unwrap_or_else(|| it.base(a("remoteResistanceID")).map(|v| v as u32).unwrap_or(0));
+        let rep = |out: &mut Vec<ProjSpecial>, layer: u8, amt: &str, mult: f64, factor: f64| {
+            if !no_assist {
+                out.push(ProjSpecial::Rep { item: i, layer, amount: a(amt), mult, factor })
+            }
+        };
+        let drain = |out: &mut Vec<ProjSpecial>, amt: &str, dur: &str, factor: f64, sign: f64| {
+            out.push(ProjSpecial::Drain { item: i, amount: a(amt), duration: a(dur), factor, resist, sign })
+        };
+        match e.name.as_str() {
+            "shipModuleRemoteShieldBooster" | "shipModuleAncillaryRemoteShieldBooster" => rep(out, 0, "shieldBonus", 1.0, falloff_factor()),
+            "shipModuleRemoteArmorRepairer" | "ShipModuleRemoteArmorMutadaptiveRepairer" => rep(out, 1, "armorDamageAmount", 1.0, falloff_factor()),
+            "shipModuleAncillaryRemoteArmorRepairer" => rep(out, 1, "armorDamageAmount", if paste { 3.0 } else { 1.0 }, falloff_factor()),
+            "shipModuleRemoteHullRepairer" => rep(out, 2, "structureDamageAmount", 1.0, falloff_factor()),
+            "npcEntityRemoteShieldBooster" => rep(out, 0, "shieldBonus", 1.0, gate(base("maxRange"))),
+            "npcEntityRemoteArmorRepairer" => rep(out, 1, "armorDamageAmount", 1.0, gate(base("maxRange"))),
+            "npcEntityRemoteHullRepairer" => rep(out, 2, "structureDamageAmount", 1.0, gate(base("maxRange"))),
+            "shipModuleRemoteCapacitorTransmitter" => {
+                if !no_assist {
+                    drain(out, "powerTransferAmount", "duration", gate(base("maxRange")), -1.0)
+                }
+            }
+            "energyNeutralizerFalloff" => drain(out, "energyNeutralizerAmount", "duration", falloff_factor(), 1.0),
+            "energyNosferatuFalloff" => drain(out, "powerTransferAmount", "duration", falloff_factor(), 1.0),
+            "structureEnergyNeutralizerFalloff" => drain(out, "energyNeutralizerAmount", "duration", 1.0, 1.0),
+            "entityEnergyNeutralizerFalloff" => drain(out, "energyNeutralizerAmount", "energyNeutralizerDuration", gate(base("energyNeutralizerRangeOptimal")), 1.0),
+            _ => {}
+        }
     }
 }

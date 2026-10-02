@@ -331,9 +331,32 @@ impl<'a> Fit<'a> {
                 w["tracking"] = json!(g(i, "trackingSpeed"));
             } else if kind == "missile" {
                 if let Some(c) = self.items[i].charge {
+                    // Pyfa missileMaxRangeData: flight time + ship radius bonus, acceleration phase,
+                    // floor/ceil blend, FoF limit, centre-to-surface (eos/saveddata/module.py, LGPL)
                     let vel = g(c, "maxVelocity");
-                    let ft = g(c, "explosionDelay") / 1000.0;
-                    w["range_m"] = json!(vel * ft);
+                    if vel > 0.0 {
+                        let radius = g(ship, "radius");
+                        let ft = g(c, "explosionDelay") / 1000.0 + radius / vel;
+                        let ft = (ft * 1e9).round() / 1e9; // floatUnerr
+                        let accel_cap = g(c, "mass") * g(c, "agility") / 1e6;
+                        let range_at = |t: f64| {
+                            let acc = t.min(accel_cap);
+                            vel / 2.0 * acc + vel * (t - acc)
+                        };
+                        let (lt, ht) = (ft.floor(), ft.ceil());
+                        let (mut lr, mut hr) = (range_at(lt), range_at(ht));
+                        if self.has_effect_named(c, &["fofMissileLaunching"]) {
+                            let lim = g(c, "maxFOFTargetRange");
+                            if lim > 0.0 {
+                                lr = lr.min(lim);
+                                hr = hr.min(lim);
+                            }
+                        }
+                        lr = (lr - radius).max(0.0);
+                        hr = (hr - radius).max(0.0);
+                        let hc = ft - lt;
+                        w["range_m"] = json!(lr * (1.0 - hc) + hr * hc);
+                    }
                     w["explosion_radius"] = json!(g(c, "aoeCloudSize"));
                     w["explosion_velocity"] = json!(g(c, "aoeVelocity"));
                 }
@@ -466,6 +489,31 @@ impl<'a> Fit<'a> {
                 hull_rep += g(i, "structureDamageAmount") / dur;
             }
         }
+        // incoming remote repairs (Pyfa __getAppliedRr diminishing-returns formula)
+        {
+            let mut lists: [Vec<(f64, f64)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+            for ps in &self.proj_special {
+                if let crate::session::ProjSpecial::Rep { item, layer, amount, mult, factor } = *ps {
+                    let dur = self.get(item, id.duration) / 1000.0;
+                    if dur > 0.0 {
+                        lists[layer as usize].push((self.get(item, amount) * mult * factor, dur));
+                    }
+                }
+            }
+            let applied = |l: &Vec<(f64, f64)>| -> f64 {
+                let total: f64 = l.iter().map(|(a, c)| a / c.trunc()).sum();
+                l.iter()
+                    .map(|(a, c)| {
+                        let rrps = a / c.trunc();
+                        let m = 7000.0 + rrps * 20.0;
+                        (1.0 - (((rrps + m) / (total + m)) - 1.0).powi(2)) * a / c
+                    })
+                    .sum()
+            };
+            shield_rep += applied(&lists[0]);
+            armor_rep += applied(&lists[1]);
+            hull_rep += applied(&lists[2]);
+        }
         let shield_rr_s = g(ship, "shieldRechargeRate") / 1000.0;
         let passive = if shield_rr_s > 0.0 { 10.0 / shield_rr_s * 0.5 * 0.5 * hp_s } else { 0.0 };
         let defense = json!({
@@ -522,6 +570,24 @@ impl<'a> Fit<'a> {
                 });
             }
             module_rows.push(row);
+        }
+        // incoming neuts / nos / cap transfers (Pyfa fit.addDrain): no stagger, after the fit's own modules
+        let sig_now = g(ship, "signatureRadius");
+        for ps in &self.proj_special {
+            if let crate::session::ProjSpecial::Drain { item, amount, duration, factor, resist, sign } = *ps {
+                let mut need = self.get(item, amount) * factor * sign;
+                if resist != 0 {
+                    need *= self.get(ship, resist);
+                }
+                let sres = g(item, "energyNeutralizerSignatureResolution");
+                if sres != 0.0 {
+                    need *= (sig_now / sres).min(1.0);
+                }
+                let dur = self.get(item, duration);
+                if need != 0.0 && dur > 0.0 {
+                    drains.push(Drain { duration: dur.trunc(), cap_need: need, clip_size: 0, reload_ms: 0.0, is_injector: false, disable_stagger: false });
+                }
+            }
         }
         let mut capj = json!({"capacity": cap, "recharge_time_s": rr / 1000.0, "peak_recharge_gj_s": peak,
             "use_gj_s": cap_used, "injected_gj_s": cap_added, "delta_gj_s": peak + cap_added - cap_used});
