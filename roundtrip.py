@@ -16,4 +16,5 @@ bad=[i for i,x in enumerate(p) if not x or "error" in x]
 t2=[x["text"] if x else None for x in rpc([{"id":i,"method":"eft_export","params":{"fit":x,"name":"oracle"}} for i,x in enumerate(p)])]
 diff=[i for i in range(len(t1)) if t1[i]!=t2[i] and i not in bad]
 print(len(reqs),"parse errors",len(bad),"roundtrip diffs",len(diff))
-for i in (bad+diff)[:3]: print(repr(t1[i])[:300]); print(p[i] if i in bad else repr(t2[i])[:300])
+for i in (bad+diff)[:3]:
+    import difflib; print(files[i] if len(files)==len(reqs) else i); print("\n".join(difflib.unified_diff(t1[i].splitlines(),(t2[i] or "").splitlines(),lineterm="")))

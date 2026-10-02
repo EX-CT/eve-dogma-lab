@@ -67,7 +67,14 @@ impl Dmg {
         self.0[0] * (1.0 - r.em) + self.0[1] * (1.0 - r.thermal) + self.0[2] * (1.0 - r.kinetic) + self.0[3] * (1.0 - r.explosive) + self.0[4]
     }
     fn json(&self) -> Value {
-        json!({"em": self.0[0], "thermal": self.0[1], "kinetic": self.0[2], "explosive": self.0[3], "total": self.total()})
+        {
+        let mut j = json!({"em": self.0[0], "thermal": self.0[1], "kinetic": self.0[2], "explosive": self.0[3], "total": self.total()});
+        if self.0[4] != 0.0 {
+            // breacher DoT: Pyfa `pure` damage (additive key, only when non-zero; eve-dogma-rs contract)
+            j["pure"] = json!(self.0[4]);
+        }
+        j
+    }
     }
 }
 
@@ -302,6 +309,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     let default_spool = req.options.default_spool.unwrap_or(Spool { kind: SpoolType::SpoolScale, amount: 1.0 });
     let mut weapons = Vec::new();
     let (mut w_vol, mut w_dps) = (Dmg::default(), Dmg::default());
+    let mut br_best = (0.0f64, 0.0f64);
     for &m in modules {
         if state(m) < State::Active {
             continue;
@@ -328,8 +336,21 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         }
         // breacher DoT ticks once per second while the (non-stacking) DoT runs
         let dps = if vol.0[4] > 0.0 { vol.scale(1.0) } else if cyc > 0.0 { vol.scale(sub * 1000.0 / cyc) } else { Dmg::default() };
-        w_vol.add(&vol);
-        w_dps.add(&dps);
+        if vol.0[4] > 0.0 {
+            // Pyfa: breacher DoTs don't stack, so only the strongest pod counts in fit totals
+            if vol.0[4] > br_best.0 {
+                br_best = (vol.0[4], dps.0[4]);
+            }
+            let (mut v0, mut d0) = (vol, dps);
+            v0.0[4] = 0.0;
+            d0.0[4] = 0.0;
+            w_vol.add(&v0);
+            w_dps.add(&d0);
+        } else {
+            w_vol.add(&vol);
+            w_dps.add(&dps);
+        }
+        let kind = if vol.0[4] > 0.0 { "breacher" } else { kind };
         let mut w = json!({
             "module_index": f.req_index, "type_id": v.item(m).type_id, "name": x.type_name(m), "kind": kind,
             "charge_type_id": f.charge.map(|c| v.item(c).type_id),
@@ -414,6 +435,8 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
                 "max_velocity": g(f, a.max_velocity), "signature_radius": g(f, a.sig)}));
         }
     }
+    w_vol.0[4] += br_best.0;
+    w_dps.0[4] += br_best.1;
     let mut t_vol = w_vol;
     t_vol.add(&d_vol);
     t_vol.add(&f_vol);
