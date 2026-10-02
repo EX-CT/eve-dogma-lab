@@ -360,7 +360,10 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         }
         let mult = if x.c.has(d, a.dmg_mult) { g(d, a.dmg_mult) } else { 1.0 };
         let v = Dmg(a.dmg.map(|k| g(d, k))).scale(mult * n);
-        let cyc = x.raw_cycle_ms(d);
+        // damage cycle follows `speed` (rate of fire) when the drone has one, even if a
+        // secondary effect (e.g. a web) carries a longer `duration`
+        let sp = g(d, a.speed);
+        let cyc = if sp > 0.0 { sp } else { x.raw_cycle_ms(d) };
         if v.total() == 0.0 || cyc == 0.0 {
             continue;
         }
