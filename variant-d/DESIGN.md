@@ -75,6 +75,16 @@ sorted by |m−1| desc, weight `exp(−i²/7.1289)`), then min/max attribute cla
 Stacking-penalty exemption is decided once at registration time from the source item's category
 (ship, charge, skill, implant, subsystem, structure).
 
+### 2b. Compiled registration plans and lazy skills (performance)
+
+* Per type (keyed by the immutable effects array, memoised on a WeakMap), effects are compiled once into a
+  **plan**: resolved special handler, filtered modifier list with the skill-self filter (`extra = 0`) and the
+  bastion exemption already resolved, and the list of *outgoing* (non-self) modifiers.
+* **Lazy skills**: a skill's attributes are only ever read through its own outgoing modifiers. Skills are
+  therefore materialised *after* the rest of the fit and only if at least one outgoing modifier resolves to an
+  item of this fit (or the skill has a special). A Rifter goes from ~500 skill items to the few dozen that matter;
+  validation reads trained levels from the request, not from items.
+
 ### 3. Domain resolution through indexes
 
 Rust variant A scans all items for each location modifier (O(items × modifiers)). Variant D builds, after
@@ -107,8 +117,9 @@ RAH, cap sim with Pyfa heap ordering, nos income, passive shield regen peak `10/
 ### 6. Statelessness & determinism
 
 `calc(ds, req)` has no I/O, no clock, no randomness, no module-level mutable state except memoised
-*pure* derivations of the immutable Dataset (per-type attribute maps, name indexes). Output keys are sorted
-recursively and floats rounded to 1e-6 (same as eve-dogma-rs) so output is byte-stable.
+*pure* derivations of the immutable Dataset (per-type attribute maps, plans, name sets). Every stats section
+builds its objects in a fixed key order and floats are rounded to 1e-6 (same as eve-dogma-rs), so output is
+byte-stable for a given request (verified by the bench's determinism check).
 
 ## Trade-offs vs the other variants
 
