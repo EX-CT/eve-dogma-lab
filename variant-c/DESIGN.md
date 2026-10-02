@@ -104,8 +104,9 @@ Pyfa parity fixes the arithmetic, so the speed work removes overhead around it:
   (−10 % instructions).
 * **Pipelines.** `batch` decodes, computes and encodes on N goroutines with order-preserving output.
   `serve-stdio` (JSONL) and `serve-http` are long-running and pay the dataset load once.
-* **Serve-mode memo (`cmd/eve-dogma-go/memo.go`).** Long-running modes only: an LRU of the last
-  `EVE_DOGMA_MEMO` (default 4096, `0` = off) request bytes → response bytes. `calc` and `batch`, and
+* **Serve-mode memo (`cmd/eve-dogma-go/memo.go`).** Long-running modes only: a bounded map of exact
+  request bytes → response bytes. It holds up to `EVE_DOGMA_MEMO` entries (default 4096, `0` = off) and
+  is cleared when full. `calc` and `batch`, and
   therefore the bench throughput figures, never use it.
 
 ### Layers
