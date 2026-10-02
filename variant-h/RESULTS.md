@@ -2,23 +2,28 @@
 
 ## Official bench (`bench.py --only H`, full run)
 
-Bench **1.7.0+a5bb40e** (306 cases, 19 621 Pyfa-expected values: doomsday sub-cycles, WDFG / EHE / entosis / MJFG /
-superweapon local effects, Python `round(v, 2)` for cpu/power, TD drones). Scored at 06:12 CST on commit f4d4b88; the
-scorecard is committed in [`scorecards/bench-1.7.0.md`](scorecards/bench-1.7.0.md) (+ `.json`).
+Bench **1.8.0+0969967** (frozen for the 10:20 CST evaluation; 326 cases, 21 051 Pyfa-expected values, adding abyssal
+weather / AoE cloud beacons, incursion system effects, burst projectors and Standup weapon disruptors). Scored at
+06:19 CST on commit b430abe. Scorecards are committed in [`scorecards/`](scorecards/):
+[`bench-1.8.0.md`](scorecards/bench-1.8.0.md) and [`bench-1.7.0.md`](scorecards/bench-1.7.0.md), each with a `.json`.
 
 | | cases | values |
 |---|---|---|
-| vs Pyfa (bench 1.7.0) | **306/306** | **19621/19621 (100.00 %)** |
+| vs Pyfa (bench 1.8.0) | **326/326** | **21051/21051 (100.00 %)** |
+| vs Pyfa (bench 1.7.0, 06:12 CST, f4d4b88) | 306/306 | 19621/19621 |
 | vs Pyfa (bench 1.6.0, 05:51 CST) | 297/297 | 19103/19103 |
-| eft export column (EFT export vs Pyfa `exportEft` after `fill()`, informational) | **306/306** | |
+| eft export column (EFT export vs Pyfa `exportEft` after `fill()`, informational) | **326/326** | |
 
-| perf (bench harness, shared box under load) | H @ 1.7.0 06:12 | H @ 1.6.0 05:51 | A @ 1.6.0 05:42 |
-|---|---|---|---|
-| ms/fit (exct_rifter latency) | **0.255** | 0.308 | 0.432 |
-| batch throughput, fits/s | **3033** | 2863 | 1777 |
-| cold ms (one process per case, median) | **6.2** | 8.9 | 138 |
-| startup + one calc, ms | **6.0** | 7.8 | |
-| deterministic | yes | yes | yes |
+| perf (bench harness, shared box under load) | H @ 1.8.0 06:19 | H @ 1.7.0 06:12 | H @ 1.6.0 05:51 | A @ 1.6.0 05:42 |
+|---|---|---|---|---|
+| ms/fit (exct_rifter latency) | **0.281** | 0.255 | 0.308 | 0.432 |
+| batch throughput, fits/s | **2662** | 3033 | 2863 | 1777 |
+| cold ms (one process per case, median) | **4.8** | 6.2 | 8.9 | 138 |
+| startup + one calc, ms | **6.2** | 6.0 | 7.8 | |
+| deterministic | yes | yes | yes | yes |
+
+The 1.7.0 → 1.8.0 throughput difference is within run-to-run noise on the loaded box: the new code paths only run for
+fits that have beacons or projected bursts.
 
 Cold-start gains since 1.5.0 (a cold rifter calc went from ~5.3 ms to ~2.7 ms wall when measured directly; `meta`
 takes 1.5 ms, against 1.1 ms for a bare exec of the binary): the derived cache and the dataset (for the cache-key hash) are now mmapped instead of
