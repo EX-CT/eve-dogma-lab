@@ -33,8 +33,9 @@ Bench integration is in `bench.yaml` (`build`, `cmd`, `batch_cmd`, `rpc_cmd` wit
 
 ## Status
 
-- eve-dogma-bench 1.7.0 (contract 1.4.2): **306/306 cases, 19,621/19,621 values (100 %)**, EFT export 306/306; 0.968 ms/fit, 983 fits/s batch. Scorecard in `bench/scorecard.md`.
+- eve-dogma-bench 1.8.0 (contract 1.4.3): **326/326 cases, 21,051/21,051 values (100 %)**, EFT export 326/326; 1.464 ms/fit, 673 fits/s batch (quick run, shared box). Scorecard in `bench/scorecard.md`.
 - 1.6.0/1.7.0 additions ported from reference A (c53d333, aa46025): projected remote tracking computers (assistance-gated) and TD drones, local specials without modifierInfo (superweapon/lance speed + warp status, Emergency Hull Energizer, Entosis Link, MJFG, uncharged WDFG), doomsday subcycle DPS, Python `round(v, 2)` for cpu/pg.
+- 1.8.0 additions ported from reference A (9f8579c): burst projectors (web/paint/damp/track at full strength, a neut drain, an ECM jam) and the Standup weapon disruptor, Sansha/Drifter incursion system effects (unpenalised), abyssal weather and AoE cloud beacon buffs (drones included; the weather buffs Pyfa leaves unpenalised), Breach Control. All of these stay engine-side, so the output is identical with dataset r3 and r4 (r4 ships the promoted pipeline patches 0101-0103).
 - Full-output diff against reference A (eve-dogma-rs 8b7053e) over all 295 bench cases and the reference's 162 test cases: identical
   within 1e-9 relative tolerance. Run `tools/compare_ref.py`.
 - EFT: `eft_export` matches Pyfa's exporter on all 295 bench fits (`tools/check_eft_export.py`). `eft_parse` gives the same FitRequest as the reference on its 131 EFT test fits. `search` follows the interim contract 1.4.1 spec.
