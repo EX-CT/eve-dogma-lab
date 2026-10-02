@@ -4,6 +4,9 @@ use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
 use std::time::Instant;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const USAGE: &str = "eve-dogma-h <command> [--dataset PATH] [args]
 
 Commands:
