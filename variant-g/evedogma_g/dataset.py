@@ -7,12 +7,13 @@ the .gz, so later processes start in a few ms instead of re-parsing 7 MB of JSON
 import gzip
 import hashlib
 import json
+import marshal
 import os
 import pickle
 
 import numpy as np
 
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 ATTR_BITS = 14  # attribute ids < 16384 (max in SDE 3569502: 6465)
 ATTR_MASK = (1 << ATTR_BITS) - 1
 
@@ -21,14 +22,123 @@ SPECIAL_NONE, SPECIAL_AB, SPECIAL_MWD, SPECIAL_MJD, SPECIAL_SLOT, SPECIAL_HARDPO
 EFFECT_SKILL_EFFECT = 132
 
 
+# large Python tables that one calc only touches a few entries of: stored marshalled per entry and decoded on
+# demand (saves ~15 ms of every cold start); small ones are plain objects in the pickle
+_LAZY_SEQ = ("t_effects", "t_reqskills")  # list indexed by dense type index
+_LAZY_MAP = ("eff_info", "muta")  # dict with int keys
+_LAZY_WHOLE = ("names_zh", "type_by_name")  # only used by name lookups / the type and search commands
+
+
+def _pack_entries(values):
+    blobs = [marshal.dumps(v) for v in values]
+    off = np.zeros(len(blobs) + 1, np.int64)
+    off[1:] = np.cumsum([len(b) for b in blobs])
+    return b"".join(blobs), off
+
+
+class LazySeq:
+    """read-only list whose entries are decoded (and cached) on first access"""
+
+    def __init__(self, packed):
+        self._blob, self._off = packed
+        self._cache = {}
+
+    def __len__(self):
+        return len(self._off) - 1
+
+    def __getitem__(self, i):
+        v = self._cache.get(i)
+        if v is None:
+            if i < 0:
+                i += len(self)
+            v = self._cache[i] = marshal.loads(self._blob[self._off[i]:self._off[i + 1]])
+        return v
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
+
+
+class LazyMap:
+    """read-only int-keyed dict whose values are decoded (and cached) on first access"""
+
+    def __init__(self, packed):
+        keys, (self._blob, self._off) = packed
+        self._pos = {k: j for j, k in enumerate(keys)}
+        self._cache = {}
+
+    def __len__(self):
+        return len(self._pos)
+
+    def __contains__(self, k):
+        return k in self._pos
+
+    def __iter__(self):
+        return iter(self._pos)
+
+    def get(self, k, default=None):
+        v = self._cache.get(k)
+        if v is None:
+            j = self._pos.get(k)
+            if j is None:
+                return default
+            v = self._cache[k] = marshal.loads(self._blob[self._off[j]:self._off[j + 1]])
+        return v
+
+    def __getitem__(self, k):
+        v = self.get(k)
+        if v is None and k not in self._pos:
+            raise KeyError(k)
+        return v
+
+    def keys(self):
+        return self._pos.keys()
+
+    def items(self):
+        return ((k, self.get(k)) for k in self._pos)
+
+    def values(self):
+        return (self.get(k) for k in self._pos)
+
+
+def _pack(c):
+    """cache form of the column dict (see _LAZY_*)"""
+    c = dict(c)
+    for k in _LAZY_SEQ:
+        c[k] = ("lazyseq", _pack_entries(c[k]))
+    for k in _LAZY_MAP:
+        keys = list(c[k].keys())
+        c[k] = ("lazymap", (keys, _pack_entries([c[k][x] for x in keys])))
+    for k in _LAZY_WHOLE:
+        c[k] = ("lazywhole", marshal.dumps(c[k]))
+    return c
+
+
 class Dataset:
     """Column-oriented view of the dataset. All per-type tables are indexed by a dense type index."""
 
     def __init__(self, c):
-        self.__dict__.update(c)
+        lazy_whole = {}
+        for k, v in c.items():
+            if isinstance(v, tuple) and len(v) == 2 and isinstance(v[0], str) and v[0].startswith("lazy"):
+                if v[0] == "lazyseq":
+                    v = LazySeq(v[1])
+                elif v[0] == "lazymap":
+                    v = LazyMap(v[1])
+                else:
+                    lazy_whole[k] = v[1]
+                    continue
+            self.__dict__[k] = v
+        self._lazy_whole = lazy_whole
         self.attr_id = self.attr_by_name.get  # name -> id (None if unknown)
         self._tad = {}  # type index -> {attr: base value} (lazy)
         self._attr_def_list = self.attr_def.tolist()
+
+    def __getattr__(self, name):  # only called for missing attributes: the _LAZY_WHOLE tables
+        blob = self.__dict__.get("_lazy_whole", {}).pop(name, None)
+        if blob is None:
+            raise AttributeError(name)
+        v = self.__dict__[name] = marshal.loads(blob)
+        return v
 
     # ---- helpers used all over the engine
     def a(self, name):
@@ -256,7 +366,7 @@ def load(path):
             return Dataset(c)
     except (OSError, pickle.UnpicklingError, EOFError, AttributeError):
         pass
-    c = _build(path)
+    c = _pack(_build(path))
     c["src_sha256"] = key
     try:
         os.makedirs(cdir, exist_ok=True)
