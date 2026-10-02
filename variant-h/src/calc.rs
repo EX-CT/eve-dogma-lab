@@ -96,7 +96,7 @@ impl<'w> Calc<'w> {
                 val = val.min(self.get(e, mx));
             }
             if info.round2 {
-                val = (val * 100.0).round() / 100.0;
+                val = py_round2(val);
             }
         }
         val
@@ -189,3 +189,16 @@ impl<'w> Calc<'w> {
     }
 }
 
+
+/// Python `round(v, 2)`: correctly rounded on the exact binary value (ties to even), e.g. 28.125000000000004 ->
+/// 28.13 but 28.124999999999996 -> 28.12. Away from a half-cent boundary, scaling by 100 cannot change the result;
+/// near one, the correctly rounded decimal formatting decides.
+#[inline]
+pub fn py_round2(v: f64) -> f64 {
+    let t = v * 100.0;
+    let f = t - t.floor();
+    if (f - 0.5).abs() > 1e-6 || !v.is_finite() {
+        return t.round() / 100.0;
+    }
+    format!("{v:.2}").parse().unwrap_or(t.round() / 100.0)
+}

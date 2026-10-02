@@ -308,7 +308,17 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         let f = v.fitted(m);
         let sp = spoolup(g(m, a.spool_max), g(m, a.spool_step), raw / 1000.0, f.spool.unwrap_or(default_spool));
         let vol = base.scale(1.0 + sp);
-        let dps = if cyc > 0.0 { vol.scale(1000.0 / cyc) } else { Dmg::default() };
+        // Pyfa getVolleyParameters: doomsdays deal one volley every doomsdayDamageCycleTime for
+        // doomsdayDamageDuration (not the Reaper slash); the reported volley is one tick
+        let sub = {
+            let ga = |id: u32| if id != 0 && x.c.has(m, id) { g(m, id) } else { 0.0 };
+            let (dur, sc) = (ga(a.dd_duration), ga(a.dd_cycle));
+            if dur != 0.0 && sc != 0.0 && !v.effects(m).iter().any(|&(id, _)| id == ds.e.dd_slash) { float_unerr(dur / sc).floor() } else { 1.0 }
+        };
+        if sub <= 0.0 {
+            continue;
+        }
+        let dps = if cyc > 0.0 { vol.scale(sub * 1000.0 / cyc) } else { Dmg::default() };
         w_vol.add(&vol);
         w_dps.add(&dps);
         let mut w = json!({
@@ -788,3 +798,4 @@ fn dump_attributes(fit: &Fit, c: &Calc, sel: &str) -> Value {
     m.insert("drones".into(), Value::Array(dr));
     Value::Object(m)
 }
+

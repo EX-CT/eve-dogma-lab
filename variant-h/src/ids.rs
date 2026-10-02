@@ -61,7 +61,11 @@ id_table!(AttrIds {
     disallow_offensive = "disallowOffensiveModifiers",
     neut_amount = "energyNeutralizerAmount", neut_duration = "energyNeutralizerDuration",
     neut_range = "energyNeutralizerRangeOptimal", neut_sig_res = "energyNeutralizerSignatureResolution",
+    mass_bonus_pct = "massBonusPercentage", speed_boost_factor_bonus = "speedBoostFactorBonus",
+    speed_factor_bonus = "speedFactorBonus", siege_warp_status = "siegeModeWarpStatus",
+    dd_duration = "doomsdayDamageDuration", dd_cycle = "doomsdayDamageCycleTime",
 } arrays {
+    hull_res_src: [4] = ["hullEmDamageResonance".into(), "hullThermalDamageResonance".into(), "hullKineticDamageResonance".into(), "hullExplosiveDamageResonance".into()],
     dmg: [4] = ["emDamage".into(), "thermalDamage".into(), "kineticDamage".into(), "explosiveDamage".into()],
     extra_durations: [5] = ["durationHighisGood".into(), "durationSensorDampeningBurstProjector".into(),
         "durationTargetIlluminationBurstProjector".into(), "durationECMJammerBurstProjector".into(),
@@ -91,6 +95,8 @@ id_table!(EffectIds {
     nos = "energyNosferatuFalloff", f_attack = "fighterAbilityAttackM", f_missiles = "fighterAbilityMissiles",
     f_mwd = "fighterAbilityMicroWarpDrive", f_evasive = "fighterAbilityEvasiveManeuvers", f_mjd = "fighterAbilityMicroJumpDrive",
     skill_effect = "skillEffect", fof_missile = "fofMissileLaunching",
+    ehe = "emergencyHullEnergizer", entosis = "entosisLink", mjfg = "microJumpPortalDrive",
+    bubble = "warpDisruptSphere", lance = "doomsdayBeamDOT", debuff_lance = "debuffLance", dd_slash = "doomsdaySlash",
 } arrays {
     structure_skill_ok: [5] = ["targetingMaxTargetBonusModAddMaxLockedTargetsLocationChar".into(),
         "skillStructureMissileDamageBonus".into(), "skillStructureElectronicSystemsCapNeedBonus".into(),

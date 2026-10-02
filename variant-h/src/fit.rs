@@ -656,7 +656,9 @@ impl<'a> Fit<'a> {
                         continue;
                     }
                 }
-                if !state_ok(eff.category, state) {
+                // Pyfa runs the entosis link's (target-category) handler on the fit itself while active
+                let gate_cat = if eid == ef.entosis { 1 } else { eff.category };
+                if !state_ok(gate_cat, state) {
                     continue;
                 }
                 // ---- special handlers (effects without modifierInfo in the SDE)
@@ -713,6 +715,55 @@ impl<'a> Fit<'a> {
                         self.pending(ship, t, 2, Src::Attr { e, attr: s }, src_cat, &mut pend);
                     }
                     continue;
+                }
+                if eff.mods.is_empty() && (eff.category == 1 || eid == ef.entosis) && it.kind == Kind::Module {
+                    // active modules whose Pyfa handlers have no modifierInfo; `pen` says whether Pyfa passes
+                    // stackingPenalties (it does so regardless of the attribute's stackable flag)
+                    let mut push = |target: Entity, attr: u32, op: i8, penalized: bool, src: Src| {
+                        if attr != 0 {
+                            pend.push(PendingMod { target, attr, m: Mod { op, penalized, src } });
+                        }
+                    };
+                    let at = |attr: u32| Src::Attr { e, attr };
+                    if eid == ef.ehe {
+                        // Effect6484: hull resonances, postMul penalty group (op-4 chain)
+                        for k in 0..4 {
+                            push(ship, a.res_hull[k], 4, true, at(a.hull_res_src[k]));
+                        }
+                        continue;
+                    }
+                    if eid == ef.entosis {
+                        push(ship, a.disallow_assistance, 7, false, at(a.disallow_assistance));
+                        for k in 0..4 {
+                            push(ship, a.sensor[k], 6, true, at(a.sensor_percent[k]));
+                        }
+                        continue;
+                    }
+                    if eid == ef.mjfg {
+                        push(ship, a.sig, 6, true, at(a.sig_bonus_percent));
+                        continue;
+                    }
+                    if eid == ef.lance || eid == ef.debuff_lance {
+                        push(ship, a.max_velocity, 6, true, at(a.speed_factor));
+                        push(ship, a.warp_scramble, 2, false, at(a.siege_warp_status));
+                        continue;
+                    }
+                    if eid == ef.bubble {
+                        // Effect3380, local side: always disallowAssistance; uncharged also boosts the HIC
+                        push(ship, a.disallow_assistance, 7, false, Src::Const(1.0));
+                        if v.charge(e).is_none() {
+                            push(ship, a.mass, 6, false, at(a.mass_bonus_pct));
+                            push(ship, a.sig, 6, false, at(a.sig_bonus));
+                            for &t in &self.order {
+                                let ti = v.item(t);
+                                if ti.kind == Kind::Module && ds.group_names.get(&ti.group).map(|g| g == "Propulsion Module").unwrap_or(false) {
+                                    push(t, a.speed_boost_factor, 6, false, at(a.speed_boost_factor_bonus));
+                                    push(t, a.speed_factor, 6, false, at(a.speed_factor_bonus));
+                                }
+                            }
+                        }
+                        continue;
+                    }
                 }
                 for m in &eff.mods {
                     if m.func == Func::EffectStopper || m.op == 9 || matches!(m.domain, Domain::TargetId | Domain::Target) {
@@ -845,13 +896,25 @@ impl<'a> Fit<'a> {
                     }
                     continue;
                 }
-                if matches!(name, "shipModuleTrackingDisruptor" | "shipModuleGuidanceDisruptor" | "shipModuleRemoteTrackingComputer") {
+                if matches!(name, "shipModuleTrackingDisruptor" | "shipModuleGuidanceDisruptor" | "shipModuleRemoteTrackingComputer" | "npcEntityWeaponDisruptor") {
                     // Pyfa Effect6424 / 6423: the target's turrets (requiring Gunnery) or missile charges (requiring
                     // Missile Launcher Operation), postPercent x range factor, stacking-penalised, remote resistance.
                     // Effect6428 (remote tracking computer): the same turret boost, no resistance, blocked by
                     // the target's disallowAssistance instead of disallowOffensive.
                     let rtc = name == "shipModuleRemoteTrackingComputer";
-                    let resist = if rtc { 0 } else { resist };
+                    // Effect6694 (TD drones): full strength within the drone's maxRange, nothing beyond, no resistance
+                    let npc = name == "npcEntityWeaponDisruptor";
+                    let resist = if rtc || npc { 0 } else { resist };
+                    let factor = if npc {
+                        let c = self.calc();
+                        let r = if c.has(e, a.max_range) { c.get(e, a.max_range) } else { 0.0 };
+                        if r < dist.unwrap_or(0.0) {
+                            continue;
+                        }
+                        squad.as_ref().map(|s| s.1).unwrap_or(1.0)
+                    } else {
+                        factor
+                    };
                     if rtc {
                         let c = self.calc();
                         if c.has(ship, a.disallow_assistance) && c.get(ship, a.disallow_assistance) != 0.0 {
