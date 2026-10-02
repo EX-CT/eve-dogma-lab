@@ -2,22 +2,26 @@
 
 ## Official bench: `python3 bench.py --only H --quick`
 
-Run at 04:45 CST with bench 1.3.0+8e02018 (249 cases, 13 812 Pyfa-expected values). The full scorecard is in
-[results/scorecard.md](results/scorecard.md).
+Run at 04:57 CST with bench 1.4.0 (65fab29: 289 cases, 18 591 Pyfa-expected values, including sustained tank, jam
+chance, warp scramble and drone/fighter application). The full scorecard is in [results/scorecard.md](results/scorecard.md).
 
 | | cases | values |
 |---|---|---|
-| vs Pyfa (bench) | **249/249** | **13812/13812 (100.00 %)** |
+| vs Pyfa (bench 1.4.0) | **289/289** | **18591/18591 (100.00 %)** |
+| vs Pyfa (bench 1.3.0, 249 cases, 04:45 CST) | 249/249 | 13812/13812 |
 
-Every group (application, capacitor, defense, fitting, navigation, offense, tank, targeting) is at 100 %.
+Every group is at 100 %.
 
-| perf (same harness) | H | A (bench results/A) |
-|---|---|---|
-| latency, one fit (exct_rifter), ms/calc | **0.417** | ~1.3–1.43 |
-| batch throughput, fits/s | **1542** | 460 (corpus x5) |
-| startup + one calc, ms | **19.1** | 150.1 |
-| one process per case, median ms | **20.5** | 216.5 |
-| deterministic | yes | yes |
+| perf (same harness) | H @ 1.4.0 (box load ~15) | H @ 1.3.0 (04:45) | A (bench results/A) |
+|---|---|---|---|
+| latency, one fit (exct_rifter), ms/calc | 0.801 | **0.417** | ~1.3–1.43 |
+| batch throughput, fits/s | 1251 | **1542** | 460 (corpus x5) |
+| startup + one calc, ms | 19.9 | 19.1 | 150.1 |
+| one process per case, median ms | 19.4 | 20.5 | 216.5 |
+| deterministic | yes | yes | yes |
+
+The 1.4.0 run was taken at load average ~15 on the shared box. Instruction counts (callgrind, below) moved only
++0.9 % between the two runs, so the latency difference is load, not code.
 
 The H cold start assumes the derived cache (`dataset.hcache`) has been warmed. `bench.yaml`'s build step runs
 `meta` once to write it. Without the cache, cold start is about 120 ms.
@@ -35,9 +39,9 @@ built with A's `eft` importer.
 
 ## Parity with Variant A
 
-Every output leaf was compared, abs 1e-6 / rel 1e-9, against A's working-tree build of 04:4x CST.
+Every output leaf was compared, abs 1e-6 / rel 1e-9, against A's working-tree build of ~04:55 CST.
 
-- Bench corpus: **249/249 identical**.
+- Bench 1.4.0 corpus: **289/289 identical**.
 - The 23 newest cases: **23/23 identical**.
 
 ## Instruction counts (callgrind, 249-fit batch incl. startup)
@@ -48,4 +52,14 @@ Every output leaf was compared, abs 1e-6 / rel 1e-9, against A's working-tree bu
 | views + mimalloc | 1.27 G |
 | prebuilt skill slots, query_mut security pass | 1.07 G |
 | capsim ranks, batch skill spawn, in-place tidy | 1.01 G |
-| component queries for incoming effects | **0.997 G** |
+| component queries for incoming effects | 0.997 G |
+| + ECM/fighter abilities/EFT tools (same 249 fits) | 1.006 G |
+
+## Helpers vs A
+
+- `eft` import of all 129 fits in A's tests/fits: **129/129 identical** FitRequests.
+- H `eft_export` → `eft_parse` round trip: 129/129.
+- Export text of the 289 bench cases matches A's apart from blank lines (A adds an extra blank line before boosters
+  when there are no implants) and the T3D mode line. H exports the mode; A drops it.
+- `type` output is identical to A's. `search` matches on 8 of 9 sample queries; for Chinese queries the ordering of
+  equal-rank hits differs slightly.
