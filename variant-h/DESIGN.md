@@ -83,5 +83,16 @@ A cycle guard returns the base value. Systems that need evaluated values (buff i
 
 ## Known gaps
 
-See README / RESULTS: projected remote repairs/neuts/cap transfer, projected fits, EFT import/export and the
-`search`/`type` helpers are not implemented in this variant.
+- Projected remote reps, neuts, nos and cap transfers, projected fits, booster fits, environments and
+  per-weapon range/tracking are implemented, and they match Pyfa on the full 249-case corpus.
+- Not implemented: EFT import/export, and the `search`/`type` CLI helpers. `serve-stdio` supports only
+  `calc` and `meta` requests.
+- The capacitor sim mirrors Variant A's semantics. Edge cases that the corpus does not cover (e.g. very
+  long-cycle modules with mixed reload) have not been checked against Pyfa.
+
+## Performance notes
+
+- Hot path: hecs `World::get` was replaced by `views::Views`, which takes one ViewBorrow per component
+  type for each pass. This gave about 1.6x batch throughput.
+- A derived bincode cache (`dataset.hcache`, keyed by xxh3 of the dataset plus the binary's identity)
+  cuts cold start from about 120 ms to about 17 ms.
