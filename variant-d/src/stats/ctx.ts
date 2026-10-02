@@ -8,14 +8,15 @@ export class StatsCtx {
   readonly modules: number[] = [];
   readonly drones: number[] = [];
   readonly fighters: number[] = [];
-  private attrIds = new Map<string, number>();
-  private effectFlags = new Map<string, boolean>();
   readonly A: {
     cpu: number; power: number; speed: number; duration: number; capNeed: number; reload: number;
     reactivation: number; chargeRate: number; dmgMult: number; dmg: number[];
   };
 
+  private durAttrs: number[];
   constructor(readonly fit: Fit, readonly req: NormRequest) {
+    this.durAttrs = ['durationHighisGood', 'durationSensorDampeningBurstProjector', 'durationTargetIlluminationBurstProjector',
+      'durationECMJammerBurstProjector', 'durationWeaponDisruptionBurstProjector'].map((n) => fit.ds.attrId(n));
     for (const it of fit.items) {
       if (it.kind === Kind.Module) this.modules.push(it.idx);
       else if (it.kind === Kind.Drone) this.drones.push(it.idx);
@@ -30,11 +31,7 @@ export class StatsCtx {
   }
 
   get ds() { return this.fit.ds; }
-  id(name: string): number {
-    let v = this.attrIds.get(name);
-    if (v === undefined) { v = this.fit.ds.attrId(name); this.attrIds.set(name, v); }
-    return v;
-  }
+  id(name: string): number { return this.fit.ds.attrId(name); }
   /** modified attribute by name */
   g(i: number, name: string): number { return this.fit.get(i, this.id(name)); }
   item(i: number) { return this.fit.items[i]; }
@@ -43,22 +40,15 @@ export class StatsCtx {
   typeName(i: number) { return this.ds.types.get(this.fit.items[i].typeId)!.name; }
 
   hasEffect(i: number, names: string[]): boolean {
-    const key = `${i}|${names.join(',')}`;
-    let v = this.effectFlags.get(key);
-    if (v === undefined) {
-      v = this.fit.items[i].effects.some(([e]) => { const n = this.ds.effects.get(e)?.name; return n !== undefined && names.includes(n); });
-      this.effectFlags.set(key, v);
-    }
-    return v;
+    const set = effectNames(this.ds, this.fit.items[i].effects);
+    for (let k = 0; k < names.length; k++) if (set.has(names[k])) return true;
+    return false;
   }
 
   rawCycleMs(i: number): number {
     const f = this.fit;
     let v = Math.max(f.get(i, this.A.speed), f.get(i, this.A.duration));
-    for (const n of ['durationHighisGood', 'durationSensorDampeningBurstProjector', 'durationTargetIlluminationBurstProjector', 'durationECMJammerBurstProjector', 'durationWeaponDisruptionBurstProjector']) {
-      const a = this.id(n);
-      if (a !== 0) v = Math.max(v, f.get(i, a));
-    }
+    for (const a of this.durAttrs) if (a !== 0) v = Math.max(v, f.get(i, a));
     return v;
   }
 
@@ -102,4 +92,16 @@ export class StatsCtx {
     if (!factorReload || shots === 0 || inactive >= reload) return active + inactive;
     return ((active + inactive) * (shots - 1) + (active + reload)) / shots;
   }
+}
+
+/** memo: effect-name set per (immutable) effects array */
+const NAMES = new WeakMap<[number, number][], Set<string>>();
+function effectNames(ds: import('../core/dataset.js').Dataset, effects: [number, number][]): Set<string> {
+  let s = NAMES.get(effects);
+  if (!s) {
+    s = new Set();
+    for (const [e] of effects) { const n = ds.effects.get(e)?.name; if (n !== undefined) s.add(n); }
+    NAMES.set(effects, s);
+  }
+  return s;
 }

@@ -46,15 +46,20 @@ export class Dmg {
 
 const round6 = (v: number): number => (Number.isFinite(v) ? roundHalfAway(v * 1e6) / 1e6 : v);
 
-/** Recursively round floats to 1e-6 and sort object keys (stable, byte-identical output). */
+/** Recursively round floats to 1e-6 in place (stable, byte-identical output). */
 export function tidy(v: unknown): unknown {
   if (typeof v === 'number') return Number.isInteger(v) ? v : round6(v);
-  if (Array.isArray(v)) return v.map(tidy);
+  if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) v[i] = tidy(v[i]); return v; }
   if (v !== null && typeof v === 'object') {
+    // sections build their objects with a fixed key order, so output is already deterministic; rounding in place
     const o = v as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const k of Object.keys(o).sort()) if (o[k] !== undefined) out[k] = tidy(o[k]);
-    return out;
+    for (const k in o) {
+      const x = o[k];
+      if (x === undefined) delete o[k];
+      else if (typeof x === 'number') { if (!Number.isInteger(x)) o[k] = round6(x); }
+      else if (x !== null && typeof x === 'object') tidy(x);
+    }
+    return o;
   }
   return v;
 }

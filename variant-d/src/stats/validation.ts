@@ -25,8 +25,7 @@ export function validate(c: StatsCtx, used: ResourceTotals): object[] {
   const l = c.modules.filter((i) => c.hasEffect(i, ['launcherFitted'])).length;
   if (l > g('launcherSlotsLeft')) push('LAUNCHER_HARDPOINTS', `launchers ${l} > hardpoints ${g('launcherSlotsLeft')}`, null);
   const shipT = ds.types.get(fit.items[ship].typeId)!;
-  const groupAttrs = Array.from({ length: 20 }, (_, k) => ds.attrId(`canFitShipGroup${String(k + 1).padStart(2, '0')}`)).filter((x) => x !== 0);
-  const typeAttrs = Array.from({ length: 11 }, (_, k) => ds.attrId(`canFitShipType${k + 1}`)).filter((x) => x !== 0);
+  const { groupAttrs, typeAttrs, chargeGroups, reqSkill, reqLevel } = ids(ds);
   const raw = (typeId: number, a: number): number | undefined => ds.types.get(typeId)!.rawAttrs[a];
   const fittedGroup = new Map<number, number>(), fittedType = new Map<number, number>(), activeGroup = new Map<number, number>(), onlineGroup = new Map<number, number>();
   const inc = (m: Map<number, number>, k: number) => m.set(k, (m.get(k) ?? 0) + 1);
@@ -61,7 +60,7 @@ export function validate(c: StatsCtx, used: ResourceTotals): object[] {
     if ((r = check('maxGroupActive', activeGroup, it.group))) push('MAX_GROUP_ACTIVE', `${name}: ${r[1]} active of group, max ${r[0]}`, idx);
     if (it.charge >= 0) {
       const ct = ds.types.get(fit.items[it.charge].typeId)!;
-      const cg = [1, 2, 3, 4, 5].map((k) => raw(it.typeId, ds.attrId(`chargeGroup${k}`))).filter((v): v is number => v !== undefined && v !== 0).map((v) => v | 0);
+      const cg = chargeGroups.map((a) => raw(it.typeId, a)).filter((v): v is number => v !== undefined && v !== 0).map((v) => v | 0);
       if (!cg.includes(ct.group)) push('CHARGE_GROUP', `${ct.name} cannot be loaded into ${name}`, idx);
       const ms = raw(it.typeId, ds.attrId('chargeSize'));
       const cs = ct.rawAttrs[ds.attrId('chargeSize')];
@@ -75,12 +74,28 @@ export function validate(c: StatsCtx, used: ResourceTotals): object[] {
   for (const it of fit.items) {
     if (!checked.has(it.kind)) continue;
     for (let k = 1; k <= 6; k++) {
-      const s = (raw(it.typeId, ds.attrId(`requiredSkill${k}`)) ?? 0) | 0;
+      const s = (raw(it.typeId, reqSkill[k - 1]) ?? 0) | 0;
       if (s === 0) continue;
-      const need = raw(it.typeId, ds.attrId(`requiredSkill${k}Level`)) ?? 1;
+      const need = raw(it.typeId, reqLevel[k - 1]) ?? 1;
       if (fit.skillLevel(s) < need && !missing.some((m) => m[0] === s && m[1] >= need)) missing.push([s, need, it.typeId]);
     }
   }
   for (const [s, need, by] of missing) push('MISSING_SKILL', `${ds.types.get(s)?.name ?? '?'} ${need} required by ${ds.types.get(by)!.name}`, null);
   return out;
+}
+
+const IDS = new WeakMap<object, ReturnType<typeof mkIds>>();
+function mkIds(ds: import('../core/dataset.js').Dataset) {
+  return {
+    groupAttrs: Array.from({ length: 20 }, (_, k) => ds.attrId(`canFitShipGroup${String(k + 1).padStart(2, '0')}`)).filter((x) => x !== 0),
+    typeAttrs: Array.from({ length: 11 }, (_, k) => ds.attrId(`canFitShipType${k + 1}`)).filter((x) => x !== 0),
+    chargeGroups: [1, 2, 3, 4, 5].map((k) => ds.attrId(`chargeGroup${k}`)),
+    reqSkill: [1, 2, 3, 4, 5, 6].map((k) => ds.attrId(`requiredSkill${k}`)),
+    reqLevel: [1, 2, 3, 4, 5, 6].map((k) => ds.attrId(`requiredSkill${k}Level`)),
+  };
+}
+function ids(ds: import('../core/dataset.js').Dataset) {
+  let v = IDS.get(ds);
+  if (!v) { v = mkIds(ds); IDS.set(ds, v); }
+  return v;
 }
