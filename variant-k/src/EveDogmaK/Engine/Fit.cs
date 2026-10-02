@@ -22,6 +22,8 @@ public sealed partial class Fit
     public int Char { get; internal set; }
     public bool IsStructure { get; internal set; }
     public List<string> Warnings { get; } = new();
+    /// <summary>Incoming remote reps / neuts / cap transfers from projected items.</summary>
+    public List<IncomingEffect> Incoming { get; } = new();
 
     private int _generation;
 

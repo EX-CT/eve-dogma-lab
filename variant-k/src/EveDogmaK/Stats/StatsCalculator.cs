@@ -98,6 +98,59 @@ public sealed partial class StatsCalculator
         return (new Damage(G(src, d[0]) * mult, G(src, d[1]) * mult, G(src, d[2]) * mult, G(src, d[3]) * mult), kind);
     }
 
+    /// <summary>
+    /// Pyfa missileMaxRangeData (eos/saveddata/module.py, LGPL; re-implemented from the reference engine): flight time plus
+    /// ship-radius bonus, acceleration phase, floor/ceil blend of whole seconds, FoF range limit, centre-to-surface.
+    /// </summary>
+    private double? MissileRange(int charge)
+    {
+        double vel = G(charge, _k.MaxVelocity);
+        if (vel <= 0.0) return null;
+        double radius = G(_f.Ship, _k.ShipRadius);
+        double ft = Formulas.FloatUnerr(G(charge, _k.ExplosionDelay) / 1000.0 + radius / vel);
+        double accelCap = G(charge, KnownIds.Mass) * G(charge, _k.Agility) / 1e6;
+        double RangeAt(double t) { double acc = Math.Min(t, accelCap); return vel / 2.0 * acc + vel * (t - acc); }
+        double lt = Math.Floor(ft), ht = Math.Ceiling(ft);
+        double lr = RangeAt(lt), hr = RangeAt(ht);
+        if (_f.HasEffect(charge, _k.FofMissileLaunching))
+        {
+            double lim = G(charge, _k.MaxFofTargetRange);
+            if (lim > 0.0) { lr = Math.Min(lr, lim); hr = Math.Min(hr, lim); }
+        }
+        lr = Math.Max(lr - radius, 0.0);
+        hr = Math.Max(hr - radius, 0.0);
+        double hc = ft - lt;
+        return lr * (1.0 - hc) + hr * hc;
+    }
+
+    /// <summary>Incoming remote repairs, Pyfa __getAppliedRr diminishing-returns formula: HP/s per layer.</summary>
+    private double[] AppliedRemoteRepairs()
+    {
+        var lists = new[] { new List<(double A, double C)>(), new List<(double, double)>(), new List<(double, double)>() };
+        foreach (var e in _f.Incoming)
+            if (e is IncomingRepair r)
+            {
+                double dur = G(r.Item, _k.Duration) / 1000.0;
+                if (dur > 0.0) lists[r.Layer].Add((G(r.Item, r.Amount) * r.Mult * r.Factor, dur));
+            }
+        var outp = new double[3];
+        for (int l = 0; l < 3; l++)
+        {
+            double total = 0;
+            foreach (var (a, c) in lists[l]) total += a / Math.Truncate(c);
+            double sum = 0;
+            foreach (var (a, c) in lists[l])
+            {
+                double rrps = a / Math.Truncate(c);
+                double m = 7000.0 + rrps * 20.0;
+                double q = (rrps + m) / (total + m) - 1.0;
+                sum += (1.0 - q * q) * a / c;
+            }
+            outp[l] = sum;
+        }
+        return outp;
+    }
+
     // ---------------------------------------------------------------- top level
     public JObj Compute()
     {
@@ -242,7 +295,7 @@ public sealed partial class StatsCalculator
             else if (kind == "missile" && it.Charge >= 0)
             {
                 int c = it.Charge;
-                w["range_m"] = G(c, _k.MaxVelocity) * (G(c, _k.ExplosionDelay) / 1000.0);
+                if (MissileRange(c) is double range) w["range_m"] = range;
                 w["explosion_radius"] = G(c, _k.AoeCloudSize);
                 w["explosion_velocity"] = G(c, _k.AoeVelocity);
             }
@@ -338,6 +391,8 @@ public sealed partial class StatsCalculator
             }
             if (_f.HasEffect(i, _k.StructureRepair)) hullRep += G(i, _k.StructureDamageAmount) / dur;
         }
+        var rr = AppliedRemoteRepairs();
+        shieldRep += rr[0]; armorRep += rr[1]; hullRep += rr[2];
         double passive = Formulas.PeakRecharge(hpS, G(ship, _k.ShieldRechargeRate));
         return new JObj
         {
@@ -395,6 +450,18 @@ public sealed partial class StatsCalculator
             }
             moduleRows.Add(row);
         }
+        // incoming neuts / nos / cap transfers (Pyfa fit.addDrain): no stagger, after the fit's own modules
+        double sigNow = G(ship, _k.SignatureRadius);
+        foreach (var e in _f.Incoming)
+            if (e is IncomingCapacitor d)
+            {
+                double need = G(d.Item, d.Amount) * d.Factor * d.Sign;
+                if (!d.Resist.IsNone) need *= G(ship, d.Resist);
+                double sres = G(d.Item, _k.EnergyNeutralizerSignatureResolution);
+                if (sres != 0.0) need *= Math.Min(sigNow / sres, 1.0);
+                double dur = G(d.Item, d.Duration);
+                if (need != 0.0 && dur > 0.0) drains.Add(new CapDrain(Math.Truncate(dur), need, 0, 0.0, false, false));
+            }
         var o = new JObj
         {
             { "capacity", cap }, { "recharge_time_s", rr / 1000.0 }, { "peak_recharge_gj_s", peak },

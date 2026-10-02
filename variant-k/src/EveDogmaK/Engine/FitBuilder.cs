@@ -170,7 +170,17 @@ public static class FitBuilder
                         it.State = p.Module.State ?? ModuleState.Active;
                         it.DistanceM = p.DistanceM;
                         it.RequestIndex = i;
+                        if (p.Module.ChargeTypeId is int c) // scripts, Nanite Repair Paste
+                        {
+                            int cidx = NewItem(fit, c, ItemKind.Charge, ItemLocation.Nowhere, $"/projected/{i}/module/charge_type_id");
+                            fit[cidx].Parent = idx;
+                            fit[cidx].Owned = false;
+                            it.Charge = cidx;
+                        }
                     }
+                    break;
+                case "fit" when p.Fit != null:
+                    AddProjectedFit(fit, i, p);
                     break;
                 case "drone" when p.Drone != null:
                     for (int n = 0; n < Math.Max(p.Amount, 1) * Math.Max(p.Drone.Quantity, 1); n++)
@@ -180,10 +190,49 @@ public static class FitBuilder
                         fit[idx].DistanceM = p.DistanceM;
                     }
                     break;
-                case "module": case "drone": break;
+                case "module": case "drone": case "fit": break;
                 default: fit.Warnings.Add($"projected kind '{p.Kind}' not supported yet (index {i})"); break;
             }
         }
+    }
+
+    /// <summary>
+    /// Whole projected fit: compute the source fit on its own (its skills, implants, fleet), then project each active
+    /// module / active drone as a frozen item carrying the source-modified attribute values.
+    /// </summary>
+    private static void AddProjectedFit(Fit fit, int i, ProjectedReq p)
+    {
+        Fit src;
+        try { src = Build(fit.Ds, p.Fit! with { Projected = Array.Empty<ProjectedReq>() }); }
+        catch (EngineException e)
+        {
+            fit.Warnings.Add($"projected[{i}] fit: EngineError {{ code: \"{e.Code}\", message: \"{e.Message}\", path: \"{e.Path}\" }}");
+            return;
+        }
+        var frozen = new List<(int TypeId, int Copies, List<(AttrId, double)> Values)>();
+        foreach (var it in src.Items)
+        {
+            int copies = it.Kind switch
+            {
+                ItemKind.Module when it.State >= ModuleState.Active => 1,
+                ItemKind.Drone => it.ActiveCount,
+                _ => 0,
+            };
+            if (copies == 0) continue;
+            var keys = new SortedSet<int>(it.Nodes.Keys);
+            foreach (var (a, _) in it.BaseAttrs.Entries()) keys.Add(a.Value);
+            frozen.Add((it.TypeId, copies, keys.Select(k => (new AttrId(k), src.Get(it.Index, new AttrId(k)))).ToList()));
+        }
+        foreach (var (typeId, copies, values) in frozen)
+            for (int n = 0; n < copies * Math.Max(p.Amount, 1); n++)
+            {
+                int idx = NewItem(fit, typeId, ItemKind.Projected, ItemLocation.Nowhere, $"/projected/{i}");
+                var it = fit[idx];
+                it.State = ModuleState.Active;
+                it.DistanceM = p.DistanceM;
+                it.RequestIndex = i;
+                foreach (var (a, v) in values) fit.SetBase(idx, a, v);
+            }
     }
 
     /// <summary>system security -> securityModifier (used by structure rigs etc.). Default nullsec, like Pyfa.</summary>

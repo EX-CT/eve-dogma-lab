@@ -37,11 +37,13 @@ public sealed class NamedProjectedRule : IProjectedRule
     public static readonly NamedProjectedRule SensorDampener = new("sensor-dampener", new[] { "remoteSensorDamp" },
         new[] { "structureModuleEffectRemoteSensorDampener" }, SensorMods);
     public static readonly NamedProjectedRule SensorBooster = new("remote-sensor-booster", new[] { "remoteSensorBoost" },
-        Array.Empty<string>(), SensorMods);
+        Array.Empty<string>(), SensorBoostMods);
     private static (AttrId, AttrId, Op)[] SensorMods(KnownIds k) => new[]
     {
         (k.MaxTargetRange, k.MaxTargetRangeBonus, Op.PostPercent), (k.ScanResolution, k.ScanResolutionBonus, Op.PostPercent),
     };
+    /// <summary>Remote sensor boosters also raise sensor strength (scan*StrengthPercent).</summary>
+    private static (AttrId, AttrId, Op)[] SensorBoostMods(KnownIds k) => SensorMods(k).Concat(k.SensorStrengthBonuses).ToArray();
 }
 
 /// <summary>Registers effects projected onto this fit: range factor from the projector's optimal/falloff, resisted by the target attribute.</summary>
@@ -61,12 +63,67 @@ public static class ProjectedRegistration
             double factor = Formulas.RangeFactor(opt, fo, it.DistanceM, restricted: true);
             AttrId resist = e.ResistanceAttr ?? (fit.Has(i, fit.K.RemoteResistanceId) ? new AttrId((int)fit.Base(i, fit.K.RemoteResistanceId)) : AttrId.None);
             var rule = rules.FirstOrDefault(r => r.Matches(e));
-            if (rule == null) { fit.Warnings.Add($"projected effect '{e.Name}' not modelled yet"); continue; }
+            if (rule == null)
+            {
+                if (IncomingEffects.TryCreate(fit, i, e.Name, resist, out var incoming)) fit.Incoming.AddRange(incoming);
+                else if (!IncomingEffects.WeaponDamage.Contains(e.Name)) fit.Warnings.Add($"projected effect '{e.Name}' not modelled yet");
+                continue;
+            }
             foreach (var (target, source, op) in rule.Modifiers(e, fit.K))
             {
                 bool mul = op is Op.PostMul or Op.PreMul;
                 fit.AddModifier(ship, target, op, ModSource.Projected(i, source, factor, ship, resist, mul), i, it.Category);
             }
         }
+    }
+}
+
+/// <summary>
+/// Pyfa's 'projected' handlers for remote reps, cap transfers and neuts/nos (eos/effects.py, LGPL; re-implemented
+/// from the reference engine). Optimal/falloff come from the projector's (frozen) base values.
+/// </summary>
+public static class IncomingEffects
+{
+    /// <summary>Weapon damage onto the target: not part of the target's own stats (silently ignored).</summary>
+    public static readonly HashSet<string> WeaponDamage = new()
+    {
+        "projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack", "missileLaunchingForEntity",
+        "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente",
+        "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching",
+    };
+
+    public static bool TryCreate(Fit fit, int i, string name, AttrId resist, out List<IncomingEffect> result)
+    {
+        var ds = fit.Ds;
+        var it = fit[i];
+        AttrId A(string n) => ds.AttrIdOf(n);
+        double Base(string n) { var a = A(n); return fit.Has(i, a) ? fit.Base(i, a) : 0.0; }
+        double FalloffFactor() => Formulas.RangeFactor(Base("maxRange"), Base("falloffEffectiveness"), it.DistanceM, restricted: true);
+        double Gate(double optimal) => optimal < (it.DistanceM ?? 0.0) ? 0.0 : 1.0;
+        var noAssistAttr = A("disallowAssistance");
+        bool noAssist = fit.Has(fit.Ship, noAssistAttr) && fit.Base(fit.Ship, noAssistAttr) != 0.0;
+        List<IncomingEffect> Rep(int layer, string amount, double mult, double factor) =>
+            noAssist ? new() : new() { new IncomingRepair(i, layer, A(amount), mult, factor) };
+        List<IncomingEffect> Drain(string amount, string duration, double factor, double sign) =>
+            new() { new IncomingCapacitor(i, A(amount), A(duration), factor, resist, sign) };
+        bool paste = it.Charge >= 0 && fit[it.Charge].Type.Name == "Nanite Repair Paste";
+        List<IncomingEffect>? r = name switch
+        {
+            "shipModuleRemoteShieldBooster" or "shipModuleAncillaryRemoteShieldBooster" => Rep(0, "shieldBonus", 1.0, FalloffFactor()),
+            "shipModuleRemoteArmorRepairer" or "ShipModuleRemoteArmorMutadaptiveRepairer" => Rep(1, "armorDamageAmount", 1.0, FalloffFactor()),
+            "shipModuleAncillaryRemoteArmorRepairer" => Rep(1, "armorDamageAmount", paste ? 3.0 : 1.0, FalloffFactor()),
+            "shipModuleRemoteHullRepairer" => Rep(2, "structureDamageAmount", 1.0, FalloffFactor()),
+            "npcEntityRemoteShieldBooster" => Rep(0, "shieldBonus", 1.0, Gate(Base("maxRange"))),
+            "npcEntityRemoteArmorRepairer" => Rep(1, "armorDamageAmount", 1.0, Gate(Base("maxRange"))),
+            "npcEntityRemoteHullRepairer" => Rep(2, "structureDamageAmount", 1.0, Gate(Base("maxRange"))),
+            "shipModuleRemoteCapacitorTransmitter" => noAssist ? new() : Drain("powerTransferAmount", "duration", Gate(Base("maxRange")), -1.0),
+            "energyNeutralizerFalloff" => Drain("energyNeutralizerAmount", "duration", FalloffFactor(), 1.0),
+            "energyNosferatuFalloff" => Drain("powerTransferAmount", "duration", FalloffFactor(), 1.0),
+            "structureEnergyNeutralizerFalloff" => Drain("energyNeutralizerAmount", "duration", 1.0, 1.0),
+            "entityEnergyNeutralizerFalloff" => Drain("energyNeutralizerAmount", "energyNeutralizerDuration", Gate(Base("energyNeutralizerRangeOptimal")), 1.0),
+            _ => null,
+        };
+        result = r ?? new();
+        return r != null;
     }
 }

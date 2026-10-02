@@ -52,8 +52,12 @@ public static class RequestParser
             Opt(x, "side_effects") is { ValueKind: JsonValueKind.Array } se ? se.EnumerateArray().Select(a => Int(a, p)).ToArray() : Array.Empty<int>()));
         var cargo = Arr(e, "cargo", path, (x, p) => new CargoReq(ReqInt(x, "type_id", p), OptInt(x, "quantity", p) ?? 1));
         var buffs = new List<Buff>();
+        var boosterFits = new List<FitRequest>();
         if (Opt(e, "fleet") is { } fl)
+        {
             buffs = Arr(fl, "buffs", path + "/fleet", (x, p) => new Buff(ReqInt(x, "buff_id", p), ReqNum(x, "value", p)));
+            boosterFits = Arr(fl, "booster_fits", path + "/fleet", (x, p) => Fit(x, p));
+        }
         var projected = Arr(e, "projected", path, (x, p) => new ProjectedReq(
             ReqStr(x, "kind", p),
             Opt(x, "module") is { ValueKind: JsonValueKind.Object } m ? Module(m, p + "/module") : null,
@@ -83,7 +87,7 @@ public static class RequestParser
                 OptStr(o, "rah", op), OptStr(o, "include_attributes", op), OptBool(o, "sources", op) ?? false,
                 OptBool(o, "validate", op) ?? true, cs);
         }
-        return new FitRequest(shipId, mode, defLevel, levels, sec, modules, drones, fighters, implants, boosters, cargo, buffs, projected,
+        return new FitRequest(shipId, mode, defLevel, levels, sec, modules, drones, fighters, implants, boosters, cargo, buffs, boosterFits, projected,
             envEffects, secLevel, dp, tp, overrides, opts);
     }
 

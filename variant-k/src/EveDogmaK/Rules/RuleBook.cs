@@ -34,7 +34,7 @@ public sealed class RuleBook
             new DataDrivenProjectedRule(), NamedProjectedRule.Webifier, NamedProjectedRule.TargetPainter,
             NamedProjectedRule.SensorDampener, NamedProjectedRule.SensorBooster,
         },
-        passes: new IFitPass[] { new FleetBuffPass(), new CommandBurstPass(), new ReactiveArmorHardenerPass() });
+        passes: new IFitPass[] { new WarfareBuffPass(), new ReactiveArmorHardenerPass() });
 
     // per-dataset cache: effect id -> rule index (rules match on the effect only)
     private Dataset? _ruleCacheDs;

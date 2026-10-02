@@ -54,6 +54,6 @@ public sealed record FitRequest(
     int? DefaultSkillLevel, IReadOnlyList<KeyValuePair<string, int>> SkillLevels, double? SecurityStatus,
     IReadOnlyList<ModuleReq> Modules, IReadOnlyList<DroneReq> Drones, IReadOnlyList<FighterReq> Fighters,
     IReadOnlyList<int> Implants, IReadOnlyList<BoosterReq> Boosters, IReadOnlyList<CargoReq> Cargo,
-    IReadOnlyList<Buff> FleetBuffs, IReadOnlyList<ProjectedReq> Projected,
+    IReadOnlyList<Buff> FleetBuffs, IReadOnlyList<FitRequest> BoosterFits, IReadOnlyList<ProjectedReq> Projected,
     IReadOnlyList<int> EnvironmentEffects, string? SystemSecurity,
     DamageProfile? DamagePattern, TargetProfile? TargetProfile, IReadOnlyList<Override> Overrides, Options Options);

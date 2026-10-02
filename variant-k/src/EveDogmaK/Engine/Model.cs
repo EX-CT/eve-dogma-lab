@@ -94,3 +94,15 @@ public sealed class EngineException : Exception
     public string Path { get; }
     public EngineException(string code, string message, string path) : base(message) { Code = code; Path = path; }
 }
+
+/// <summary>
+/// A projected effect that does not modify attributes but feeds tank or capacitor stats
+/// (Pyfa: fit._armorRr / addDrain). Evaluated lazily by the stats layer.
+/// </summary>
+public abstract record IncomingEffect(int Item);
+
+/// <summary>Remote repair onto layer (0 shield, 1 armor, 2 hull): Amount attr * Mult * Factor per cycle.</summary>
+public sealed record IncomingRepair(int Item, int Layer, AttrId Amount, double Mult, double Factor) : IncomingEffect(Item);
+
+/// <summary>Capacitor drain (Sign +1: neut/nos) or fill (Sign -1: cap transfer) per cycle of the Duration attr.</summary>
+public sealed record IncomingCapacitor(int Item, AttrId Amount, AttrId Duration, double Factor, AttrId Resist, double Sign) : IncomingEffect(Item);

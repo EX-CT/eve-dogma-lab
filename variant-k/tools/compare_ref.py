@@ -24,6 +24,7 @@ def diff(x, y, p, out):
         return
     if isinstance(x, dict) and isinstance(y, dict):
         for k in sorted(set(x) | set(y)):
+            if f"{p}/{k}" in ignore: continue
             if k not in x: out.append(f"{p}/{k}: missing in K (ref {json.dumps(y[k])[:80]})")
             elif k not in y: out.append(f"{p}/{k}: extra in K ({json.dumps(x[k])[:80]})")
             else: diff(x[k], y[k], f"{p}/{k}", out)

@@ -32,45 +32,70 @@ public static class WarfareBuffs
     }
 }
 
-/// <summary>Explicit fleet buffs from the request, aggregated per buff id (Maximum, or Minimum for "Minimum" collections).</summary>
-public sealed class FleetBuffPass : IFitPass
+/// <summary>
+/// Warfare buffs. Candidates per buff id: the fit's own active command bursts (warfareBuffNID / warfareBuffNValue, read
+/// modified from the module because the warfare charge PostAssigns the id and PostMuls the value onto it) and the
+/// active bursts of every <c>fleet.booster_fits</c> ship (computed on its own). Like Pyfa, only the single strongest
+/// (by |value|) source per buff id applies. Explicit <c>fleet.buffs</c> (aggregated Maximum, or Minimum for
+/// "Minimum" collections) override both.
+/// </summary>
+public sealed class WarfareBuffPass : IFitPass
 {
-    public string Name => "fleet-buffs";
+    public string Name => "warfare-buffs";
+
     public void Run(Fit fit)
     {
-        var agg = new SortedDictionary<int, double>();
+        var agg = new Dictionary<int, double>();
         foreach (var b in fit.Request.FleetBuffs)
         {
             if (!fit.Ds.Dbuffs.TryGetValue(b.BuffId, out var info)) { fit.Warnings.Add($"unknown warfare buff {b.BuffId}"); continue; }
             agg[b.BuffId] = !agg.TryGetValue(b.BuffId, out var cur) ? b.Value
                 : info.Aggregate == "Minimum" ? Math.Min(cur, b.Value) : Math.Max(cur, b.Value);
         }
-        foreach (var (id, value) in agg) WarfareBuffs.Apply(fit, id, ModSource.Const(value), fit.Ship);
-    }
-}
-
-/// <summary>
-/// Local command bursts: active modules expose warfareBuffNID / warfareBuffNValue (the warfare charge PostAssigns the id and
-/// PostMuls the value onto the module), so both are read, modified, from the module. Explicit fleet buffs take precedence.
-/// </summary>
-public sealed class CommandBurstPass : IFitPass
-{
-    public string Name => "command-bursts";
-    public void Run(Fit fit)
-    {
-        var explicitIds = fit.Request.FleetBuffs.Select(b => b.BuffId).ToHashSet();
-        int n = fit.Items.Count;
-        for (int i = 0; i < n; i++)
+        var best = new Dictionary<int, (double Value, ModSource Src)>();
+        void Offer(int id, double v, ModSource src)
         {
-            var it = fit[i];
-            if (it.Kind != ItemKind.Module || it.State < ModuleState.Active) continue;
-            foreach (var (idAttr, valAttr) in fit.K.WarfareBuffs)
+            if (best.TryGetValue(id, out var old) && Math.Abs(old.Value) >= Math.Abs(v)) return;
+            best[id] = (v, src);
+        }
+        foreach (var (id, idx, valAttr, v) in ActiveBursts(fit, agg)) Offer(id, v, ModSource.FromAttr(idx, valAttr));
+        for (int k = 0; k < fit.Request.BoosterFits.Count; k++)
+        {
+            Fit booster;
+            try { booster = FitBuilder.Build(fit.Ds, fit.Request.BoosterFits[k] with { BoosterFits = Array.Empty<FitRequest>() }); }
+            catch (EngineException e)
             {
-                int id = fit.Has(i, idAttr) ? (int)fit.Get(i, idAttr) : 0;
-                if (id == 0 || explicitIds.Contains(id)) continue;
-                WarfareBuffs.Apply(fit, id, ModSource.FromAttr(i, valAttr), i);
+                fit.Warnings.Add($"fleet.booster_fits[{k}]: EngineError {{ code: \"{e.Code}\", message: \"{e.Message}\", path: \"{e.Path}\" }}");
+                continue;
+            }
+            foreach (var (id, _, _, v) in ActiveBursts(booster, agg)) Offer(id, v, ModSource.Const(v));
+        }
+        foreach (var (id, v) in agg) best[id] = (v, ModSource.Const(v));
+        foreach (var id in best.Keys.OrderBy(x => x))
+        {
+            var src = best[id].Src;
+            int target = src.Kind == SourceKind.Attribute ? src.Item : fit.Ship;
+            WarfareBuffs.Apply(fit, id, src, target);
+        }
+        fit.InvalidateCache();
+    }
+
+    /// <summary>(buff id, module index, value) of every warfareBuffN slot on active modules, skipping explicitly given ids.</summary>
+    private static List<(int Id, int Module, AttrId ValueAttr, double Value)> ActiveBursts(Fit f, Dictionary<int, double> explicitIds)
+    {
+        var list = new List<(int, int, AttrId, double)>();
+        for (int i = 0; i < f.Items.Count; i++)
+        {
+            var it = f[i];
+            if (it.Kind != ItemKind.Module || it.State < ModuleState.Active) continue;
+            foreach (var (idAttr, valAttr) in f.K.WarfareBuffs)
+            {
+                int id = f.Has(i, idAttr) ? (int)f.Get(i, idAttr) : 0;
+                if (id == 0 || explicitIds.ContainsKey(id)) continue;
+                list.Add((id, i, valAttr, f.Get(i, valAttr)));
             }
         }
+        return list;
     }
 }
 
