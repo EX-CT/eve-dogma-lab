@@ -45,14 +45,21 @@ calculation system's memo table, so the world can be re-evaluated or inspected a
 3. **local_effects** — for each entity in spawn order, every effect allowed by its state (passive/online/active/
    overload categories, fighter abilities, booster side effects, structure rules) turns its modifierInfo into
    `PendingMod`s on target entities. Special handlers for effects CCP ships without modifierInfo (AB/MWD speed and
-   mass, MWD/MJD signature, slot and hardpoint modifiers, bastion hull resists unpenalised).
+   mass, MWD/MJD signature, slot and hardpoint modifiers, bastion hull resists unpenalised; Emergency Hull Energizer
+   hull resonances in the postMul penalty chain; entosis link scan strengths; Micro Jump Field Generator signature;
+   Warp Disruption Field Generator mass/signature/propulsion boosts; lance / disruptive lance speed and warp status;
+   incursion beacons' `OffensiveDefensiveReduction` damage and resist nerfs, unpenalised).
    Read phase over the world → command buffer → write phase appends to the target `Attrs`.
 4. **projected_effects** — projected modules/drones onto the ship: modifierInfo or name-based handlers (webs,
-   target painters, sensor dampeners/boosters), with range factor (optimal/falloff) and the target's
-   `remoteResistanceID` attribute applied lazily.
+   target painters, sensor dampeners/boosters, tracking/guidance disruptors, remote tracking computers, TD drones,
+   bomb launchers), with range factor (optimal/falloff) and the target's `remoteResistanceID` attribute applied
+   lazily. Burst projectors (`doomsdayAOE*`) apply at full strength at any distance; the Standup Weapon Disruptor
+   hits turrets and missiles with the range factor.
 5. **fleet_buffs** — explicit `fleet.buffs`, this fit's active command bursts, and each `fleet.booster_fits` entry
    (each booster fit is its **own world** run through systems 1-3, then its bursts are read). Per buff id the
-   strongest magnitude wins (Pyfa `commandBonuses`), then dbuff modifiers are applied.
+   strongest magnitude wins (Pyfa `commandBonuses`), then dbuff modifiers are applied. Abyssal weather and AoE
+   cloud beacons in `environment.effect_type_ids` add their `warfareBuff1/2` to the same pool. Buffs 79, 90 and
+   93–99 also hit drones that require Drones, and the weather resist/HP/velocity buffs are unpenalised.
 6. **rah_adapt** — Reactive Armor Hardener: evaluates the ship's armor resonances, simulates the RAH cycles until
    the profile loops, applies the averaged profile.
 7. **output systems** (`stats.rs`, `validate.rs`) — read-only: resources, offense (turrets/missiles/smartbombs/
@@ -65,7 +72,8 @@ calculation system's memo table, so the world can be re-evaluated or inspected a
 lazily and recursively (modifier sources are other entities' attributes): CCP operator order PreAssign → PreMul →
 PreDiv → ModAdd → ModSub → PostMul → PostDiv → PostPercent → PostAssign; stacking penalty
 `exp(-(i/2.67)^2)` for non-stackable attributes unless the source category is exempt (ship, charge, skill,
-implant, subsystem, structure); then `minAttribute`/`maxAttribute` caps and 2-decimal rounding of cpu/power.
+implant, subsystem, structure); then `minAttribute`/`maxAttribute` caps and Python-`round(v, 2)` rounding of
+cpu/power (correctly rounded on the binary value).
 A cycle guard returns the base value. Systems that need evaluated values (buff ids, RAH) create a short-lived
 `Calc`, read, drop it, then write — Rust's borrow rules enforce the read/write phase split.
 
@@ -104,4 +112,10 @@ A cycle guard returns the base value. Systems that need evaluated values (buff i
 - Hot path: hecs `World::get` was replaced by `views::Views`, which takes one ViewBorrow per component
   type for each pass. This gave about 1.6x batch throughput.
 - A derived bincode cache (`dataset.hcache`, keyed by xxh3 of the dataset plus the binary's identity)
-  cuts cold start from about 120 ms to about 17 ms.
+  cuts cold start from about 120 ms to a few ms. The cache is memory-mapped, and its tables are zero-copy
+  `LazyTable`s: ids, offsets and a dense id index are read straight from the mapping, and each record is
+  bincode-decoded on first access into cells allocated per 64-record chunk. A process only pays for the types,
+  attributes and effects its request touches.
+- Skills whose modifiers cannot reach anything in the request are not spawned (`skill_reach`).
+- Release builds use fat LTO, one codegen unit, `panic = "abort"` and stripping; `--profile profiling` keeps
+  debuginfo for callgrind.
