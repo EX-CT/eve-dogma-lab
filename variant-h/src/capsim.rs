@@ -168,9 +168,14 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool,
         k
     };
     let mut last_ev: Option<Ev> = None;
-    while let Some(mut e) = heap.pop() {
+    // The current event stays at the heap top while it is processed (anything pushed meanwhile sorts after it:
+    // later time or, at equal time, a newer sequence number), so it is re-armed in place with a single sift-down
+    // instead of pop + push.
+    while let Some(&top) = heap.peek() {
+        let mut e = top;
         let now = e.t;
         if now >= t_max_ms {
+            heap.pop();
             last_ev = Some(e);
             break;
         }
@@ -185,6 +190,7 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool,
             if now == t_wrap {
                 let k = key(&awaiting);
                 if cap >= cap_wrap && k == awaiting_wrap {
+                    heap.pop();
                     last_ev = Some(e);
                     break;
                 }
@@ -196,10 +202,12 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool,
         t_last = now;
         iterations += 1;
         if iterations > 5_000_000 {
+            heap.pop();
             last_ev = Some(e);
             break;
         }
         if e.inj && cap - e.cap_need > cap_max {
+            heap.pop();
             awaiting.push(e);
             continue;
         }
@@ -222,6 +230,7 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool,
         cap = (cap - e.cap_need).min(cap_max);
         if cap < cap_lowest {
             if cap < 0.0 {
+                heap.pop();
                 ran_out = true;
                 last_ev = Some(e);
                 break;
@@ -242,7 +251,7 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool,
             heap.push(inj);
         }
         e.advance(now, &mut seq);
-        heap.push(e);
+        *heap.peek_mut().unwrap() = e;
     }
     let mut all: Vec<Ev> = heap.into_vec();
     if let Some(e) = last_ev {
