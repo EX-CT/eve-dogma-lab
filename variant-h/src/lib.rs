@@ -28,6 +28,10 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Value {
 }
 
 pub fn calc_json(ds: &Dataset, request_json: &str) -> String {
+    // fast path: straight into the typed request; on any error, redo it in two steps to classify the error
+    if let Ok(req) = serde_json::from_str::<FitRequest>(request_json) {
+        return serde_json::to_string(&calc(ds, &req)).unwrap();
+    }
     let v = match serde_json::from_str::<Value>(request_json) {
         Err(e) => json!({"error": {"code": "BAD_JSON", "message": e.to_string(), "path": ""}}),
         Ok(raw) => match serde_json::from_value::<FitRequest>(raw) {

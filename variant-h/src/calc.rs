@@ -24,7 +24,7 @@ fn key(e: Entity, attr: u32) -> u64 {
 
 impl<'w> Calc<'w> {
     pub fn new(ds: &'w Dataset, world: &'w World, order: FxHashMap<u32, u32>) -> Self {
-        Calc { ds, view: world.view::<&Attrs>(), memo: RefCell::new(FxHashMap::default()), order }
+        Calc { ds, view: world.view::<&Attrs>(), memo: RefCell::new(FxHashMap::with_capacity_and_hasher(512, Default::default())), order }
     }
 
     fn src_entity(s: &Src) -> Option<Entity> {

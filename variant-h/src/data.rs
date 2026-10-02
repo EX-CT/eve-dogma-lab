@@ -123,6 +123,17 @@ impl<T: Serialize + serde::de::DeserializeOwned> LazyTable<T> {
     }
     #[inline]
     fn at(&self, i: usize) -> &T {
+        // fast path: record already decoded
+        if let Some(c) = self.chunks[i / CHUNK].get() {
+            if let Some(v) = c[i % CHUNK].get() {
+                return v;
+            }
+        }
+        self.at_slow(i)
+    }
+    #[cold]
+    #[inline(never)]
+    fn at_slow(&self, i: usize) -> &T {
         let n = self.ids.n32();
         let chunk = self.chunks[i / CHUNK].get_or_init(|| (0..CHUNK.min(n - i / CHUNK * CHUNK)).map(|_| OnceLock::new()).collect());
         chunk[i % CHUNK].get_or_init(|| {

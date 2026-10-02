@@ -185,6 +185,11 @@ impl<'a> Fit<'a> {
             path: path.to_string(),
         })?;
         let owned = matches!(kind, Kind::Module | Kind::Charge | Kind::Drone | Kind::Fighter | Kind::Ship);
+        let mut slots = slots;
+        if matches!(kind, Kind::Ship | Kind::Char) {
+            // the ship and character collect hundreds of modified attributes: avoid repeated rehashing
+            slots.reserve(256);
+        }
         let e = self.world.spawn((
             Item { type_id, group: t.group, category: t.category, kind, loc, owned },
             Power(state),
@@ -302,16 +307,27 @@ impl<'a> Fit<'a> {
         }
         // skills: every published skill at default_level (untrained = 0), then explicit levels
         let default_level = req.character.skills.default_level.unwrap_or(0);
-        let mut levels: FxHashMap<u32, u8> = ds.published_skills.iter().map(|s| (*s, default_level)).collect();
+        // explicit levels (later entries win), then the sorted published skill list at the default level
+        let mut ov: FxHashMap<u32, u8> = FxHashMap::default();
         for (k, v) in &req.character.skills.levels {
             if let Ok(id) = k.parse::<u32>() {
-                levels.insert(id, *v);
+                ov.insert(id, *v);
             } else if let Some(id) = ds.type_by_name(k) {
-                levels.insert(id, *v);
+                ov.insert(id, *v);
             }
         }
-        let mut lv: Vec<(u32, u8)> = levels.into_iter().filter(|(s, _)| ds.types.contains_key(s)).collect();
-        lv.sort();
+        let mut lv: Vec<(u32, u8)> = ds
+            .published_skills
+            .iter()
+            .filter(|s| ds.types.contains_key(s))
+            .map(|&s| (s, ov.get(&s).copied().unwrap_or(default_level)))
+            .collect();
+        let extra: Vec<(u32, u8)> =
+            ov.iter().filter(|(s, _)| ds.published_skills.binary_search(s).is_err() && ds.types.contains_key(s)).map(|(&s, &l)| (s, l)).collect();
+        if !extra.is_empty() {
+            lv.extend(extra);
+            lv.sort();
+        }
         // Skills whose modifiers cannot reach any item of this request are left out of the world: they would
         // add no modifier (skills never target other skills), only their levels matter (validation).
         let (need_req, need_groups) = request_reach(ds, req);
