@@ -40,6 +40,8 @@ class Engine:
             return self._graph(req)
         except GraphError as e:
             return _err(e.code, e.message, e.path)
+        except Exception as e:  # noqa: BLE001 - one bad request must not end a batch / RPC session
+            return _err("INTERNAL", f"{type(e).__name__}: {e}")
 
     def _graph(self, req):
         if not isinstance(req, dict):
