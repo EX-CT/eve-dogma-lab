@@ -747,7 +747,7 @@ impl<'a> Fit<'a> {
         if self.folded && !skills_done {
             self.register_folded_skills(&mut targets);
         }
-        self.register_explicit_buffs(req);
+        let _ = req;
     }
 
     /// Skills as constant modifier sources: values of the skill's own attributes at the trained level
@@ -830,7 +830,10 @@ impl<'a> Fit<'a> {
         }
     }
 
-    fn register_explicit_buffs(&mut self, req: &FitRequest) {
+    /// Warfare buffs: explicit `fleet.buffs`, the fit's own active command bursts and `fleet.booster_fits`.
+    /// Per buff id the strongest |value| wins (Pyfa); explicit buffs override. Burst ids are PostAssigned by
+    /// charges, so this runs on the compiled graph (stage 2). Returns true when modifiers were added.
+    fn register_local_bursts(&mut self, req: &FitRequest) -> bool {
         let ds = self.ds;
         let mut agg: Vec<(u32, f64)> = Vec::new();
         for b in &req.fleet.buffs {
@@ -848,31 +851,51 @@ impl<'a> Fit<'a> {
                 }
             }
         }
-        agg.sort_by_key(|x| x.0);
-        for (id, value) in agg {
-            self.apply_buff(id, Src::Const(value));
-        }
-    }
-
-    /// Local command bursts: buff ids are PostAssigned by charges, so they need an evaluated graph.
-    /// Returns true when modifiers were added (graph must be recompiled).
-    fn register_local_bursts(&mut self, req: &FitRequest) -> bool {
-        let ds = self.ds;
         let pairs: Vec<(u32, u32)> =
             (1..=4).map(|k| (ds.attr_id(&format!("warfareBuff{k}ID")), ds.attr_id(&format!("warfareBuff{k}Value")))).collect();
-        let explicit: Vec<u32> = req.fleet.buffs.iter().map(|b| b.buff_id).collect();
-        let before = self.raw.len();
-        for i in 0..self.items.len() {
-            if self.items[i].kind != Kind::Module || self.items[i].state < State::Active {
-                continue;
-            }
-            for &(ida, vala) in &pairs {
-                let id = if self.has(i, ida) { self.get(i, ida) as u32 } else { 0 };
-                if id == 0 || explicit.contains(&id) {
+        let mut best: Vec<(u32, f64, Src)> = Vec::new();
+        let collect = |f: &Fit, own: bool, best: &mut Vec<(u32, f64, Src)>| {
+            for i in 0..f.items.len() {
+                if f.items[i].kind != Kind::Module || f.items[i].state < State::Active {
                     continue;
                 }
-                self.apply_buff(id, Src::Attr { item: i as u32, attr: vala });
+                for &(ida, vala) in &pairs {
+                    let id = if f.has(i, ida) { f.get(i, ida) as u32 } else { 0 };
+                    if id == 0 || agg.iter().any(|x| x.0 == id) {
+                        continue;
+                    }
+                    let v = f.get(i, vala);
+                    let src = if own { Src::Attr { item: i as u32, attr: vala } } else { Src::Const(v) };
+                    match best.iter_mut().find(|x| x.0 == id) {
+                        Some(x) => {
+                            if x.1.abs() < v.abs() {
+                                *x = (id, v, src)
+                            }
+                        }
+                        None => best.push((id, v, src)),
+                    }
+                }
             }
+        };
+        collect(self, true, &mut best);
+        for (k, bf) in req.fleet.booster_fits.iter().enumerate() {
+            let mut breq = bf.clone();
+            breq.fleet.booster_fits.clear();
+            match Fit::build(ds, &breq) {
+                Ok(b) => collect(&b, false, &mut best),
+                Err(e) => self.warnings.push(format!("fleet.booster_fits[{k}]: {e:?}")),
+            }
+        }
+        for &(id, value) in &agg {
+            match best.iter_mut().find(|x| x.0 == id) {
+                Some(x) => *x = (id, value, Src::Const(value)),
+                None => best.push((id, value, Src::Const(value))),
+            }
+        }
+        best.sort_by_key(|x| x.0);
+        let before = self.raw.len();
+        for (id, _, src) in best {
+            self.apply_buff(id, src);
         }
         self.raw.len() != before
     }
