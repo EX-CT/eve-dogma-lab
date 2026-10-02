@@ -28,8 +28,11 @@ export interface Dealer {
   rangeHigh: number;
   rangeChance: number;
   fof: boolean;
+  breacher?: { maxTick: number; pct: number; durationS: number };
 }
 
+/** fighter missiles: damage reduction exponent = ln(reductionFactor) / ln(reductionSensitivity) */
+const drfExp = (rf?: number, rs?: number) => (rf && rs && rs !== 1 ? Math.log(rf) / Math.log(rs) : rf ?? 1);
 const v4 = (o: any) => [o?.em ?? 0, o?.thermal ?? 0, o?.kinetic ?? 0, o?.explosive ?? 0];
 
 /** Missile flight range data: lower / higher range and the chance to reach the higher one. */
@@ -60,6 +63,7 @@ export function dealers(p: FitPrim): Dealer[] {
     kind, item: it, dps: [0, 0, 0, 0], volley: [0, 0, 0, 0], count: 1, mobile: false, speed: 0, sig: 0, optimal: 0, falloff: 0, tracking: 0, optimalSig: 0,
     eR: 0, eV: 0, drf: 1, rangeLow: 0, rangeHigh: 0, rangeChance: 0, fof: false,
   });
+  let d0Bomb: { flight: number; blast: number } | null = null;
   for (const w of st.weapons ?? []) {
     const it = p.items.find((x) => x.kind === "module" && x.index === w.module_index);
     if (!it) continue;
@@ -68,17 +72,26 @@ export function dealers(p: FitPrim): Dealer[] {
     let kind: DealerKind = (w.kind as DealerKind) ?? "other";
     const c = it.charge?.attrs ?? {};
     const ceff = it.charge?.effects ?? [];
-    if (eff.some((e) => /^superWeapon|^lightningWeapon|doomsday/i.test(e)) && !eff.includes("ChainLightning")) kind = "doomsday";
+    if (eff.includes("ChainLightning")) kind = "vorton";
+    else if (a.doomsdayDamageDuration !== undefined || eff.some((e) => /^superWeapon|^lightningWeapon|^doomsday/i.test(e))) kind = "doomsday";
     if (ceff.some((e) => /bomb/i.test(e)) || /Bomb/.test(it.charge?.group ?? "")) kind = "bomb";
     if (ceff.some((e) => /dotMissile|breacher/i.test(e)) || /Breacher/i.test(it.charge?.group ?? "")) kind = "breacher";
+    if (kind === "bomb") {
+      d0Bomb = { flight: (c.maxVelocity ?? 0) * ((c.explosionDelay ?? 0) / 1000), blast: c.empFieldRange ?? c.explosionRange ?? 0 };
+    }
     const d = base(it, kind);
+    if (d0Bomb) (d.rangeLow = d0Bomb.flight - d0Bomb.blast), (d.rangeHigh = d0Bomb.flight + d0Bomb.blast), (d0Bomb = null);
     d.dps = v4(w.dps);
     d.volley = v4(w.volley);
     d.optimal = a.maxRange ?? 0;
     d.falloff = a.falloff ?? 0;
     d.tracking = a.trackingSpeed ?? 0;
     d.optimalSig = a.optimalSigRadius ?? 0;
-    if (kind === "missile" || kind === "bomb" || kind === "breacher") {
+    if (kind === "bomb") {
+      d.eR = c.aoeCloudSize ?? 0;
+      d.eV = c.aoeVelocity ?? 0;
+      d.drf = c.aoeDamageReductionFactor ?? 1;
+    } else if (kind === "missile" || kind === "breacher") {
       d.eR = c.aoeCloudSize ?? 0;
       d.eV = c.aoeVelocity ?? 0;
       d.drf = c.aoeDamageReductionFactor ?? 1;
@@ -96,6 +109,19 @@ export function dealers(p: FitPrim): Dealer[] {
       d.falloff = 0;
     }
     if (kind === "smartbomb") d.optimal = a.empFieldRange ?? 0;
+    out.push(d);
+  }
+  // breacher pods: damage over time, not in the stats weapon list
+  for (const it of p.items) {
+    if (it.kind !== "module" || (it.state !== "active" && it.state !== "overheated") || !it.charge) continue;
+    if (!it.charge.effects.includes("dotMissileLaunching")) continue;
+    const c = it.charge.attrs;
+    const d = base(it, "breacher");
+    d.breacher = { maxTick: c.dotMaxDamagePerTick ?? 0, pct: c.dotMaxHPPercentagePerTick ?? 0, durationS: (c.dotDuration ?? 0) / 1000 };
+    const r = missileRanges(p, c, null);
+    d.rangeLow = r.lo;
+    d.rangeHigh = r.hi;
+    d.rangeChance = r.chance;
     out.push(d);
   }
   for (const dr of st.drones ?? []) {
@@ -136,13 +162,13 @@ export function dealers(p: FitPrim): Dealer[] {
       if (kind === "fighter_attack") {
         d.eR = a.fighterAbilityAttackMissileExplosionRadius ?? 0;
         d.eV = a.fighterAbilityAttackMissileExplosionVelocity ?? 0;
-        d.drf = a.fighterAbilityAttackMissileReductionFactor ?? 1;
+        d.drf = drfExp(a.fighterAbilityAttackMissileReductionFactor, a.fighterAbilityAttackMissileReductionSensitivity);
         d.optimal = a.fighterAbilityAttackMissileRangeOptimal ?? 0;
         d.falloff = a.fighterAbilityAttackMissileRangeFalloff ?? 0;
       } else {
         d.eR = a.fighterAbilityMissilesExplosionRadius ?? 0;
         d.eV = a.fighterAbilityMissilesExplosionVelocity ?? 0;
-        d.drf = a.fighterAbilityMissilesDamageReductionFactor ?? 1;
+        d.drf = drfExp(a.fighterAbilityMissilesDamageReductionFactor, a.fighterAbilityMissilesDamageReductionSensitivity);
         d.optimal = a.fighterAbilityMissilesRange ?? 0;
         d.falloff = 0;
       }
@@ -203,8 +229,11 @@ export function applicationFactor(d: Dealer, g: Geometry, settings: any, dcr: nu
       const ang = ctr === null ? 0 : transversal(g.atkSpeed, g.atkAngle, g.tgtSpeed, g.tgtAngle) / ctr;
       return turretMult(turretCth(d.optimal, d.falloff, d.tracking, d.optimalSig, ctr, dist, ang, g.tgtSig));
     }
-    case "missile":
     case "bomb": {
+      if (dist !== null && (dist < d.rangeLow - 1e-9 || dist > d.rangeHigh + 1e-9)) return 0;
+      return missileFactor(d.eR, d.eV, d.drf, g.tgtSig, g.tgtSpeed);
+    }
+    case "missile": {
       let df = 1;
       if (dist !== null) {
         if (dist <= d.rangeLow) df = 1;
@@ -223,6 +252,7 @@ export function applicationFactor(d: Dealer, g: Geometry, settings: any, dcr: nu
     case "vorton":
       return rangeFactor(d.optimal, 0, dist, false) * missileFactor(d.eR, d.eV, d.drf, g.tgtSig, g.tgtSpeed);
     case "doomsday":
+      if (dist !== null && dist > (d.item.attrs.maxRange ?? Infinity)) return 0;
       return g.tgtSig === Infinity ? 1 : Math.min(1, g.tgtSig / (d.item.attrs.signatureRadius || g.tgtSig));
     case "drone":
     case "fighter_attack":
@@ -235,7 +265,8 @@ export function applicationFactor(d: Dealer, g: Geometry, settings: any, dcr: nu
         // at the attacker's centre, moving with it (sentries: standing still)
         const vD = d.mobile ? Math.min(g.atkSpeed, d.speed) : 0;
         const ctr = dist === null ? null : g.atkRadius + dist + g.tgtRadius;
-        const surf = dist === null ? null : g.atkRadius + dist; // from the attacker's centre to the target surface
+        // the drone sits at the attacker's centre: range is measured from the drone's surface
+        const surf = dist === null ? null : g.atkRadius + dist - (d.item.attrs.radius ?? 0);
         const ang = ctr === null ? 0 : transversal(vD, g.atkAngle, g.tgtSpeed, g.tgtAngle) / ctr;
         return turretMult(turretCth(d.optimal, d.falloff, d.tracking, d.optimalSig, ctr, surf, ang, g.tgtSig));
       }
@@ -259,6 +290,7 @@ export interface TargetModel {
   fit?: FitPrim;
   scrammed?: FitPrim;
   immune: boolean;
+  hp: number;
 }
 
 function fitResists(t: FitPrim, mode: string): number[] {
@@ -299,6 +331,7 @@ export function targetModel(req: GraphRequest, p: Primitives): TargetModel {
     return {
       maxSpeed: nav.max_velocity, sig: f.ship.attrs.signatureRadius, radius: f.ship.attrs.radius ?? 0, resists: fitResists(f, t.resist_mode ?? "auto"),
       fit: f, scrammed: p.target.scrammed, immune: (f.ship.attrs.disallowOffensiveModifiers ?? 0) > 0,
+      hp: (f.ship.attrs.shieldCapacity ?? 0) + (f.ship.attrs.armorHP ?? 0) + (f.ship.attrs.hp ?? 0),
     };
   }
   const pr = t.profile ?? {};
@@ -308,6 +341,7 @@ export function targetModel(req: GraphRequest, p: Primitives): TargetModel {
     radius: pr.radius ?? 0,
     resists: [pr.em ?? 0, pr.thermal ?? 0, pr.kinetic ?? 0, pr.explosive ?? 0],
     immune: false,
+    hp: pr.hp === null || pr.hp === undefined ? Infinity : pr.hp,
   };
 }
 
@@ -438,7 +472,16 @@ export function damageGraph(req: GraphRequest, p: Primitives, application = fals
     let dps = 0;
     let volley = 0;
     let damage = 0;
+    let breach = 0;
     for (const d of ds) {
+      if (d.kind === "breacher") {
+        const f = applicationFactor(d, g, settings, dcr, lockRange);
+        if (f <= 0) continue;
+        const hp = tgt.hp;
+        const tick = Math.min(d.breacher!.maxTick, hp === Infinity ? Infinity : (d.breacher!.pct / 100) * hp);
+        breach = Math.max(breach, tick === Infinity ? d.breacher!.maxTick : tick);
+        continue;
+      }
       const f = applicationFactor(d, g, settings, dcr, lockRange);
       if (pt.time === null) {
         dps += dmgOf(d.dps) * f;
@@ -448,6 +491,15 @@ export function damageGraph(req: GraphRequest, p: Primitives, application = fals
         dps += dmgOf(s.dps) * f;
         volley += dmgOf(s.volley) * f;
         damage += dmgOf(s.total) * f;
+      }
+    }
+    if (breach > 0) {
+      // breacher DoT: one pod at a time (the strongest), ticking every second from 1 s after launch
+      if (pt.time === null) (dps += breach), (volley += breach);
+      else if (pt.time >= 1 - 1e-9) {
+        dps += breach;
+        volley += breach;
+        damage += breach * Math.max(0, Math.floor(floatUnerr(pt.time)) - 1);
       }
     }
     for (const y of req.y) {

@@ -13,6 +13,22 @@ export function dealerSchedule(d: Dealer, _p: FitPrim): TimeState {
   // events: [time s, volley vector, dps vector (for the cycle that starts here)]
   const ev: { t: number; volley: number[]; dps: number[] }[] = [];
   const zero = [0, 0, 0, 0];
+  if (it.kind === "module" && cyc && d.kind === "doomsday" && it.attrs.doomsdayDamageDuration) {
+    // doomsday / lance: ticks every doomsdayDamageCycleTime after the warning delay; dps/volley as the stats panel
+    const period = cyc.avg_ms / 1000;
+    const warn = (it.attrs.doomsdayWarningDuration ?? 0) / 1000;
+    const sub = (it.attrs.doomsdayDamageCycleTime ?? 0) / 1000;
+    const n = sub > 0 ? Math.max(Math.floor(floatUnerr((it.attrs.doomsdayDamageDuration ?? 0) / 1000 / sub)), 0) : 1;
+    const ticks: number[] = [];
+    for (let c = 0; c <= 2500 && period > 0; c += period) for (let k = 0; k < n; k++) ticks.push(c + warn + k * sub);
+    return {
+      at(t: number) {
+        const tu = floatUnerr(t);
+        const k = ticks.filter((x) => floatUnerr(x) <= tu).length;
+        return { dps: d.dps, volley: d.volley, total: d.volley.map((v) => v * k) };
+      },
+    };
+  }
   if (it.kind === "module" && cyc) {
     const active = cyc.raw_ms / 1000;
     const inactive = cyc.reactivation_ms / 1000;
