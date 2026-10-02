@@ -1,6 +1,6 @@
 # PROGRESS — Variant D (TypeScript)
 
-Updated: 2026-10-03 07:10 CST
+Updated: 2026-10-03 07:25 CST
 
 ## Done
 - Full port of the eve-dogma-rs contract in TypeScript, zero runtime dependencies (Node 20+, browsers):
@@ -25,9 +25,9 @@ Updated: 2026-10-03 07:10 CST
   re-arm, chunked JSONL I/O, per-type validation memo. Cold start: VDC4 lazy cache (load ≈ 33 ms), single-file CLI,
   V8 code cache, and a **startup snapshot with the dataset preloaded** (`snapshot` command, used by `bench.yaml`).
   The design is in DESIGN.md §7.
-- Bench 1.8.0 official rerun (07:00 CST, box load ~8 on 8 cores, snapshot build): cold median **115 ms** (was
-  203–221), batch 518 fits/s, Rifter 1.24 ms/calc. These two are noisy on this box. Local interleaved runs at load
-  ~7 give 880–1100 fits/s and 0.7–0.8 ms/calc. In-process warm corpus ≈ 0.55 ms/fit.
+- Bench 1.8.0, official run in the shared checkout (07:22 CST, bench ad9ee22, D 9632cd8): **326/326, 21 051 values,
+  EFT 326/326, deterministic; Rifter 0.757 ms/calc, batch 1040 fits/s, cold median 114 ms** (was 203 ms at 06:30).
+  In-process warm corpus ≈ 0.5 ms/fit. Build-side: deferred ship bonuses (Fit.build ~20% faster), validation memo.
 - `batch --threads N`: ordered worker-thread pool, output identical to serial. Off by default (no gain on the loaded
   box).
 
