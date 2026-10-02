@@ -81,6 +81,7 @@ public sealed class TypeInfo
     public double Capacity { get; init; }
     public double Radius { get; init; }
     public int? MetaLevel { get; init; }
+    public int? MarketGroup { get; init; }
     /// <summary>Dogma attributes exactly as in the SDE.</summary>
     public required AttrTable RawAttrs { get; init; }
     /// <summary>Item base attributes: raw attrs with the type-level mass/capacity/volume/radius folded in.</summary>
@@ -109,6 +110,8 @@ public sealed class DbuffInfo
 public sealed class MutaplasmidInfo
 {
     public Dictionary<int, (double Lo, double Hi)> Ranges { get; init; } = new();
+    /// <summary>Which base types this mutaplasmid accepts and the mutated type it produces.</summary>
+    public (int[] Inputs, int Output)[] Mapping { get; init; } = Array.Empty<(int[], int)>();
 }
 
 /// <summary>Immutable engine dataset (EXCT format v1). Shared read-only by every calculation.</summary>
@@ -124,6 +127,8 @@ public sealed class Dataset
     public required Dictionary<int, DbuffInfo> Dbuffs { get; init; }
     public required Dictionary<int, MutaplasmidInfo> Mutaplasmids { get; init; }
     public required Dictionary<int, string> NamesZh { get; init; }
+    /// <summary>Category id -> name (EFT cargo ordering).</summary>
+    public Dictionary<int, string> Categories { get; init; } = new();
     public required Dictionary<string, int> AttrByName { get; init; }
     public required Dictionary<string, int> EffectByName { get; init; }
     public required Dictionary<string, int> TypeByName { get; init; }

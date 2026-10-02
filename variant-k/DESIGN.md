@@ -20,7 +20,8 @@ Engine/    attribute graph (Fit), FitBuilder, TargetIndex, Calculator
 Rules/     RuleBook: gates, effect rules, projected rules, fit passes  <- all the dogma special cases
 Stats/     derived stats (offense/defense/capacitor/...), CapSim, Validation
 Json/      deterministic JSON writer (sorted keys, 6-decimal rounding, contract float formatting)
-Cli/       calc / batch / serve-stdio / search / type / meta / bench
+Eft/       EFT import/export (Pyfa-exact export)
+Cli/       calc / batch / serve-stdio / eft / search / type / meta / bench
 ```
 
 ## Typed identifiers
@@ -81,5 +82,4 @@ All of this logic re-implements Pyfa/eos via the reference.
   is optional, and its key is the dataset file's SHA-256.
 - **Performance:** per-calc time is about 0.8–1.2 ms, the same order as A. The main remaining cost is registering ~500 skill items
   per fit. A per-dataset skill template would be the next optimisation.
-- **Not implemented:** EFT import/export.
 - **License:** this is an LGPL-3.0-or-later derivative of the reference (see README).

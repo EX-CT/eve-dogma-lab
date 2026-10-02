@@ -95,7 +95,8 @@ public static class DatasetLoader
             rawTypes.Add(new RawType(int.Parse(p.Name), Str(t, "name") ?? "", (int)(Num(t, "group") ?? 0), (int)(Num(t, "category") ?? 0),
                 Bool(t, "published") ?? false, Num(t, "mass") ?? 0, Num(t, "volume") ?? 0, Num(t, "capacity") ?? 0, Num(t, "radius") ?? 0,
                 t.TryGetProperty("meta_level", out var ml) && ml.ValueKind == JsonValueKind.Number ? ml.GetInt32() : null,
-                raw.ToArray(), effs.ToArray()));
+                raw.ToArray(), effs.ToArray(),
+                t.TryGetProperty("market_group", out var mg) && mg.ValueKind == JsonValueKind.Number ? mg.GetInt32() : null));
         }
         var dbuffs = new Dictionary<int, DbuffInfo>();
         if (root.TryGetProperty("dbuffs", out var db))
@@ -118,25 +119,32 @@ public static class DatasetLoader
                 var r = new Dictionary<int, (double, double)>();
                 foreach (var a in p.Value.GetProperty("attrs").EnumerateObject())
                     r[int.Parse(a.Name)] = (a.Value[0].GetDouble(), a.Value[1].GetDouble());
-                mutas[int.Parse(p.Name)] = new MutaplasmidInfo { Ranges = r };
+                var map = new List<(int[], int)>();
+                if (p.Value.TryGetProperty("mapping", out var mp) && mp.ValueKind == JsonValueKind.Array)
+                    foreach (var x in mp.EnumerateArray())
+                        map.Add((x.GetProperty("inputs").EnumerateArray().Select(v => v.GetInt32()).ToArray(), x.GetProperty("output").GetInt32()));
+                mutas[int.Parse(p.Name)] = new MutaplasmidInfo { Ranges = r, Mapping = map.ToArray() };
             }
         var zh = new Dictionary<int, string>();
         if (root.TryGetProperty("names", out var nm) && nm.TryGetProperty("zh", out var z))
             foreach (var p in z.EnumerateObject()) zh[int.Parse(p.Name)] = p.Value.GetString() ?? "";
 
+        var cats = new Dictionary<int, string>();
+        if (root.TryGetProperty("categories", out var ce))
+            foreach (var p in ce.EnumerateObject()) cats[int.Parse(p.Name)] = Str(p.Value, "name") ?? "";
         var sde = root.GetProperty("sde");
         return Assemble(sde.GetProperty("build").GetInt64(), Str(sde, "release_date"), sha,
-            attrById.Where(x => x != null).ToList()!, effects.Values.ToList(), groups, rawTypes, dbuffs, mutas, zh);
+            attrById.Where(x => x != null).ToList()!, effects.Values.ToList(), groups, rawTypes, dbuffs, mutas, zh, cats);
     }
 
     /// <summary>Type as stored in the dataset (before derived fields are computed).</summary>
     public sealed record RawType(int Id, string Name, int Group, int Category, bool Published, double Mass, double Volume,
-        double Capacity, double Radius, int? MetaLevel, KeyValuePair<int, double>[] Attrs, EffectRef[] Effects);
+        double Capacity, double Radius, int? MetaLevel, KeyValuePair<int, double>[] Attrs, EffectRef[] Effects, int? MarketGroup = null);
 
     /// <summary>Build the immutable <see cref="Dataset"/> (indexes and derived per-type fields) from raw tables.</summary>
     public static Dataset Assemble(long build, string? releaseDate, string sha, List<AttrInfo> attrList, List<EffectInfo> effectList,
         Dictionary<int, GroupInfo> groups, List<RawType> rawTypes, Dictionary<int, DbuffInfo> dbuffs,
-        Dictionary<int, MutaplasmidInfo> mutas, Dictionary<int, string> zh)
+        Dictionary<int, MutaplasmidInfo> mutas, Dictionary<int, string> zh, Dictionary<int, string>? categories = null)
     {
         var attrById = new AttrInfo?[attrList.Count == 0 ? 1 : attrList.Max(a => a.Id.Value) + 1];
         var attrByName = new Dictionary<string, int>();
@@ -161,7 +169,7 @@ public static class DatasetLoader
             var ti = new TypeInfo
             {
                 Id = r.Id, Name = r.Name, Group = r.Group, Category = r.Category, Published = r.Published, Mass = r.Mass,
-                Volume = r.Volume, Capacity = r.Capacity, Radius = r.Radius, MetaLevel = r.MetaLevel,
+                Volume = r.Volume, Capacity = r.Capacity, Radius = r.Radius, MetaLevel = r.MetaLevel, MarketGroup = r.MarketGroup,
                 RawAttrs = raw, Attrs = raw.With(set.AsSpan(0, ns)), Effects = r.Effects, RequiredSkills = req.ToArray(), Raw = r,
             };
             types[r.Id] = ti;
@@ -181,7 +189,7 @@ public static class DatasetLoader
         {
             Build = build, ReleaseDate = releaseDate, Sha256 = sha,
             Types = types, Groups = groups, AttrById = attrById, Effects = effects, Dbuffs = dbuffs, Mutaplasmids = mutas,
-            NamesZh = zh, AttrByName = attrByName, EffectByName = effectByName, TypeByName = typeByName,
+            NamesZh = zh, Categories = categories ?? new(), AttrByName = attrByName, EffectByName = effectByName, TypeByName = typeByName,
             PublishedSkills = skills.ToArray(), TacticalModes = modes.ToArray(),
         };
     }

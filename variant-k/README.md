@@ -28,14 +28,14 @@ You can also set the dataset with `$EVE_DOGMA_DATASET`, or put `./dataset.json.g
 dataset file's SHA-256, to `$EVE_DOGMA_K_CACHE`, `$XDG_CACHE_HOME/eve-dogma-k` or `~/.cache/eve-dogma-k`. Later runs load
 the cache in about 50 ms. Set `EVE_DOGMA_K_CACHE=off` to disable it. If the cache is corrupt or stale, the engine falls back to the JSON.
 
-Bench integration is in `bench.yaml` (`build`, `cmd`, `batch_cmd` with `{dataset}`). The latest scorecard is in `bench/`.
+Bench integration is in `bench.yaml` (`build`, `cmd`, `batch_cmd`, `rpc_cmd` with `{dataset}`). The latest scorecard is in `bench/`.
 
 ## Status
 
 - eve-dogma-bench 1.4.0: **289/289 cases, 18,591/18,591 values (100 %)**. Scorecard in `bench/scorecard.md`.
 - Full-output diff against reference A (eve-dogma-rs ae4bfb0) over all 289 bench cases and the reference's 162 test cases: identical
   within 1e-9 relative tolerance. Run `tools/compare_ref.py`.
-- Not implemented: the EFT text import and export RPC methods (`eft_parse` and `eft_export` return `UNKNOWN_METHOD`).
+- EFT: `eft_export` matches Pyfa's exporter on all 295 bench fits (`tools/check_eft_export.py`). `eft_parse` gives the same FitRequest as the reference on its 131 EFT test fits. `search` follows the interim contract 1.4.1 spec.
 
 ## License
 

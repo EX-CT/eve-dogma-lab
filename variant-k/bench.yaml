@@ -2,3 +2,4 @@
 build: ./build.sh
 cmd: ./bin/eve-dogma-k --dataset {dataset} calc
 batch_cmd: ./bin/eve-dogma-k --dataset {dataset} batch
+rpc_cmd: ./bin/eve-dogma-k --dataset {dataset} serve-stdio

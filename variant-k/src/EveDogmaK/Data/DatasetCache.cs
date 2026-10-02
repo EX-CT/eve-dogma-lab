@@ -13,7 +13,7 @@ namespace EveDogmaK.Data;
 /// </summary>
 public static class DatasetCache
 {
-    private const string Magic = "EVEDOGMAK-CACHE-4";
+    private const string Magic = "EVEDOGMAK-CACHE-5";
 
     public static Dataset Load(string path)
     {
@@ -94,6 +94,7 @@ public static class DatasetCache
             bw.Write(r.Id); bw.Write(r.Name); bw.Write(r.Group); bw.Write(r.Category); bw.Write(r.Published);
             bw.Write(r.Mass); bw.Write(r.Volume); bw.Write(r.Capacity); bw.Write(r.Radius);
             bw.Write(r.MetaLevel.HasValue); bw.Write(r.MetaLevel ?? 0);
+            bw.Write(r.MarketGroup.HasValue); bw.Write(r.MarketGroup ?? 0);
             bw.Write(r.Attrs.Length); foreach (var kv in r.Attrs) { bw.Write(kv.Key); bw.Write(kv.Value); }
             bw.Write(r.Effects.Length); foreach (var e in r.Effects) { bw.Write(e.Id.Value); bw.Write(e.IsDefault); }
         }
@@ -111,9 +112,13 @@ public static class DatasetCache
         {
             bw.Write(id); bw.Write(m.Ranges.Count);
             foreach (var (a, (lo, hi)) in m.Ranges) { bw.Write(a); bw.Write(lo); bw.Write(hi); }
+            bw.Write(m.Mapping.Length);
+            foreach (var (ins, outp) in m.Mapping) { bw.Write(ins.Length); foreach (var x in ins) bw.Write(x); bw.Write(outp); }
         }
         bw.Write(ds.NamesZh.Count);
         foreach (var (id, n) in ds.NamesZh) { bw.Write(id); bw.Write(n); }
+        bw.Write(ds.Categories.Count);
+        foreach (var (id, n) in ds.Categories) { bw.Write(id); bw.Write(n); }
         bw.Write(Magic);
     }
 
@@ -157,11 +162,12 @@ public static class DatasetCache
             int id = br.ReadInt32(); string name = br.ReadString(); int group = br.ReadInt32(), cat = br.ReadInt32(); bool pub = br.ReadBoolean();
             double mass = br.ReadDouble(), vol = br.ReadDouble(), cap = br.ReadDouble(), rad = br.ReadDouble();
             bool hasMeta = br.ReadBoolean(); int meta = br.ReadInt32();
+            bool hasMg = br.ReadBoolean(); int mg = br.ReadInt32();
             var at = new KeyValuePair<int, double>[br.ReadInt32()];
             for (int k = 0; k < at.Length; k++) at[k] = new(br.ReadInt32(), br.ReadDouble());
             var ef = new EffectRef[br.ReadInt32()];
             for (int k = 0; k < ef.Length; k++) ef[k] = new EffectRef(new EffectId(br.ReadInt32()), br.ReadBoolean());
-            types.Add(new DatasetLoader.RawType(id, name, group, cat, pub, mass, vol, cap, rad, hasMeta ? meta : null, at, ef));
+            types.Add(new DatasetLoader.RawType(id, name, group, cat, pub, mass, vol, cap, rad, hasMeta ? meta : null, at, ef, hasMg ? mg : null));
         }
         n = br.ReadInt32();
         var dbuffs = new Dictionary<int, DbuffInfo>(n);
@@ -181,12 +187,22 @@ public static class DatasetCache
             int id = br.ReadInt32(); int c = br.ReadInt32();
             var r = new Dictionary<int, (double, double)>(c);
             for (int k = 0; k < c; k++) { int a = br.ReadInt32(); r[a] = (br.ReadDouble(), br.ReadDouble()); }
-            mutas[id] = new MutaplasmidInfo { Ranges = r };
+            var map = new (int[], int)[br.ReadInt32()];
+            for (int k = 0; k < map.Length; k++)
+            {
+                var ins = new int[br.ReadInt32()];
+                for (int x = 0; x < ins.Length; x++) ins[x] = br.ReadInt32();
+                map[k] = (ins, br.ReadInt32());
+            }
+            mutas[id] = new MutaplasmidInfo { Ranges = r, Mapping = map };
         }
         n = br.ReadInt32();
         var zh = new Dictionary<int, string>(n);
         for (int i = 0; i < n; i++) { int id = br.ReadInt32(); zh[id] = br.ReadString(); }
+        n = br.ReadInt32();
+        var cats = new Dictionary<int, string>(n);
+        for (int i = 0; i < n; i++) { int id = br.ReadInt32(); cats[id] = br.ReadString(); }
         if (br.ReadString() != Magic) return null;
-        return DatasetLoader.Assemble(build, date, sha, attrs, effects, groups, types, dbuffs, mutas, zh);
+        return DatasetLoader.Assemble(build, date, sha, attrs, effects, groups, types, dbuffs, mutas, zh, cats);
     }
 }

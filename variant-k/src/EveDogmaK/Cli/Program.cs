@@ -16,7 +16,8 @@ public static class Program
         Commands:
           calc [FILE]            FitRequest JSON (file or stdin) -> FitStats JSON
           batch                  JSONL FitRequests on stdin -> JSONL FitStats on stdout
-          serve-stdio            JSONL RPC: {"id":..,"method":"calc|search|type|meta","params":..}
+          serve-stdio            JSONL RPC: {"id":..,"method":"calc|eft_parse|eft_export|search|type|meta","params":..}
+          eft [FILE]             EFT text (file or stdin) -> FitRequest JSON (add --calc to compute, --skills N)
           search QUERY           search types by name
           type ID|NAME           show type with base attributes
           meta                   dataset info
@@ -74,7 +75,21 @@ public static class Program
                 case "search":
                 {
                     var ds = Load(dataset);
-                    stdout.WriteLine(Rpc.Search(ds, string.Join(' ', args.Skip(1)), 25).Serialize());
+                    stdout.WriteLine(Rpc.Search(ds, string.Join(' ', args.Skip(1)), 20, null).Serialize());
+                    stdout.Flush();
+                    return 0;
+                }
+                case "eft":
+                {
+                    string? skills = TakeFlag(args, "--skills");
+                    bool doCalc = args.Remove("--calc");
+                    var ds = Load(dataset);
+                    var text = ReadInput(args.Count > 1 ? args[1] : null);
+                    FitRequest req;
+                    try { req = EveDogmaK.Eft.EftFormat.Parse(ds, text); }
+                    catch (EveDogmaK.Eft.EftParseException e) { Console.Error.WriteLine($"error: {e.Message}"); return 2; }
+                    if (skills != null) req = req with { DefaultSkillLevel = int.TryParse(skills, out var lv) ? lv : null };
+                    stdout.WriteLine((doCalc ? Calculator.Calc(ds, req) : RequestWriter.Write(req)).Serialize());
                     stdout.Flush();
                     return 0;
                 }

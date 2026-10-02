@@ -1,5 +1,6 @@
 using System.Text.Json;
 using EveDogmaK.Data;
+using EveDogmaK.Eft;
 using EveDogmaK.Engine;
 using EveDogmaK.Json;
 using EveDogmaK.Requests;
@@ -28,10 +29,33 @@ public static class Rpc
                     try { result = Calculator.Calc(ds, RequestParser.Fit(p, "")); }
                     catch (RequestException e) { result = new JObj { { "error", new JObj { { "code", "BAD_REQUEST" }, { "message", e.Message } } } }; }
                     break;
-                case "search":
-                    result = Search(ds, p.ValueKind == JsonValueKind.Object && p.TryGetProperty("query", out var q) ? q.GetString() ?? "" : "",
-                        p.ValueKind == JsonValueKind.Object && p.TryGetProperty("limit", out var l) && l.TryGetInt32(out var li) ? li : 20);
+                case "eft_parse":
+                    try
+                    {
+                        var text = p.ValueKind == JsonValueKind.Object && p.TryGetProperty("text", out var te) && te.ValueKind == JsonValueKind.String ? te.GetString()! : "";
+                        result = RequestWriter.Write(EftFormat.Parse(ds, text));
+                    }
+                    catch (EftParseException e) { result = Error("EFT_PARSE", e.Message); }
                     break;
+                case "eft_export":
+                    try
+                    {
+                        var fit = p.ValueKind == JsonValueKind.Object && p.TryGetProperty("fit", out var fe) ? fe : default;
+                        var name = p.ValueKind == JsonValueKind.Object && p.TryGetProperty("name", out var ne) && ne.ValueKind == JsonValueKind.String ? ne.GetString()! : "EXCT fit";
+                        result = new JObj { { "text", EftFormat.Export(ds, RequestParser.Fit(fit, ""), name) } };
+                    }
+                    catch (RequestException e) { result = Error("BAD_REQUEST", e.Message); }
+                    break;
+                case "search":
+                {
+                    bool obj = p.ValueKind == JsonValueKind.Object;
+                    string query = obj && p.TryGetProperty("query", out var q) && q.ValueKind == JsonValueKind.String ? q.GetString()! : "";
+                    int limit = obj && p.TryGetProperty("limit", out var l) && l.TryGetInt32(out var li) && li >= 0 ? li : 20;
+                    List<string>? kinds = obj && p.TryGetProperty("kinds", out var k) && k.ValueKind == JsonValueKind.Array
+                        ? k.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList() : null;
+                    result = Search(ds, query, limit, kinds);
+                    break;
+                }
                 case "type":
                     result = TypeInfo(ds, p.ValueKind == JsonValueKind.Object && p.TryGetProperty("id", out var t)
                         ? (t.ValueKind == JsonValueKind.String ? t.GetString()! : t.GetRawText()) : "");
@@ -46,24 +70,52 @@ public static class Rpc
     private static JNode Raw(JsonElement e) => e.ValueKind switch
     {
         JsonValueKind.String => e.GetString(),
-        JsonValueKind.Number => e.TryGetInt64(out var l) ? l : e.GetDouble(),
+        JsonValueKind.Number => e.TryGetInt64(out var l) ? (JNode)l : (JNode)e.GetDouble(),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         _ => JNode.Null,
     };
 
-    public static JArr Search(Dataset ds, string q, int limit)
+    private static JObj Error(string code, string message) => new() { { "error", new JObj { { "code", code }, { "message", message } } } };
+
+    /// <summary>Search kinds of the interim spec (contract 1.4.1): category -> kind; category 20 splits implant / booster.</summary>
+    private static readonly (string Kind, int Category)[] SearchCategories =
+        { ("ship", 6), ("module", 7), ("charge", 8), ("drone", 18), ("fighter", 87), ("implant", 20), ("subsystem", 32), ("skill", 16) };
+
+    private static string? SearchKind(Dataset ds, Data.TypeInfo t)
     {
-        var ql = q.ToLowerInvariant();
-        var hits = ds.Types.Values.Where(t => t.Published &&
-                (t.Name.ToLowerInvariant().Contains(ql) || (ds.NamesZh.TryGetValue(t.Id, out var z) && z.Contains(q))))
-            .OrderBy(t => !t.Name.ToLowerInvariant().StartsWith(ql)).ThenBy(t => t.Name.Length).ThenBy(t => t.Name, StringComparer.Ordinal)
-            .Take(limit);
-        return new JArr(hits.Select(t => (JNode)new JObj
+        if (t.Category == 20)
+            return ds.Groups.TryGetValue(t.Group, out var g) && g.Name.Contains("Booster", StringComparison.Ordinal) ? "booster" : "implant";
+        foreach (var (k, c) in SearchCategories) if (c == t.Category) return k;
+        return null;
+    }
+
+    /// <summary>Interim search: published types of the scored kinds, exact &gt; prefix &gt; substring (English or Chinese, case-insensitive), ties by type id.</summary>
+    public static JArr Search(Dataset ds, string q, int limit, List<string>? kinds)
+    {
+        var ql = q.Trim().ToLowerInvariant();
+        int? Rank(Data.TypeInfo t)
         {
-            { "type_id", t.Id }, { "name", t.Name }, { "name_zh", ds.NamesZh.GetValueOrDefault(t.Id) },
-            { "group", ds.Groups.TryGetValue(t.Group, out var g) ? g.Name : null }, { "category_id", t.Category },
-            { "meta_level", JNode.Of(t.MetaLevel) }, { "slot", FitBuilder.InferSlot(t) is { } s ? StatsCalculator.SlotName(s) : null },
+            var en = t.Name.ToLowerInvariant();
+            var zh = ds.NamesZh.TryGetValue(t.Id, out var z) ? z.ToLowerInvariant() : "";
+            if (en == ql || (zh.Length > 0 && zh == ql)) return 0;
+            if (en.StartsWith(ql, StringComparison.Ordinal) || (zh.Length > 0 && zh.StartsWith(ql, StringComparison.Ordinal))) return 1;
+            if (en.Contains(ql, StringComparison.Ordinal) || (zh.Length > 0 && zh.Contains(ql, StringComparison.Ordinal))) return 2;
+            return null;
+        }
+        var hits = new List<(int Rank, int Id, string Kind, Data.TypeInfo T)>();
+        foreach (var t in ds.Types.Values)
+        {
+            if (!t.Published || SearchKind(ds, t) is not { } kind) continue;
+            if (kinds != null && !kinds.Contains(kind)) continue;
+            if (Rank(t) is int r) hits.Add((r, t.Id, kind, t));
+        }
+        string[] matchNames = { "exact", "prefix", "substring" };
+        return new JArr(hits.OrderBy(h => h.Rank).ThenBy(h => h.Id).Take(limit).Select(h => (JNode)new JObj
+        {
+            { "type_id", h.T.Id }, { "name", h.T.Name }, { "name_zh", ds.NamesZh.GetValueOrDefault(h.T.Id) }, { "kind", h.Kind }, { "match", matchNames[h.Rank] },
+            { "group", ds.Groups.TryGetValue(h.T.Group, out var g) ? g.Name : null }, { "category_id", h.T.Category },
+            { "meta_level", JNode.Of(h.T.MetaLevel) }, { "slot", FitBuilder.InferSlot(h.T) is { } s ? StatsCalculator.SlotName(s) : null },
         }));
     }
 
