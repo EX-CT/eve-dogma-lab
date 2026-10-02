@@ -1517,10 +1517,25 @@ impl<'a> Fit<'a> {
             }
         }
         // 2. nodes
-        for it in self.items.iter_mut() {
-            it.nodes.clear();
+        // exact node count per item first, so the per-item node lists and the node table never regrow
+        let mut per_item: Vec<u32> = vec![0; self.items.len()];
+        let mut total_nodes = 0usize;
+        {
+            let mut last: Option<(u32, u32)> = None;
+            for &k in &order {
+                let r = &self.raw[k as usize];
+                if last != Some((r.item, r.attr)) {
+                    last = Some((r.item, r.attr));
+                    per_item[r.item as usize] += 1;
+                    total_nodes += 1;
+                }
+            }
         }
-        let mut meta: Vec<NodeMeta> = Vec::new();
+        for (it, &c) in self.items.iter_mut().zip(&per_item) {
+            it.nodes.clear();
+            it.nodes.reserve_exact(c as usize);
+        }
+        let mut meta: Vec<NodeMeta> = Vec::with_capacity(total_nodes);
         let mut node_of_mod: Vec<u32> = Vec::with_capacity(order.len());
         let mut last: Option<(u32, u32)> = None;
         for &k in &order {

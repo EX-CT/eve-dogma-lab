@@ -74,3 +74,6 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   pop/push port: corpus 592.8M -> 567.1M instr (326 cases, batch --threads 1). 326/326 byte-identical vs A on the
   corpus and on a factor_reload-flipped variant corpus; the randomized fast-vs-reference test now allows 1e-12
   relative on eve_stable only (layout-dependent sum), all other fields bit-exact.
+- 06:57 compile pre-sizes per-item node lists and the node table (exact counts, no regrowth; -8.4M), NameIndex
+  reads through a cached base pointer (no Arc<Blob> enum deref per word), raw_cycle_ms burst-duration ids resolved
+  once per stats call: corpus 567.1M -> 550.1M instr. Identical vs A (corpus + reload variants).

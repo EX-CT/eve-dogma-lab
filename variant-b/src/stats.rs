@@ -87,6 +87,8 @@ struct Ids {
     charge_rate: u32,
     dmg_mult: u32,
     dmg: [u32; 4],
+    /// extra duration attributes of raw_cycle_ms that exist in the dataset (in check order)
+    dur_extra: Vec<u32>,
 }
 
 fn ids(f: &Fit) -> Ids {
@@ -106,6 +108,17 @@ fn ids(f: &Fit) -> Ids {
         charge_rate: a("chargeRate"),
         dmg_mult: a("damageMultiplier"),
         dmg: [a("emDamage"), a("thermalDamage"), a("kineticDamage"), a("explosiveDamage")],
+        dur_extra: [
+            "durationHighisGood",
+            "durationSensorDampeningBurstProjector",
+            "durationTargetIlluminationBurstProjector",
+            "durationECMJammerBurstProjector",
+            "durationWeaponDisruptionBurstProjector",
+        ]
+        .iter()
+        .map(|n| a(n))
+        .filter(|&x| x != 0)
+        .collect(),
     }
 }
 
@@ -209,17 +222,8 @@ impl<'a> Fit<'a> {
 
     fn raw_cycle_ms(&self, i: usize, id: &Ids) -> f64 {
         let mut v: f64 = self.get(i, id.speed).max(self.get(i, id.duration));
-        for n in [
-            "durationHighisGood",
-            "durationSensorDampeningBurstProjector",
-            "durationTargetIlluminationBurstProjector",
-            "durationECMJammerBurstProjector",
-            "durationWeaponDisruptionBurstProjector",
-        ] {
-            let a = self.ds.attr_id(n);
-            if a != 0 {
-                v = v.max(self.get(i, a));
-            }
+        for &a in &id.dur_extra {
+            v = v.max(self.get(i, a));
         }
         v
     }

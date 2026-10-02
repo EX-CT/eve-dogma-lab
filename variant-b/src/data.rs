@@ -995,11 +995,18 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned> std::ops::Index<&u32> fo
 /// Layout: u32 cap (power of two), cap x u32 (entry index + 1, 0 = empty), u32 n, n x (off, len, id), name bytes.
 pub struct NameIndex {
     blob: std::sync::Arc<Blob>,
+    /// base/len of `blob`'s bytes (stable: the blob is immutable and owned), so lookups skip the Blob deref
+    base: *const u8,
+    len: usize,
     at: usize,
     cap: usize,
     entries: usize,
     names: usize,
 }
+
+// SAFETY: the raw base pointer points into the immutable blob owned (Arc) by the index
+unsafe impl Send for NameIndex {}
+unsafe impl Sync for NameIndex {}
 
 /// Stable (snapshot-persisted) string hash: 8 bytes per step, multiply-rotate (FxHash-style) + final mix.
 #[inline]
@@ -1069,12 +1076,17 @@ impl NameIndex {
         }
         // entries are not validated up front (that touched every page of the index at start-up): `get` uses
         // bounds-checked slices, so a corrupt index can only fail a lookup loudly, never read out of bounds
-        Some(NameIndex { blob: blob.clone(), at, cap, entries, names })
+        Some(NameIndex { blob: blob.clone(), base: b.as_ptr(), len: b.len(), at, cap, entries, names })
     }
 
     #[inline]
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: base/len describe the immutable bytes of `self.blob`, kept alive by the Arc
+        unsafe { std::slice::from_raw_parts(self.base, self.len) }
+    }
+    #[inline]
     fn rd(&self, o: usize) -> usize {
-        u32::from_le_bytes(self.blob[o..o + 4].try_into().unwrap()) as usize
+        u32::from_le_bytes(self.bytes()[o..o + 4].try_into().unwrap()) as usize
     }
 
     #[inline]
@@ -1088,7 +1100,7 @@ impl NameIndex {
             }
             let eo = self.entries + (e - 1) * 12;
             let (o, l) = (self.rd(eo), self.rd(eo + 4));
-            if l == key.len() && &self.blob[self.names + o..self.names + o + l] == key {
+            if l == key.len() && &self.bytes()[self.names + o..self.names + o + l] == key {
                 return Some(self.rd(eo + 8) as u32);
             }
             h = (h + 1) & (self.cap - 1);
