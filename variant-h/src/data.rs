@@ -4,6 +4,108 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::OnceLock;
+
+/// All types, decoded lazily: the derived cache stores each `TypeInfo` as its own bincode record, and a request
+/// only decodes the few hundred types it touches (cold start does not pay for ~all types and their names).
+pub struct TypeTable {
+    ids: Vec<u32>,
+    /// record i = blob[offs[i]..offs[i + 1]]
+    offs: Vec<u32>,
+    blob: Vec<u8>,
+    cells: Vec<OnceLock<TypeInfo>>,
+}
+
+impl TypeTable {
+    pub fn from_map(m: FxHashMap<u32, TypeInfo>) -> TypeTable {
+        let mut v: Vec<(u32, TypeInfo)> = m.into_iter().collect();
+        v.sort_by_key(|x| x.0);
+        let (mut ids, mut offs, mut blob, mut cells) = (Vec::new(), vec![0u32], Vec::new(), Vec::new());
+        for (id, t) in v {
+            ids.push(id);
+            blob.extend_from_slice(&bincode::serialize(&t).expect("type record"));
+            offs.push(blob.len() as u32);
+            let c = OnceLock::new();
+            let _ = c.set(t);
+            cells.push(c);
+        }
+        TypeTable { ids, offs, blob, cells }
+    }
+    #[inline]
+    fn at(&self, i: usize) -> &TypeInfo {
+        self.cells[i].get_or_init(|| bincode::deserialize(&self.blob[self.offs[i] as usize..self.offs[i + 1] as usize]).expect("type record"))
+    }
+    #[inline]
+    pub fn get(&self, id: &u32) -> Option<&TypeInfo> {
+        self.ids.binary_search(id).ok().map(|i| self.at(i))
+    }
+    pub fn contains_key(&self, id: &u32) -> bool {
+        self.ids.binary_search(id).is_ok()
+    }
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+    /// all types in ascending id order (decodes every record)
+    pub fn values(&self) -> impl Iterator<Item = &TypeInfo> {
+        (0..self.ids.len()).map(|i| self.at(i))
+    }
+}
+
+impl std::ops::Index<&u32> for TypeTable {
+    type Output = TypeInfo;
+    fn index(&self, id: &u32) -> &TypeInfo {
+        self.get(id).expect("unknown type id")
+    }
+}
+
+fn u32s_to_bytes(v: &[u32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+fn bytes_to_u32s(b: &[u8]) -> Vec<u32> {
+    b.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+}
+
+struct Bytes(Vec<u8>);
+impl Serialize for Bytes {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_bytes(&self.0)
+    }
+}
+impl<'de> Deserialize<'de> for Bytes {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Bytes;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("bytes")
+            }
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Bytes, E> {
+                Ok(Bytes(v.to_vec()))
+            }
+            fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Bytes, E> {
+                Ok(Bytes(v))
+            }
+        }
+        d.deserialize_byte_buf(V)
+    }
+}
+
+impl Serialize for TypeTable {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (Bytes(u32s_to_bytes(&self.ids)), Bytes(u32s_to_bytes(&self.offs)), Bytes(self.blob.clone())).serialize(s)
+    }
+}
+impl<'de> Deserialize<'de> for TypeTable {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (ids, offs, blob) = <(Bytes, Bytes, Bytes)>::deserialize(d)?;
+        let ids = bytes_to_u32s(&ids.0);
+        let cells = (0..ids.len()).map(|_| OnceLock::new()).collect();
+        Ok(TypeTable { ids, offs: bytes_to_u32s(&offs.0), blob: blob.0, cells })
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttrInfo {
@@ -157,7 +259,7 @@ fn skill_reach_of(types: &FxHashMap<u32, TypeInfo>, effects: &FxHashMap<u32, Eff
 pub struct Dataset {
     pub build: u64,
     pub sha256: String,
-    pub types: FxHashMap<u32, TypeInfo>,
+    pub types: TypeTable,
     pub group_names: FxHashMap<u32, String>,
     pub category_names: FxHashMap<u32, String>,
     pub attrs: FxHashMap<u32, AttrInfo>,
@@ -166,7 +268,9 @@ pub struct Dataset {
     pub mutaplasmids: FxHashMap<u32, MutaInfo>,
     attr_by_name: FxHashMap<String, u32>,
     effect_by_name: FxHashMap<String, u32>,
-    type_by_name: FxHashMap<String, u32>,
+    /// lowercased name -> id (published type wins, else the lowest id); built on first use
+    #[serde(skip)]
+    type_by_name: OnceLock<FxHashMap<String, u32>>,
     /// published skills (category 16), sorted
     pub published_skills: Vec<u32>,
     /// tactical destroyer modes (group 1306): (lowercased name, id), sorted by id
@@ -417,7 +521,7 @@ impl Dataset {
         Ok(Dataset {
             build: raw.sde.build,
             sha256,
-            types,
+            types: TypeTable::from_map(types),
             group_names,
             category_names,
             attrs,
@@ -426,7 +530,11 @@ impl Dataset {
             mutaplasmids: raw.mutaplasmids.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect(),
             attr_by_name,
             effect_by_name,
-            type_by_name,
+            type_by_name: {
+                let c = OnceLock::new();
+                let _ = c.set(type_by_name);
+                c
+            },
             published_skills,
             t3d_modes,
             skill_reach,
@@ -442,7 +550,20 @@ impl Dataset {
         *self.effect_by_name.get(name).unwrap_or(&0)
     }
     pub fn type_by_name(&self, name: &str) -> Option<u32> {
-        self.type_by_name.get(&name.trim().to_lowercase()).copied()
+        self.type_by_name
+            .get_or_init(|| {
+                // same rule as at parse time: ascending ids, a published type replaces an earlier entry
+                let mut m = FxHashMap::default();
+                for t in self.types.values() {
+                    let l = t.name.to_lowercase();
+                    if t.published || !m.contains_key(&l) {
+                        m.insert(l, t.id);
+                    }
+                }
+                m
+            })
+            .get(&name.trim().to_lowercase())
+            .copied()
     }
     #[inline]
     pub fn attr_default(&self, id: u32) -> f64 {
