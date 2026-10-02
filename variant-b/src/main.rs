@@ -136,13 +136,27 @@ fn main() {
             }
         }
         "batch" => {
+            // stateless requests -> embarrassingly parallel: chunks of lines are computed on N threads and
+            // written back in input order. --threads 1 (or $EVE_DOGMA_THREADS=1) for strictly sequential.
+            let threads: usize = take_flag(&mut args, "--threads")
+                .or_else(|| std::env::var("EVE_DOGMA_THREADS").ok())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
+                .max(1);
             let ds = load(dataset);
-            for line in std::io::stdin().lock().lines() {
-                let line = line.unwrap();
-                if line.trim().is_empty() {
-                    continue;
+            let stdin = std::io::stdin();
+            let mut lines = stdin.lock().lines().map(|l| l.unwrap()).filter(|l| !l.trim().is_empty());
+            let chunk = 64 * threads;
+            loop {
+                let batch: Vec<String> = lines.by_ref().take(chunk).collect();
+                if batch.is_empty() {
+                    break;
                 }
-                writeln!(out, "{}", eve_dogma::calc_json(&ds, &line)).unwrap();
+                let results = eve_dogma::calc_many(&ds, &batch, threads);
+                for r in results {
+                    writeln!(out, "{r}").unwrap();
+                }
+                out.flush().unwrap();
             }
         }
         "serve-stdio" => {

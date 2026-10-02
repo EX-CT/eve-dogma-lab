@@ -29,3 +29,28 @@ pub fn calc_json(ds: &Dataset, request_json: &str) -> String {
     };
     serde_json::to_string(&v).unwrap()
 }
+
+/// Compute many independent requests (JSON strings) on `threads` worker threads; results in input order.
+pub fn calc_many(ds: &Dataset, requests: &[String], threads: usize) -> Vec<String> {
+    let threads = threads.clamp(1, requests.len().max(1));
+    if threads == 1 {
+        return requests.iter().map(|r| calc_json(ds, r)).collect();
+    }
+    let mut out: Vec<String> = vec![String::new(); requests.len()];
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<&mut String>> = out.iter_mut().map(std::sync::Mutex::new).collect();
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= requests.len() {
+                    break;
+                }
+                let r = calc_json(ds, &requests[i]);
+                **slots[i].lock().unwrap() = r;
+            });
+        }
+    });
+    drop(slots);
+    out
+}
