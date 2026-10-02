@@ -262,33 +262,29 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 			classUsed[fighterClass(i)]++
 		}
 	}
-	resources := obj{
-		"cpu":             usage(cpuUsed, f.Get(ship, w.cpuOut)),
-		"power":           usage(pgUsed, f.Get(ship, w.powerOut)),
-		"calibration":     usage(calibUsed, f.Get(ship, w.upgradeCap)),
-		"drone_bandwidth": usage(bwUsed, g(ship, "droneBandwidth")),
-		"drone_bay":       usage(bayUsed, g(ship, "droneCapacity")),
-		"fighter_bay":     usage(fbayUsed, g(ship, "fighterCapacity")),
-		"cargo":           usage(cargoUsed, f.Get(ship, 38)),
-		"slots": obj{
-			"high":      usage(float64(slotCount[SlotHigh]), g(ship, "hiSlots")),
-			"mid":       usage(float64(slotCount[SlotMid]), g(ship, "medSlots")),
-			"low":       usage(float64(slotCount[SlotLow]), g(ship, "lowSlots")),
-			"rig":       usage(float64(slotCount[SlotRig]), g(ship, "rigSlots")),
-			"subsystem": usage(float64(slotCount[SlotSubsystem]), g(ship, "maxSubSystems")),
-			"service":   usage(float64(slotCount[SlotService]), g(ship, "serviceSlots")),
-		},
-		"hardpoints": obj{
-			"turret":   usage(float64(turrets), g(ship, "turretSlotsLeft")),
-			"launcher": usage(float64(launchers), g(ship, "launcherSlotsLeft")),
-		},
-		"fighter_tubes": obj{
-			"total":   usage(float64(tubes), g(ship, "fighterTubes")),
-			"light":   usage(classUsed["light"], g(ship, "fighterLightSlots")),
-			"support": usage(classUsed["support"], g(ship, "fighterSupportSlots")),
-			"heavy":   usage(classUsed["heavy"], g(ship, "fighterHeavySlots")),
-		},
-	}
+	resources := newK(10).
+		A("cpu", usage(cpuUsed, f.Get(ship, w.cpuOut))).
+		A("power", usage(pgUsed, f.Get(ship, w.powerOut))).
+		A("calibration", usage(calibUsed, f.Get(ship, w.upgradeCap))).
+		A("drone_bandwidth", usage(bwUsed, g(ship, "droneBandwidth"))).
+		A("drone_bay", usage(bayUsed, g(ship, "droneCapacity"))).
+		A("fighter_bay", usage(fbayUsed, g(ship, "fighterCapacity"))).
+		A("cargo", usage(cargoUsed, f.Get(ship, 38))).
+		A("slots", newK(6).
+			A("high", usage(float64(slotCount[SlotHigh]), g(ship, "hiSlots"))).
+			A("mid", usage(float64(slotCount[SlotMid]), g(ship, "medSlots"))).
+			A("low", usage(float64(slotCount[SlotLow]), g(ship, "lowSlots"))).
+			A("rig", usage(float64(slotCount[SlotRig]), g(ship, "rigSlots"))).
+			A("subsystem", usage(float64(slotCount[SlotSubsystem]), g(ship, "maxSubSystems"))).
+			A("service", usage(float64(slotCount[SlotService]), g(ship, "serviceSlots")))).
+		A("hardpoints", newK(2).
+			A("turret", usage(float64(turrets), g(ship, "turretSlotsLeft"))).
+			A("launcher", usage(float64(launchers), g(ship, "launcherSlotsLeft")))).
+		A("fighter_tubes", newK(4).
+			A("total", usage(float64(tubes), g(ship, "fighterTubes"))).
+			A("light", usage(classUsed["light"], g(ship, "fighterLightSlots"))).
+			A("support", usage(classUsed["support"], g(ship, "fighterSupportSlots"))).
+			A("heavy", usage(classUsed["heavy"], g(ship, "fighterHeavySlots"))))
 
 	// ---------------- offense
 	tp := TargetProfile{}
@@ -329,13 +325,11 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		if it.Charge >= 0 {
 			chargeID = f.Items[it.Charge].TypeID
 		}
-		wo := obj{"module_index": optIdx(it.ReqIndex), "type_id": it.TypeID, "name": it.T.Name, "kind": kind,
-			"charge_type_id": chargeID, "volley": vs.json(), "dps": dps.json(), "cycle_time_ms": cyc}
+		wo := newK(14).A("module_index", optIdx(it.ReqIndex)).U("type_id", uint64(it.TypeID)).S("name", it.T.Name).S("kind", kind).
+			A("charge_type_id", chargeID).A("volley", vs.json()).A("dps", dps.json()).F("cycle_time_ms", cyc)
 		switch kind {
 		case "turret":
-			wo["optimal_m"] = g(i, "maxRange")
-			wo["falloff_m"] = g(i, "falloff")
-			wo["tracking"] = g(i, "trackingSpeed")
+			wo.F("optimal_m", g(i, "maxRange")).F("falloff_m", g(i, "falloff")).F("tracking", g(i, "trackingSpeed"))
 		case "missile":
 			if it.Charge >= 0 {
 				c := int(it.Charge)
@@ -358,17 +352,15 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 					}
 					lr, hr = max(lr-radius, 0), max(hr-radius, 0)
 					hc := ft - lt
-					wo["range_m"] = lr*(1-hc) + hr*hc
+					wo.F("range_m", lr*(1-hc)+hr*hc)
 				}
-				wo["explosion_radius"] = g(c, "aoeCloudSize")
-				wo["explosion_velocity"] = g(c, "aoeVelocity")
+				wo.F("explosion_radius", g(c, "aoeCloudSize")).F("explosion_velocity", g(c, "aoeVelocity"))
 			}
 		case "smartbomb":
-			wo["range_m"] = g(i, "empFieldRange")
+			wo.F("range_m", g(i, "empFieldRange"))
 		}
 		if spv > 0 {
-			wo["spool_multiplier"] = 1 + spv
-			wo["volley_unspooled"] = base.json()
+			wo.F("spool_multiplier", 1+spv).A("volley_unspooled", base.json())
 		}
 		weapons = append(weapons, wo)
 	}
@@ -392,9 +384,9 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		dps := v.scale(1000 / cyc)
 		dVol.add(v)
 		dDps.add(dps)
-		droneOut = append(droneOut, obj{"drone_index": optIdx(it.ReqIndex), "type_id": it.TypeID, "name": it.T.Name,
-			"count": n, "volley": v.json(), "dps": dps.json(), "optimal_m": g(i, "maxRange"), "falloff_m": g(i, "falloff"),
-			"tracking": g(i, "trackingSpeed"), "max_velocity": g(i, "maxVelocity"), "signature_radius": g(i, "signatureRadius")})
+		droneOut = append(droneOut, newK(11).A("drone_index", optIdx(it.ReqIndex)).U("type_id", uint64(it.TypeID)).S("name", it.T.Name).
+			F("count", n).A("volley", v.json()).A("dps", dps.json()).F("optimal_m", g(i, "maxRange")).F("falloff_m", g(i, "falloff")).
+			F("tracking", g(i, "trackingSpeed")).F("max_velocity", g(i, "maxVelocity")).F("signature_radius", g(i, "signatureRadius")))
 	}
 	var fVol, fDps dmg
 	fighterOut := []any{}
@@ -426,9 +418,9 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		if fv.total() > 0 {
 			fVol.add(fv)
 			fDps.add(fd)
-			fighterOut = append(fighterOut, obj{"fighter_index": optIdx(it.ReqIndex), "type_id": it.TypeID, "name": it.T.Name,
-				"squadron_size": n, "volley": fv.json(), "dps": fd.json(), "max_velocity": g(i, "maxVelocity"),
-				"signature_radius": g(i, "signatureRadius")})
+			fighterOut = append(fighterOut, newK(8).A("fighter_index", optIdx(it.ReqIndex)).U("type_id", uint64(it.TypeID)).S("name", it.T.Name).
+				F("squadron_size", n).A("volley", fv.json()).A("dps", fd.json()).F("max_velocity", g(i, "maxVelocity")).
+				F("signature_radius", g(i, "signatureRadius")))
 		}
 	}
 	tVol, tDps := wVol, wDps
@@ -436,12 +428,10 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	tVol.add(fVol)
 	tDps.add(dDps)
 	tDps.add(fDps)
-	offense := obj{
-		"weapons": weapons, "drones": droneOut, "fighters": fighterOut,
-		"total": obj{"weapon_dps": wDps.total(), "weapon_volley": wVol.total(), "drone_dps": dDps.total(), "drone_volley": dVol.total(),
-			"fighter_dps": fDps.total(), "fighter_volley": fVol.total(), "dps": tDps.json(), "volley": tVol.json()},
-		"vs_target_profile": obj{"dps": tDps.vs(tpRes), "volley": tVol.vs(tpRes)},
-	}
+	offense := newK(5).A("weapons", weapons).A("drones", droneOut).A("fighters", fighterOut).
+		A("total", newK(8).F("weapon_dps", wDps.total()).F("weapon_volley", wVol.total()).F("drone_dps", dDps.total()).F("drone_volley", dVol.total()).
+			F("fighter_dps", fDps.total()).F("fighter_volley", fVol.total()).A("dps", tDps.json()).A("volley", tVol.json())).
+		A("vs_target_profile", newK(2).F("dps", tDps.vs(tpRes)).F("volley", tVol.vs(tpRes)))
 
 	// ---------------- defense
 	dp := Resists{25, 25, 25, 25}
@@ -527,17 +517,15 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	if srr > 0 {
 		passive = 10 / srr * 0.5 * 0.5 * hpS
 	}
-	defense := obj{
-		"hp":             &fobj{k: keysLayer, v: [5]float64{hpA, hpH, hpS, hpS + hpA + hpH}},
-		"resonance":      obj{"shield": resJ(rs), "armor": resJ(ra), "hull": resJ(rh)},
-		"ehp":            &fobj{k: keysLayer, v: [5]float64{eA, eH, eS, eS + eA + eH}},
-		"damage_pattern": &fobj{k: keysRes, v: [5]float64{dp.EM, dp.Explosive, dp.Kinetic, dp.Thermal}},
-		"tank": obj{
-			"raw": obj{"passive_shield": passive, "shield_repair": shieldRep, "armor_repair": armorRep, "hull_repair": hullRep},
-			"effective": obj{"passive_shield": effectivify(passive, rs), "shield_repair": effectivify(shieldRep, rs),
-				"armor_repair": effectivify(armorRep, ra), "hull_repair": effectivify(hullRep, rh)},
-		},
-	}
+	tank := newK(4).
+		A("raw", tankRow(passive, shieldRep, armorRep, hullRep)).
+		A("effective", tankRow(effectivify(passive, rs), effectivify(shieldRep, rs), effectivify(armorRep, ra), effectivify(hullRep, rh)))
+	defense := newK(5).
+		A("hp", &fobj{k: keysLayer, v: [5]float64{hpA, hpH, hpS, hpS + hpA + hpH}}).
+		A("resonance", newK(3).A("shield", resJ(rs)).A("armor", resJ(ra)).A("hull", resJ(rh))).
+		A("ehp", &fobj{k: keysLayer, v: [5]float64{eA, eH, eS, eS + eA + eH}}).
+		A("damage_pattern", &fobj{k: keysRes, v: [5]float64{dp.EM, dp.Explosive, dp.Kinetic, dp.Thermal}}).
+		A("tank", tank)
 
 	// ---------------- capacitor
 	capC := g(ship, "capacitorCapacity")
@@ -609,11 +597,11 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 			drains = append(drains, Drain{Duration: math.Trunc(dur), CapNeed: need})
 		}
 	}
-	capj := obj{"capacity": capC, "recharge_time_s": rr / 1000, "peak_recharge_gj_s": peak, "use_gj_s": capUsed,
-		"injected_gj_s": capAdded, "delta_gj_s": peak + capAdded - capUsed}
+	capj := newK(11).F("capacity", capC).F("recharge_time_s", rr/1000).F("peak_recharge_gj_s", peak).F("use_gj_s", capUsed).
+		F("injected_gj_s", capAdded).F("delta_gj_s", peak+capAdded-capUsed)
+	capStable := true
 	if len(drains) == 0 {
-		capj["stable"] = true
-		capj["stable_percent"] = 100.0
+		capj.A("stable", true).F("stable_percent", 100.0)
 	} else {
 		o := req.Options.CapSim
 		tmax := 6.0 * 3600
@@ -623,16 +611,16 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		r := SimulateCap(capC, rr, drains, 1, o.Reload || factorReload, true, tmax*1000)
 		st := (r.StableLow + r.StableHigh) / 2
 		stable := r.Stable && st > 0
-		capj["stable"] = stable
+		capStable = stable
+		capj.A("stable", stable)
 		if stable {
-			capj["stable_percent"] = min(st*100, 100)
+			capj.F("stable_percent", min(st*100, 100))
 		} else {
-			capj["depletes_in_s"] = r.TS
+			capj.F("depletes_in_s", r.TS)
 		}
-		capj["eve_stable_percent"] = r.EveStable * 100
-		capj["sim_iterations"] = r.Iterations
+		capj.F("eve_stable_percent", r.EveStable*100).U("sim_iterations", r.Iterations)
 	}
-	f.sustainableTank(defense["tank"].(obj), capj["stable"].(bool), factorReload, modules,
+	f.sustainableTank(tank, capStable, factorReload, modules,
 		[3]float64{shieldRep, armorRep, hullRep}, passive, capUsed, peak+capAdded,
 		func(v float64, l int) float64 { return effectivify(v, [3][4]float64{rs, ra, rh}[l]) })
 
@@ -659,9 +647,9 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	if warpNeed > 0 && mass > 0 {
 		maxWarp = capC / (mass * warpNeed)
 	}
-	navigation := obj{"max_velocity": maxSpeed, "align_time_s": -math.Log(0.25) * agility * mass / 1e6, "mass": mass,
-		"agility": agility, "signature_radius": sig, "warp_speed_au_s": baseWarp * warpMult,
-		"max_warp_distance_au": maxWarp, "warp_scramble_status": g(ship, "warpScrambleStatus")}
+	navigation := newK(8).F("max_velocity", maxSpeed).F("align_time_s", -math.Log(0.25)*agility*mass/1e6).F("mass", mass).
+		F("agility", agility).F("signature_radius", sig).F("warp_speed_au_s", baseWarp*warpMult).
+		F("max_warp_distance_au", maxWarp).F("warp_scramble_status", g(ship, "warpScrambleStatus"))
 
 	// ---------------- targeting
 	bestN, bestV := "none", 0.0
@@ -717,18 +705,17 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	if tp.SignatureRadius != nil {
 		ltTP = lockTime(scanRes, *tp.SignatureRadius)
 	}
-	targeting := obj{
-		"max_targets": min(g(ship, "maxLockedTargets"), max(g(ch, "maxLockedTargets"), 0)),
-		"max_range_m": g(ship, "maxTargetRange"), "scan_resolution": scanRes, "sensor_strength": bestV, "sensor_type": bestN,
-		"jam_chance_percent": jam, "probe_size": probe,
-		"lock_time_s": obj{"sig_25m": lockTime(scanRes, 25), "sig_40m": lockTime(scanRes, 40), "sig_125m": lockTime(scanRes, 125),
-			"sig_400m": lockTime(scanRes, 400), "sig_target_profile": ltTP},
-	}
+	targeting := newK(9).
+		F("max_targets", min(g(ship, "maxLockedTargets"), max(g(ch, "maxLockedTargets"), 0))).
+		F("max_range_m", g(ship, "maxTargetRange")).F("scan_resolution", scanRes).F("sensor_strength", bestV).S("sensor_type", bestN).
+		F("jam_chance_percent", jam).A("probe_size", probe).
+		A("lock_time_s", newK(5).A("sig_25m", lockTime(scanRes, 25)).A("sig_40m", lockTime(scanRes, 40)).A("sig_125m", lockTime(scanRes, 125)).
+			A("sig_400m", lockTime(scanRes, 400)).A("sig_target_profile", ltTP))
 	activeDrones := uint32(0)
 	for _, i := range drones {
 		activeDrones += f.Items[i].ActiveCount
 	}
-	dronesJ := obj{"active": activeDrones, "max_active": g(ch, "maxActiveDrones"), "control_range_m": g(ch, "droneControlDistance")}
+	dronesJ := newK(3).U("active", uint64(activeDrones)).F("max_active", g(ch, "maxActiveDrones")).F("control_range_m", g(ch, "droneControlDistance"))
 
 	st := f.Items[ship].T
 	var grp any
@@ -736,8 +723,8 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		grp = gi.Name
 	}
 	out := obj{
-		"meta":      obj{"schema_version": 1, "engine": engineName, "sde_build": ds.Build, "dataset_sha256": ds.SHA256},
-		"ship":      obj{"type_id": st.ID, "name": st.Name, "group": grp},
+		"meta":      newK(4).U("schema_version", 1).S("engine", engineName).U("sde_build", ds.Build).S("dataset_sha256", ds.SHA256),
+		"ship":      newK(3).U("type_id", uint64(st.ID)).S("name", st.Name).A("group", grp),
 		"resources": resources, "offense": offense, "defense": defense, "capacitor": capj,
 		"navigation": navigation, "targeting": targeting, "drones": dronesJ, "modules": moduleRows,
 	}
@@ -988,7 +975,7 @@ func (f *Fit) skillLevel(s uint32) float64 {
 // sustainableTank adds tank.sustained{,_effective} (Pyfa Fit.sustainableTank, eos LGPL): when the
 // capacitor is unstable or reload is factored, local cap-using repairers run only as far as peak
 // recharge plus injected cap allow, most cap-efficient first.
-func (f *Fit) sustainableTank(tank obj, stable, factorReload bool, modules []int, sus [3]float64, passive, used, totalPeak float64,
+func (f *Fit) sustainableTank(tank *kobj, stable, factorReload bool, modules []int, sus [3]float64, passive, used, totalPeak float64,
 	eff func(float64, int) float64) {
 	ds, w := f.DS, &f.DS.ids
 	g := func(i int, name string) float64 { return f.Get(i, ds.AttrID(name)) }
@@ -1091,9 +1078,8 @@ func (f *Fit) sustainableTank(tank obj, stable, factorReload bool, modules []int
 			sus[l] += adj[l]
 		}
 	}
-	tank["sustained"] = obj{"passive_shield": passive, "shield_repair": sus[0], "armor_repair": sus[1], "hull_repair": sus[2]}
-	tank["sustained_effective"] = obj{"passive_shield": eff(passive, 0), "shield_repair": eff(sus[0], 0),
-		"armor_repair": eff(sus[1], 1), "hull_repair": eff(sus[2], 2)}
+	tank.A("sustained", tankRow(passive, sus[0], sus[1], sus[2])).
+		A("sustained_effective", tankRow(eff(passive, 0), eff(sus[0], 0), eff(sus[1], 1), eff(sus[2], 2)))
 }
 
 var canFitGroupNames, canFitTypeNames, chargeGroupNames = func() (g, t, c []string) {

@@ -74,6 +74,7 @@ var (
 	keysRes   = []string{"em", "explosive", "kinetic", "thermal"}
 	keysUsage = []string{"total", "used"}
 	keysLayer = []string{"armor", "hull", "shield", "total"}
+	keysTank  = []string{"armor_repair", "hull_repair", "passive_shield", "shield_repair"}
 )
 
 func (o *fobj) toObj() obj {
@@ -95,4 +96,106 @@ func (e *jsonEnc) fobj(o *fobj) {
 		e.treeFloat(o.v[i])
 	}
 	e.b = append(e.b, '}')
+}
+
+// kobj is an object whose values are stored unboxed (floats, unsigned ints, strings) in a slice instead
+// of a map: building it costs two allocations total instead of a map plus one box per value. The encoder
+// sorts the keys (same bytes as the equivalent obj); Tidy converts it to an obj for the Calc API.
+type kv struct {
+	k string
+	s string
+	v any
+	f float64
+	u uint64
+	t uint8 // kvAny, kvFloat, kvUint, kvString
+}
+
+const (
+	kvAny uint8 = iota
+	kvFloat
+	kvUint
+	kvString
+)
+
+type kobj struct{ kv []kv }
+
+func newK(n int) *kobj { return &kobj{kv: make([]kv, 0, n)} }
+
+func (o *kobj) F(k string, x float64) *kobj {
+	o.kv = append(o.kv, kv{k: k, f: x, t: kvFloat})
+	return o
+}
+func (o *kobj) U(k string, x uint64) *kobj {
+	o.kv = append(o.kv, kv{k: k, u: x, t: kvUint})
+	return o
+}
+func (o *kobj) S(k string, s string) *kobj {
+	o.kv = append(o.kv, kv{k: k, s: s, t: kvString})
+	return o
+}
+func (o *kobj) A(k string, v any) *kobj {
+	o.kv = append(o.kv, kv{k: k, v: v})
+	return o
+}
+
+// get returns the value of key k (boxed), nil when absent.
+func (o *kobj) get(k string) any {
+	for i := range o.kv {
+		if o.kv[i].k == k {
+			return o.kv[i].val()
+		}
+	}
+	return nil
+}
+
+func (x *kv) val() any {
+	switch x.t {
+	case kvFloat:
+		return x.f
+	case kvUint:
+		return x.u
+	case kvString:
+		return x.s
+	}
+	return x.v
+}
+
+func (o *kobj) toObj() obj {
+	m := make(obj, len(o.kv))
+	for i := range o.kv {
+		m[o.kv[i].k] = o.kv[i].val()
+	}
+	return m
+}
+
+func (e *jsonEnc) kobj(o *kobj) {
+	ks := o.kv
+	for i := 1; i < len(ks); i++ {
+		for j := i; j > 0 && ks[j].k < ks[j-1].k; j-- {
+			ks[j], ks[j-1] = ks[j-1], ks[j]
+		}
+	}
+	e.b = append(e.b, '{')
+	for i := range ks {
+		if i > 0 {
+			e.b = append(e.b, ',')
+		}
+		e.b = appendJSONString(e.b, ks[i].k)
+		e.b = append(e.b, ':')
+		switch x := &ks[i]; x.t {
+		case kvFloat:
+			e.treeFloat(x.f)
+		case kvUint:
+			e.b = strconv.AppendUint(e.b, x.u, 10)
+		case kvString:
+			e.b = appendJSONString(e.b, x.s)
+		default:
+			e.value(x.v, true)
+		}
+	}
+	e.b = append(e.b, '}')
+}
+
+func tankRow(passive, shield, armor, hull float64) *fobj {
+	return &fobj{k: keysTank, v: [5]float64{armor, hull, passive, shield}}
 }

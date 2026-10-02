@@ -12,8 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"unsafe"
 	"sort"
+	"unsafe"
 )
 
 // ---- derived binary cache ----

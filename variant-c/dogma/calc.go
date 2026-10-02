@@ -76,6 +76,8 @@ func Tidy(v any) any {
 		return Tidy(x.toObj())
 	case *fobj:
 		return Tidy(x.toObj())
+	case *kobj:
+		return Tidy(x.toObj())
 	case obj:
 		for k, e := range x {
 			x[k] = Tidy(e)
