@@ -83,7 +83,8 @@ export class Fit extends AttrGraph {
       idx: this.items.length, typeId, group: t.group, category: t.category, kind, state: State.Online, loc,
       owned: kind === Kind.Module || kind === Kind.Charge || kind === Kind.Drone || kind === Kind.Fighter || kind === Kind.Ship,
       parent: -1, charge: -1, slot: null, reqIndex: null, quantity: 1, activeCount: 0,
-      base: null, ovA: -1, ovV: 0, tattrs: this.ds.typeAttrs(typeId), cells: null,
+      base: null, ovA: -1, ovV: NaN, // NaN: double field representation from the start (avoids V8 map migrations)
+      tattrs: this.ds.typeAttrs(typeId), cells: null,
       reqSkills: this.ds.requiredSkills(typeId), effects: t.effects,
       fighterAbilities: null, boosterSideEffects: NO_IDS, spool: null, distance: null,
     };
@@ -345,7 +346,7 @@ export class Fit extends AttrGraph {
   /** pushAttr with the target attribute's non-stackable flag precomputed (compiled plans) */
   pushAttrNS(target: number, attr: number, op: number, srcItem: number, srcAttr: number, sourceCat: number, nonStack: boolean): void {
     const pen = nonStack && !EXEMPT_CATEGORIES.has(sourceCat);
-    this.addMod(target, attr, { op, pen, k: SrcK.Attr, item: srcItem, attr: srcAttr, v: 0, a2: 0, a3: -1, mul: false, src: srcItem });
+    this.addMod(target, attr, { op, pen, k: SrcK.Attr, item: srcItem, attr: srcAttr, v: NaN, a2: 0, a3: -1, mul: false, src: srcItem });
   }
 
   targets(src: number, func: Func, domain: Domain, extra: number): readonly number[] {
@@ -471,6 +472,26 @@ export class Fit extends AttrGraph {
         if (targetOffenseOk && pbase('fighterAbilityWarpDisruptionRange') >= (it.distance ?? 0)) {
           this.push(ship, ds.attrId('warpScrambleStatus'), 2,
             { k: SrcK.Projected, item: i, attr: ds.attrId('fighterAbilityWarpDisruptionPointStrength'), v: qty, a2: resist, a3: ship, mul: false }, i, it.category);
+        }
+        continue;
+      }
+      if (e.name === 'shipModuleTrackingDisruptor' || e.name === 'shipModuleGuidanceDisruptor') {
+        // Pyfa Effect6424 / Effect6423: the target's gunnery modules / missile charges
+        if (targetOffenseOk) {
+          const td = e.name === 'shipModuleTrackingDisruptor';
+          const sk = ds.typeByName(td ? 'Gunnery' : 'Missile Launcher Operation') ?? 0;
+          const pairs = td
+            ? [['trackingSpeedBonus', 'trackingSpeed'], ['maxRangeBonus', 'maxRange'], ['falloffBonus', 'falloff']]
+            : [['aoeCloudSizeBonus', 'aoeCloudSize'], ['aoeVelocityBonus', 'aoeVelocity'], ['missileVelocityBonus', 'maxVelocity'], ['explosionDelayBonus', 'explosionDelay']];
+          const tf = rangeFactor(pbase('maxRange'), pbase('falloffEffectiveness'), it.distance, true);
+          const n = this.items.length;
+          for (let t = 0; t < n; t++) {
+            const ti = this.items[t];
+            if (ti.loc !== Loc.Ship || !ti.owned || ti.kind !== (td ? Kind.Module : Kind.Charge) || !ti.reqSkills.includes(sk)) continue;
+            for (const [sa, ta] of pairs) {
+              this.push(t, ds.attrId(ta), 6, { k: SrcK.Projected, item: i, attr: ds.attrId(sa), v: tf, a2: resist, a3: ship, mul: false }, i, it.category);
+            }
+          }
         }
         continue;
       }
