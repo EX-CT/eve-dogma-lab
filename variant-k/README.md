@@ -18,7 +18,8 @@ This produces one self-contained native executable, `bin/eve-dogma-k` (about 4.7
 DS=/workspace/exct-eve/data/dataset-3569502.json.gz
 ./bin/eve-dogma-k --dataset $DS calc < request.json > response.json     # one FitRequest -> FitStats
 ./bin/eve-dogma-k --dataset $DS batch < requests.jsonl > stats.jsonl    # JSONL in, JSONL out (one line per request)
-./bin/eve-dogma-k --dataset $DS serve-stdio                             # JSONL RPC: {"id","method":"calc|search|type|meta","params"}
+./bin/eve-dogma-k --dataset $DS serve-stdio                             # JSONL RPC: calc | eft_parse | eft_export | search | type | meta
+./bin/eve-dogma-k --dataset $DS eft fit.eft [--calc] [--skills 5]         # EFT text -> FitRequest JSON (or FitStats)
 ./bin/eve-dogma-k --dataset $DS search Rifter     # also: type 587, meta, bench request.json -n 1000
 ```
 
@@ -32,8 +33,8 @@ Bench integration is in `bench.yaml` (`build`, `cmd`, `batch_cmd`, `rpc_cmd` wit
 
 ## Status
 
-- eve-dogma-bench 1.4.0: **289/289 cases, 18,591/18,591 values (100 %)**. Scorecard in `bench/scorecard.md`.
-- Full-output diff against reference A (eve-dogma-rs ae4bfb0) over all 289 bench cases and the reference's 162 test cases: identical
+- eve-dogma-bench 1.5.1 (contract 1.4.2): **295/295 cases, 18,978/18,978 values (100 %)**, EFT export 295/295. Scorecard in `bench/scorecard.md`.
+- Full-output diff against reference A (eve-dogma-rs 8b7053e) over all 295 bench cases and the reference's 162 test cases: identical
   within 1e-9 relative tolerance. Run `tools/compare_ref.py`.
 - EFT: `eft_export` matches Pyfa's exporter on all 295 bench fits (`tools/check_eft_export.py`). `eft_parse` gives the same FitRequest as the reference on its 131 EFT test fits. `search` follows the interim contract 1.4.1 spec.
 
