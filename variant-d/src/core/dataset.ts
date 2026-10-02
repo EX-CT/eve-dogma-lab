@@ -112,6 +112,10 @@ export class Dataset {
         minAttr: a.min_attr ?? null, maxAttr: a.max_attr ?? null, unit: a.unit ?? null, display: a.display ?? null,
       });
     }
+    let maxA = 0;
+    for (const id of ds.attrs.keys()) if (id > maxA) maxA = id;
+    ds.defArr = new Float64Array(maxA + 1);
+    for (const [id, a] of ds.attrs) ds.defArr[id] = a.default;
     for (const k in raw.effects) {
       const e = raw.effects[k];
       const id = +k;
@@ -181,7 +185,9 @@ export class Dataset {
   attrId(name: string): number { return this.attrByName.get(name) ?? 0; }
   effectId(name: string): number { return this.effectByName.get(name) ?? 0; }
   typeByName(name: string): number | undefined { return this.typeByNameMap.get(name.trim().toLowerCase()); }
-  attrDefault(id: number): number { return this.attrs.get(id)?.default ?? 0; }
+  /** attribute default values indexed by id (dense; built in initCommon) */
+  private defArr = new Float64Array(0);
+  attrDefault(id: number): number { return id < this.defArr.length ? this.defArr[id] : 0; }
 
   /** Base attribute map of a type incl. the authoritative type-level fields (memoised). */
   typeAttrs(typeId: number): Map<number, number> {

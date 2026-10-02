@@ -30,32 +30,37 @@ class Heap {
   get size() { return this.a.length; }
   push(e: Ev): void {
     const a = this.a;
+    let i = a.length;
     a.push(e);
-    let i = a.length - 1;
+    // sift up with a hole (no swaps)
     while (i > 0) {
       const p = (i - 1) >> 1;
-      if (!less(a[i], a[p])) break;
-      [a[i], a[p]] = [a[p], a[i]];
+      const pe = a[p];
+      if (!less(e, pe)) break;
+      a[i] = pe;
       i = p;
     }
+    a[i] = e;
   }
   pop(): Ev | undefined {
     const a = this.a;
-    if (a.length === 0) return undefined;
+    const n0 = a.length;
+    if (n0 === 0) return undefined;
     const top = a[0];
     const last = a.pop()!;
-    if (a.length > 0) {
-      a[0] = last;
+    const n = n0 - 1;
+    if (n > 0) {
       let i = 0;
       for (;;) {
-        const l = 2 * i + 1, r = l + 1;
-        let m = i;
-        if (l < a.length && less(a[l], a[m])) m = l;
-        if (r < a.length && less(a[r], a[m])) m = r;
-        if (m === i) break;
-        [a[i], a[m]] = [a[m], a[i]];
+        const l = 2 * i + 1;
+        if (l >= n) break;
+        const r = l + 1;
+        const m = r < n && less(a[r], a[l]) ? r : l;
+        if (!less(a[m], last)) break;
+        a[i] = a[m];
         i = m;
       }
+      a[i] = last;
     }
     return top;
   }
