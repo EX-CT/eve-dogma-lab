@@ -15,6 +15,8 @@ def walk(a, b, p, out):
         if abs(a - b) > max(1e-6, 1e-9 * abs(a)): out.append((p, f"{a} vs {b}"))
     elif a != b:
         out.append((p, f"{a!r} vs {b!r}"))
+IGNORE = [x for x in os.environ.get("IGNORE", "").split(",") if x]  # path prefixes (regex) to skip, e.g. new upstream WIP fields
+import re
 from concurrent.futures import ThreadPoolExecutor
 files = sorted(glob.glob(sys.argv[1] if len(sys.argv) > 1 else "testdata/requests/*.json"))
 with ThreadPoolExecutor(8) as ex:
@@ -22,6 +24,7 @@ with ThreadPoolExecutor(8) as ex:
 tot = 0; bad = 0
 for f, r, g in res:
     out = []; walk(r, g, "", out); tot += 1
+    out = [o for o in out if not any(re.match(x, o[0]) for x in IGNORE)]
     if out:
         bad += 1
         print(os.path.basename(f), len(out), out[:6])

@@ -569,7 +569,8 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 			row["cycle_time_ms"] = cycRaw
 		}
 		if it.State >= Active && capNeed != 0 && full > 0 {
-			avg := f.avgCycleMs(i, factorReload)
+			// Pyfa forces reload into capacitor boosters' average cycle (module.forceReload)
+			avg := f.avgCycleMs(i, factorReload || isInj)
 			use := 0.0
 			if avg > 0 {
 				use = capNeed / (avg / 1000)
@@ -599,6 +600,11 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 			need *= math.Min(sigNow/sres, 1)
 		}
 		if dur := f.Get(ps.Item, ps.Duration); need != 0 && dur > 0 {
+			if need > 0 {
+				capUsed += need / (math.Trunc(dur) / 1000)
+			} else {
+				capAdded -= need / (math.Trunc(dur) / 1000)
+			}
 			drains = append(drains, Drain{Duration: math.Trunc(dur), CapNeed: need})
 		}
 	}
@@ -625,6 +631,9 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		capj["eve_stable_percent"] = r.EveStable * 100
 		capj["sim_iterations"] = r.Iterations
 	}
+	f.sustainableTank(defense["tank"].(obj), capj["stable"].(bool), factorReload, modules,
+		[3]float64{shieldRep, armorRep, hullRep}, passive, capUsed, peak+capAdded,
+		func(v float64, l int) float64 { return effectivify(v, [3][4]float64{rs, ra, rh}[l]) })
 
 	// ---------------- navigation
 	maxv := g(ship, "maxVelocity")
@@ -942,4 +951,115 @@ func (f *Fit) skillLevel(s uint32) float64 {
 		return lv
 	}
 	return 0
+}
+
+// sustainableTank adds tank.sustained{,_effective} (Pyfa Fit.sustainableTank, eos LGPL): when the
+// capacitor is unstable or reload is factored, local cap-using repairers run only as far as peak
+// recharge plus injected cap allow, most cap-efficient first.
+func (f *Fit) sustainableTank(tank obj, stable, factorReload bool, modules []int, sus [3]float64, passive, used, totalPeak float64,
+	eff func(float64, int) float64) {
+	ds, w := f.DS, &f.DS.ids
+	g := func(i int, name string) float64 { return f.Get(i, ds.AttrID(name)) }
+	if !stable || factorReload {
+		spec := func(gname string) (int, string, bool) {
+			switch gname {
+			case "Shield Booster", "Ancillary Shield Booster":
+				return 0, "shieldBonus", true
+			case "Armor Repair Unit", "Ancillary Armor Repairer":
+				return 1, "armorDamageAmount", true
+			case "Hull Repair Unit":
+				return 2, "structureDamageAmount", true
+			}
+			return 0, "", false
+		}
+		pasteMult := func(i int) float64 {
+			if c := f.Items[i].Charge; c >= 0 && f.Items[c].T.Name == "Nanite Repair Paste" {
+				if m := g(i, "chargedArmorDamageMultiplier"); m != 0 {
+					return m
+				}
+			}
+			return 1
+		}
+		type rep struct {
+			i, l   int
+			attr   string
+			capUse float64
+		}
+		var adj [3]float64
+		var reps []rep
+		for layer := 0; layer < 3; layer++ {
+			for _, i := range modules {
+				if f.Items[i].State < Active {
+					continue
+				}
+				gname := ""
+				if gi := ds.Groups[f.Items[i].Group]; gi != nil {
+					gname = gi.Name
+				}
+				l, attr, ok := spec(gname)
+				if !ok || l != layer {
+					continue
+				}
+				capNeed := f.Get(i, w.capNeed)
+				avg := f.avgCycleMs(i, factorReload)
+				capUse := 0.0
+				if capNeed != 0 && avg > 0 {
+					capUse = capNeed / (avg / 1000)
+				}
+				cyc := f.rawCycleMs(i)
+				if cyc <= 0 {
+					continue
+				}
+				amount := g(i, attr)
+				if capUse != 0 {
+					used -= capUse
+					adj[l] -= amount * pasteMult(i) / (cyc / 1000)
+					reps = append(reps, rep{i, l, attr, capUse})
+				} else if gname == "Ancillary Shield Booster" {
+					reload := 0.0
+					if factorReload && f.Items[i].Charge >= 0 {
+						reload = f.Get(i, w.reload)
+					}
+					shots := float64(max(f.numShots(i), 1))
+					off := reload / (shots*cyc + reload)
+					adj[l] -= amount * off / (cyc / 1000)
+				}
+			}
+		}
+		effic := func(r rep) float64 {
+			m := g(r.i, "chargedArmorDamageMultiplier")
+			if m == 0 {
+				m = 1
+			}
+			return g(r.i, r.attr) * m / f.Get(r.i, w.capNeed)
+		}
+		sort.SliceStable(reps, func(a, b int) bool { return effic(reps[a]) > effic(reps[b]) })
+		for _, r := range reps {
+			if used > totalPeak {
+				break
+			}
+			i := r.i
+			reload := 0.0
+			if factorReload && f.Items[i].Charge >= 0 {
+				reload = f.Get(i, w.reload)
+			}
+			cyc := f.rawCycleMs(i)
+			sustain := math.Min((totalPeak-used)/r.capUse, 1)
+			amount := g(i, r.attr)
+			if f.Items[i].Charge < 0 {
+				adj[r.l] += sustain * amount / (cyc / 1000)
+			} else {
+				shots := float64(max(f.numShots(i), 1))
+				on := shots * cyc / (shots*cyc + reload)
+				adj[r.l] += sustain * amount * on * pasteMult(i) / (cyc / 1000)
+			}
+			used += r.capUse
+		}
+		for l := range sus {
+			sus[l] += adj[l]
+		}
+	}
+	tank["sustained"] = obj{"passive_shield": passive, "shield_repair": sus[0], "armor_repair": sus[1], "hull_repair": sus[2]}
+	tank["sustained_effective"] = obj{"passive_shield": eff(passive, 0), "shield_repair": eff(sus[0], 0),
+		"armor_repair": eff(sus[1], 1), "hull_repair": eff(sus[2], 2)}
 }
