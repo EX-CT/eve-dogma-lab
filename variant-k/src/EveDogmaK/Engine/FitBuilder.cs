@@ -53,7 +53,7 @@ public static class FitBuilder
         {
             Index = fit.Items.Count, Type = t, Kind = kind, Location = loc, BaseAttrs = t.Attrs,
             Owned = kind is ItemKind.Module or ItemKind.Charge or ItemKind.Drone or ItemKind.Fighter or ItemKind.Ship,
-            Effects = new List<EffectRef>(t.Effects), RequiredSkills = t.RequiredSkills,
+            Effects = t.Effects, RequiredSkills = t.RequiredSkills,
         };
         fit.Items.Add(item);
         return item.Index;
@@ -65,15 +65,23 @@ public static class FitBuilder
         int def = req.DefaultSkillLevel ?? 0;
         // every published skill exists (untrained = level 0): ship-bonus attributes are scaled by a skill-level
         // PreMul on the skill, so a missing skill would leave the raw per-level value
-        var levels = new SortedDictionary<int, int>();
-        foreach (var s in ds.PublishedSkills) levels[s] = def;
+        // explicit levels (by id or name); last one wins
+        var explicitLevels = new Dictionary<int, int>();
         foreach (var (key, lvl) in req.SkillLevels)
         {
-            if (int.TryParse(key, out var id)) levels[id] = lvl;
-            else if (ds.TypeByNameLookup(key) is int byName) levels[byName] = lvl;
+            if (int.TryParse(key, out var id)) explicitLevels[id] = lvl;
+            else if (ds.TypeByNameLookup(key) is int byName) explicitLevels[byName] = lvl;
         }
-        foreach (var (s, l) in levels)
+        // ascending type id order: merge the (sorted) published skills with any explicit unpublished ones
+        var published = ds.PublishedSkills;
+        var extra = new List<int>();
+        foreach (var id in explicitLevels.Keys) if (Array.BinarySearch(published, id) < 0) extra.Add(id);
+        extra.Sort();
+        int p = 0, q = 0;
+        while (p < published.Length || q < extra.Count)
         {
+            int s = q >= extra.Count || (p < published.Length && published[p] < extra[q]) ? published[p++] : extra[q++];
+            int l = explicitLevels.TryGetValue(s, out var lv) ? lv : def;
             if (ds.Type(s) == null) continue;
             int idx = NewItem(fit, s, ItemKind.Skill, ItemLocation.Character, "/character/skills");
             fit.SetBase(idx, KnownIds.SkillLevel, Math.Clamp(l, 0, 5));
@@ -265,7 +273,7 @@ public static class FitBuilder
             foreach (var (a, v) in baseType.RawAttrs.Entries()) merged[a.Value] = v;
             foreach (var (a, v) in it.Type.RawAttrs.Entries()) merged[a.Value] = v;
             foreach (var e in baseType.Effects)
-                if (!it.Type.HasEffect(e.Id)) it.Effects.Add(e);
+                if (!it.Type.HasEffect(e.Id)) it.AddEffect(e);
             if (it.RequiredSkills.Length == 0) it.RequiredSkills = baseType.RequiredSkills;
             if (merged.GetValueOrDefault(4) == 0.0 && baseType.Mass != 0.0) merged[4] = baseType.Mass;
         }

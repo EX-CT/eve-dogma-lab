@@ -332,7 +332,7 @@ public sealed partial class StatsCalculator
             Damage fv = Damage.Zero, fd = Damage.Zero;
             foreach (var (eff, prefix) in new[] { (_k.FighterAttackM, "fighterAbilityAttackMissile"), (_k.FighterMissiles, "fighterAbilityMissiles") })
             {
-                int idx = _f[i].Effects.FindIndex(e => e.Id == eff);
+                int idx = IndexOfEffect(_f[i], eff);
                 if (eff.IsNone || idx < 0) continue;
                 bool used = _f[i].FighterAbilities is { } l ? Array.IndexOf(l, eff.Value) >= 0 : _f[i].Effects[idx].IsDefault;
                 if (!used) continue;
@@ -416,6 +416,12 @@ public sealed partial class StatsCalculator
                         } },
                 } },
         };
+    }
+
+    private static int IndexOfEffect(Item it, EffectId e)
+    {
+        for (int x = 0; x < it.Effects.Count; x++) if (it.Effects[x].Id == e) return x;
+        return -1;
     }
 
     private sealed record TankState(double[] Reps, double Passive, double[] Rs, double[] Ra, double[] Rh, Func<double, double[], double> Effective);

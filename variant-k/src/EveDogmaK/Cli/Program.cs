@@ -1,3 +1,4 @@
+using EveDogmaK.Stats;
 using System.Diagnostics;
 using System.Text;
 using EveDogmaK.Data;
@@ -105,7 +106,22 @@ public static class Program
                     sw.Restart();
                     for (int i = 0; i < n; i++) Calculator.Calc(ds, req).Serialize();
                     double el = sw.Elapsed.TotalSeconds;
-                    stdout.WriteLine(new JObj { { "dataset_load_ms", loadMs }, { "iterations", n }, { "total_s", el }, { "per_calc_us", el / n * 1e6 } }.Serialize());
+                    // phase breakdown: build graph / derived stats / serialise
+                    double tb = 0, ts = 0, tj = 0;
+                    for (int i = 0; i < n; i++)
+                    {
+                        long t0 = Stopwatch.GetTimestamp();
+                        var fit = FitBuilder.Build(ds, req);
+                        long t1 = Stopwatch.GetTimestamp();
+                        var st = new StatsCalculator(fit).Compute();
+                        long t2 = Stopwatch.GetTimestamp();
+                        st.Serialize();
+                        long t3 = Stopwatch.GetTimestamp();
+                        tb += t1 - t0; ts += t2 - t1; tj += t3 - t2;
+                    }
+                    double us = 1e6 / Stopwatch.Frequency / n;
+                    stdout.WriteLine(new JObj { { "dataset_load_ms", loadMs }, { "iterations", n }, { "total_s", el }, { "per_calc_us", el / n * 1e6 },
+                        { "build_us", tb * us }, { "stats_us", ts * us }, { "json_us", tj * us } }.Serialize());
                     stdout.Flush();
                     return 0;
                 }

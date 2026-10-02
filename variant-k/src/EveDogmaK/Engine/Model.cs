@@ -73,7 +73,9 @@ public sealed class Item
     public int Quantity { get; set; } = 1;
     public int ActiveCount { get; set; }
     public int[] RequiredSkills { get; set; } = Array.Empty<int>();
-    public List<EffectRef> Effects { get; set; } = new();
+    /// <summary>Effects of the item: shares the type's array until something adds one (copy-on-write).</summary>
+    public IReadOnlyList<EffectRef> Effects { get; set; } = Array.Empty<EffectRef>();
+    public void AddEffect(EffectRef e) { var l = Effects as List<EffectRef> ?? new List<EffectRef>(Effects); l.Add(e); Effects = l; }
     public int[]? FighterAbilities { get; set; }
     public int[] BoosterSideEffects { get; set; } = Array.Empty<int>();
     public Spool? Spool { get; set; }
