@@ -1028,6 +1028,28 @@ func (f *Fit) registerProjected(i int) {
 		case strings.HasPrefix(n, "remoteSensorDamp") || n == "structureModuleEffectRemoteSensorDampener":
 			push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
 			push(a("scanResolution"), a("scanResolutionBonus"), 6)
+		case n == "shipModuleTrackingDisruptor" || n == "shipModuleGuidanceDisruptor":
+			// Pyfa Effect6424 / Effect6423: the target's gunnery modules / missile charges
+			if targetOffenseOK {
+				skill, kind := "Gunnery", KModule
+				pairs := [][2]string{{"trackingSpeedBonus", "trackingSpeed"}, {"maxRangeBonus", "maxRange"}, {"falloffBonus", "falloff"}}
+				if n == "shipModuleGuidanceDisruptor" {
+					skill, kind = "Missile Launcher Operation", KCharge
+					pairs = [][2]string{{"aoeCloudSizeBonus", "aoeCloudSize"}, {"aoeVelocityBonus", "aoeVelocity"}, {"missileVelocityBonus", "maxVelocity"}, {"explosionDelayBonus", "explosionDelay"}}
+				}
+				sk, _ := ds.TypeByName(skill)
+				tf := RangeFactor(pbase("maxRange"), pbase("falloffEffectiveness"), it.Distance, true)
+				for t := range f.Items {
+					ti := &f.Items[t]
+					if ti.Loc != LShip || !ti.Owned || ti.Kind != kind || !containsU32(ti.ReqSkills, sk) {
+						continue
+					}
+					for _, pr := range pairs {
+						f.push(bItem, uint32(t), a(pr[1]), amod{op: 6, kind: srcProj, item: int32(i), ship: int32(f.Ship),
+							attr: a(pr[0]), c: tf, a2: resist, from: int32(i)}, srcCat)
+					}
+				}
+			}
 		case strings.HasPrefix(n, "remoteSensorBoost"):
 			push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
 			push(a("scanResolution"), a("scanResolutionBonus"), 6)
