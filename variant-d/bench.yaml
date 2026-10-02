@@ -1,7 +1,9 @@
 # eve-dogma-bench manifest for Variant D (TypeScript engine)
-# dist-cli/eve-dogma-ts.cjs is a small launcher for the single-file CLI bundle (same code as dist/cli.js); `cache` also writes a V8 code cache for it
-# build also precomputes the fast-start cache (.cache/, a pure re-layout of the dataset; CLI falls back to the dataset if absent)
-build: npm ci --silent && npm run build --silent && node dist-cli/eve-dogma-ts.cjs cache --dataset {dataset}
-cmd: node dist-cli/eve-dogma-ts.cjs calc --dataset {dataset}
-batch_cmd: node dist-cli/eve-dogma-ts.cjs batch --dataset {dataset}
-rpc_cmd: node dist-cli/eve-dogma-ts.cjs serve-stdio --dataset {dataset}
+# build: the single-file CLI bundle (dist-cli/), the fast-start dataset cache (.cache/, a pure re-layout of the
+# dataset) and a V8 startup snapshot of the CLI with that dataset preloaded (dist-cli/eve-dogma-ts.blob, specific
+# to this node binary). The snapshot only skips module compilation and dataset decoding; every calc is the same
+# stateless computation (a different --dataset, or a changed dataset/cache file, loads normally).
+build: npm ci --silent && npm run build --silent && node dist-cli/eve-dogma-ts.cjs cache --dataset {dataset} && node dist-cli/eve-dogma-ts.cjs snapshot --dataset {dataset}
+cmd: node --snapshot-blob dist-cli/eve-dogma-ts.blob calc --dataset {dataset}
+batch_cmd: node --snapshot-blob dist-cli/eve-dogma-ts.blob batch --dataset {dataset}
+rpc_cmd: node --snapshot-blob dist-cli/eve-dogma-ts.blob serve-stdio --dataset {dataset}

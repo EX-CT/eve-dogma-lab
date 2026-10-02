@@ -89,11 +89,11 @@ class TypeTable implements TypeStore {
   private rowOf = new Map<number, number>();
   private names: string[] | null = null;
   private dec = new TextDecoder();
-  constructor(readonly c: Cols, private bytes: Uint8Array, private body: number, private namesAt: [number, number]) {
+  constructor(readonly c: Cols, public bytes: Uint8Array | null, private body: number, private namesAt: [number, number]) {
     this.objs = new Array(c.id.length);
     for (let r = 0; r < c.id.length; r++) this.rowOf.set(c.id[r], r);
   }
-  slice(off: number, len: number): string { return this.dec.decode(this.bytes.subarray(this.body + off, this.body + off + len)); }
+  slice(off: number, len: number): string { return this.dec.decode(this.bytes!.subarray(this.body + off, this.body + off + len)); }
   name(row: number): string {
     if (this.names === null) this.names = JSON.parse(this.slice(this.namesAt[0], this.namesAt[1]));
     return this.names![row];
@@ -171,4 +171,23 @@ export function datasetFromCache(bytes: Uint8Array): Dataset {
   const [zo, zl] = h.zh;
   ds.zhSource = () => JSON.parse(tab.slice(zo, zl));
   return ds;
+}
+
+/**
+ * Startup snapshots: drop / re-attach the body bytes of a cache-loaded dataset (the snapshot keeps the decoded
+ * header; the body is read from the same cache file at run time). attach checks the file still is that cache.
+ */
+export function detachCacheBytes(ds: Dataset): { size: number; head: number[] } | null {
+  const tab = ds.types;
+  if (!(tab instanceof TypeTable) || tab.bytes === null) return null;
+  const b = tab.bytes;
+  tab.bytes = null;
+  return { size: b.length, head: Array.from(b.subarray(0, Math.min(b.length, 4096))) };
+}
+export function attachCacheBytes(ds: Dataset, bytes: Uint8Array, sig: { size: number; head: number[] }): boolean {
+  const tab = ds.types;
+  if (!(tab instanceof TypeTable) || bytes.length !== sig.size) return false;
+  for (let i = 0; i < sig.head.length; i++) if (bytes[i] !== sig.head[i]) return false;
+  tab.bytes = bytes;
+  return true;
 }

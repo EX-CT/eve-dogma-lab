@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 /** eve-dogma-ts CLI — same stateless contract as eve-dogma-rs (docs/contract.md). */
-import { readFileSync, realpathSync, writeSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync, writeSync } from 'node:fs';
 import { calc, calcJson, meta, parseEft, rpc, search, typeInfo } from './index.js';
-import { datasetPath, loadDatasetFile, setPackageDir, writeCache } from './node.js';
-import { dirname, resolve } from 'node:path';
-
-// dist/cli.js and dist-cli/eve-dogma-ts.cjs both live one level below the package directory
-setPackageDir(resolve(dirname(realpathSync(process.argv[1])), '..'));
+import { cachePath, datasetPath, loadDatasetFile, setPackageDir, writeCache } from './node.js';
+import { attachCacheBytes, datasetFromCache, detachCacheBytes } from './core/cache.js';
+import { dirname, join, resolve } from 'node:path';
+import type { Dataset } from './core/dataset.js';
 
 const USAGE = `eve-dogma-ts <command> [--dataset PATH] [args]
 
@@ -20,13 +19,17 @@ Commands:
   meta                   dataset info
   bench [FILE] [-n N]    time N calculations of a request
   cache                  build the fast cold-start cache for the dataset (.cache/)
+  snapshot [-o BLOB]     build a V8 startup snapshot with the dataset preloaded (dist-cli/eve-dogma-ts.blob);
+                         run it as: node --snapshot-blob dist-cli/eve-dogma-ts.blob <command> [--dataset PATH] ...
 
 Dataset: --dataset PATH, or $EVE_DOGMA_DATASET, or ./dataset.json.gz`;
 
 /** sample request (bench case exct_rifter) used to warm the code cache in `cache` */
 const WARMUP_REQUEST = '{"character":{"skills":{"default_level":5}},"drones":[{"active":2,"quantity":2,"type_id":2488}],"modules":[{"slot":"low","state":"active","type_id":2048},{"slot":"low","state":"active","type_id":519},{"slot":"low","state":"active","type_id":20347},{"slot":"mid","state":"active","type_id":438},{"slot":"mid","state":"active","type_id":448},{"slot":"mid","state":"active","type_id":527},{"charge_type_id":21898,"slot":"high","state":"active","type_id":2889},{"charge_type_id":21898,"slot":"high","state":"active","type_id":2889},{"charge_type_id":21898,"slot":"high","state":"active","type_id":2889},{"charge_type_id":24473,"slot":"high","state":"active","type_id":10631},{"slot":"rig","state":"online","type_id":31674},{"slot":"rig","state":"online","type_id":31686},{"slot":"rig","state":"online","type_id":31015}],"ship":{"type_id":587}}';
 
-const args = process.argv.slice(2);
+let args: string[] = [];
+/** script a batch worker thread runs (the launcher, also when this process started from the snapshot) */
+let workerScript = '';
 function takeFlag(f: string): string | null {
   const p = args.indexOf(f);
   if (p < 0) return null;
@@ -34,10 +37,30 @@ function takeFlag(f: string): string | null {
   args.splice(p, 2);
   return v;
 }
-const datasetArg = takeFlag('--dataset');
+let datasetArg: string | null = null;
+
+/**
+ * Dataset already in the heap of a startup snapshot (`snapshot` command), without its cache body bytes (read from
+ * the cache file at run time; a smaller heap deserialises faster). Used only when the requested dataset file and
+ * its cache file are the very files it was built from (path, size, mtime, cache head bytes); else loads normally.
+ */
+let preloaded: { key: string; cache: string; cacheKey: string; sig: { size: number; head: number[] }; ds: Dataset } | null = null;
+const fileKey = (p: string): string => {
+  const abs = resolve(p);
+  const st = statSync(abs);
+  return `${abs}\0${st.size}\0${Math.trunc(st.mtimeMs)}`;
+};
 function load() {
   try {
-    return loadDatasetFile(datasetPath(datasetArg));
+    const p = datasetPath(datasetArg);
+    if (preloaded !== null && !process.env.EVE_DOGMA_TS_NO_CACHE) {
+      try {
+        const pr = preloaded;
+        preloaded = null;
+        if (fileKey(p) === pr.key && fileKey(pr.cache) === pr.cacheKey && attachCacheBytes(pr.ds, readFileSync(pr.cache), pr.sig)) return pr.ds;
+      } catch { /* fall through to the normal load */ }
+    }
+    return loadDatasetFile(p);
   } catch (e) {
     process.stderr.write(`error: ${(e as Error).message}\n`);
     process.exit(3);
@@ -149,7 +172,7 @@ function batchParallel(ds: ReturnType<typeof load>, threadsWanted: number): Prom
       if (datasetArg !== null) wargs.push('--dataset', datasetArg);
       pool = [];
       for (let i = 1; i < threads; i++) {
-        const p: W = { w: new Worker(process.argv[1], { argv: wargs, stdout: false, stderr: false }), idle: false, units: 0, readyMs: 0 };
+        const p: W = { w: new Worker(workerScript, { argv: wargs, stdout: false, stderr: false }), idle: false, units: 0, readyMs: 0 };
         p.w.on('message', (m: { seq: number; out: string }) => {
           if (m.seq < 0) p.readyMs = performance.now() - t0;
           else p.units++;
@@ -256,6 +279,18 @@ async function main() {
       }
       break;
     }
+    case 'snapshot': {
+      // V8 startup snapshot of the CLI with this dataset preloaded: `node --snapshot-blob dist-cli/eve-dogma-ts.blob <command> ...`
+      // starts without module compilation or dataset load (the blob is specific to this node binary; rebuild after upgrades)
+      const { execFileSync } = builtin('node:child_process') as typeof import('node:child_process');
+      const blob = resolve(takeFlag('-o') ?? join(dirname(workerScript), 'eve-dogma-ts.blob'));
+      const entry = join(dirname(workerScript), 'eve-dogma-ts.snapshot.cjs');
+      const tmp = `${blob}.${process.pid}.tmp`;
+      execFileSync(process.execPath, ['--snapshot-blob', tmp, '--build-snapshot', entry, resolve(datasetPath(datasetArg))], { stdio: 'inherit' });
+      (builtin('node:fs') as typeof import('node:fs')).renameSync(tmp, blob);
+      out(blob);
+      break;
+    }
     case 'search': out(JSON.stringify(search(load(), args.slice(1).join(' '), 25), null, 2)); break;
     case 'type': out(JSON.stringify(typeInfo(load(), args.slice(1).join(' ')), null, 2)); break;
     case 'meta': {
@@ -282,4 +317,32 @@ async function main() {
       process.exit(cmd === '' || cmd === 'help' || cmd === '--help' ? 0 : 2);
   }
 }
-main();
+/** run the CLI: argv without node and script, package directory */
+function run(argv: string[], pkgDir: string): Promise<void> {
+  args = argv.slice();
+  if (!workerScript) workerScript = join(pkgDir, 'dist-cli', 'eve-dogma-ts.cjs');
+  setPackageDir(pkgDir);
+  datasetArg = takeFlag('--dataset');
+  return main();
+}
+
+const G = globalThis as any;
+if (G.__eveDogmaSnapshot) {
+  // startup-snapshot builder (dist-cli/eve-dogma-ts.snapshot.cjs): preload + warm, then run per process from the snapshot
+  G.__eveDogmaCli = {
+    preload(datasetFile: string, pkgDir: string) {
+      setPackageDir(pkgDir);
+      const cache = cachePath(datasetFile);
+      const ds = datasetFromCache(readFileSync(cache));
+      for (let k = 0; k < 3; k++) calcJson(ds, WARMUP_REQUEST);
+      const sig = detachCacheBytes(ds)!;
+      preloaded = { key: fileKey(datasetFile), cache, cacheKey: fileKey(cache), sig, ds };
+    },
+    run,
+  };
+} else {
+  // dist/cli.js and dist-cli/eve-dogma-ts.cjs both live one level below the package directory
+  const script = realpathSync(process.argv[1]);
+  workerScript = script;
+  run(process.argv.slice(2), resolve(dirname(script), '..'));
+}
