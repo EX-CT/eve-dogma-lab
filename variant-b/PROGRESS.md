@@ -84,7 +84,7 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   New test `snapshot_roundtrip`: snapshot-loaded dataset == parsed dataset on every tests/cases request.
 
 ## 07:50 CST — maintainability
-- Tests 6 -> 35: shared `tests/common`; `tests/api.rs` (errors, shape, skills, determinism, calc_many, EFT round
+- Tests 6 -> 33 (cargo test count): shared `tests/common`; `tests/api.rs` (errors, shape, skills, determinism, calc_many, EFT round
   trip of all 139 fits); `snapshot_roundtrip` fixed (it compared BAD_REQUEST errors: tests/cases are EFT+patch
   specs, not FitRequests); unit tests for the formula helpers, rounding, capsim behaviour, SHA-256, hashes; unit
   tests live in `src/tests/<module>.rs`.
