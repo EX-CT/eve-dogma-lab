@@ -1,0 +1,1 @@
+Copied from EX-CT/eve-dogma-rs @ 0e5a1ce (tests/fits, tests/oracle/pyfa_expected.json: Pyfa oracle output). Refresh with scripts/sync-fixtures.sh.

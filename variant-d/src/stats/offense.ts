@@ -1,0 +1,118 @@
+import { Resists, Spool } from '../core/request.js';
+import { StatsCtx } from './ctx.js';
+import { Dmg, spoolup } from './util.js';
+
+function weaponKind(c: StatsCtx, i: number): string {
+  if (c.hasEffect(i, ['turretFitted'])) return 'turret';
+  if (c.hasEffect(i, ['launcherFitted'])) return 'missile';
+  if (c.hasEffect(i, ['empWave'])) return 'smartbomb';
+  if (c.hasEffect(i, ['ChainLightning'])) return 'vorton';
+  return 'other';
+}
+
+function moduleVolley(c: StatsCtx, i: number): [Dmg, string] {
+  const { fit, A } = c;
+  const it = c.item(i);
+  const kind = weaponKind(c, i);
+  const src = it.charge >= 0 ? it.charge : i;
+  let mult = fit.has(i, A.dmgMult) ? fit.get(i, A.dmgMult) : 1;
+  // missile damage is scaled by the pilot's missileDamageMultiplier
+  if (kind === 'missile' && it.charge >= 0) mult *= c.g(fit.char, 'missileDamageMultiplier');
+  return [new Dmg(fit.get(src, A.dmg[0]) * mult, fit.get(src, A.dmg[1]) * mult, fit.get(src, A.dmg[2]) * mult, fit.get(src, A.dmg[3]) * mult), kind];
+}
+
+export function offense(c: StatsCtx): object {
+  const { fit, req, A, ds } = c;
+  const tp = req.target_profile ?? {};
+  const tpRes: Resists = { em: tp.em ?? 0, thermal: tp.thermal ?? 0, kinetic: tp.kinetic ?? 0, explosive: tp.explosive ?? 0 };
+  const defaultSpool: Spool = req.options.default_spool ?? { type: 'spool_scale', amount: 1 };
+  const factorReload = req.options.factor_reload;
+  const weapons: object[] = [];
+  const wVol = new Dmg(), wDps = new Dmg();
+  for (const i of c.modules) {
+    if (!c.active(i)) continue;
+    const [base, kind] = moduleVolley(c, i);
+    if (base.total() === 0) continue;
+    const cyc = c.avgCycleMs(i, factorReload);
+    const raw = c.rawCycleMs(i);
+    const spool = c.item(i).spool ?? defaultSpool;
+    const [sp] = spoolup(c.g(i, 'damageMultiplierBonusMax'), c.g(i, 'damageMultiplierBonusPerCycle'), raw / 1000, spool);
+    const vol = base.scale(1 + sp);
+    const dps = cyc > 0 ? vol.scale(1000 / cyc) : new Dmg();
+    wVol.add(vol);
+    wDps.add(dps);
+    const it = c.item(i);
+    const w: Record<string, unknown> = {
+      module_index: it.reqIndex, type_id: it.typeId, name: c.typeName(i), kind,
+      charge_type_id: it.charge >= 0 ? fit.items[it.charge].typeId : null,
+      volley: vol.json(), dps: dps.json(), cycle_time_ms: cyc,
+    };
+    if (kind === 'turret') {
+      w.optimal_m = c.g(i, 'maxRange');
+      w.falloff_m = c.g(i, 'falloff');
+      w.tracking = c.g(i, 'trackingSpeed');
+    } else if (kind === 'missile') {
+      if (it.charge >= 0) {
+        const ch = it.charge;
+        w.range_m = c.g(ch, 'maxVelocity') * (c.g(ch, 'explosionDelay') / 1000);
+        w.explosion_radius = c.g(ch, 'aoeCloudSize');
+        w.explosion_velocity = c.g(ch, 'aoeVelocity');
+      }
+    } else if (kind === 'smartbomb') w.range_m = c.g(i, 'empFieldRange');
+    if (sp > 0) {
+      w.spool_multiplier = 1 + sp;
+      w.volley_unspooled = base.json();
+    }
+    weapons.push(w);
+  }
+  const dVol = new Dmg(), dDps = new Dmg();
+  const droneOut: object[] = [];
+  for (const i of c.drones) {
+    const n = c.item(i).activeCount;
+    if (n === 0) continue;
+    const mult = fit.has(i, A.dmgMult) ? fit.get(i, A.dmgMult) : 1;
+    const v = new Dmg(fit.get(i, A.dmg[0]), fit.get(i, A.dmg[1]), fit.get(i, A.dmg[2]), fit.get(i, A.dmg[3])).scale(mult * n);
+    const cyc = c.rawCycleMs(i);
+    if (v.total() === 0 || cyc === 0) continue;
+    const dps = v.scale(1000 / cyc);
+    dVol.add(v);
+    dDps.add(dps);
+    droneOut.push({ drone_index: c.item(i).reqIndex, type_id: c.item(i).typeId, name: c.typeName(i), count: n, volley: v.json(), dps: dps.json() });
+  }
+  const fVol = new Dmg(), fDps = new Dmg();
+  const fighterOut: object[] = [];
+  for (const i of c.fighters) {
+    const it = c.item(i);
+    const n = it.activeCount;
+    if (n === 0) continue;
+    const fv = new Dmg(), fd = new Dmg();
+    for (const [eff, prefix] of [['fighterAbilityAttackM', 'fighterAbilityAttackMissile'], ['fighterAbilityMissiles', 'fighterAbilityMissiles']]) {
+      const eid = ds.effectId(eff);
+      const found = it.effects.find(([e]) => e === eid);
+      if (!found) continue;
+      const used = it.fighterAbilities !== null ? it.fighterAbilities.includes(eid) : found[1];
+      if (!used) continue;
+      let m = c.g(i, `${prefix}DamageMultiplier`);
+      if (m === 0) m = 1;
+      const v = new Dmg(c.g(i, `${prefix}DamageEM`), c.g(i, `${prefix}DamageTherm`), c.g(i, `${prefix}DamageKin`), c.g(i, `${prefix}DamageExp`)).scale(m * n);
+      const dur = c.g(i, `${prefix}Duration`);
+      fv.add(v);
+      if (dur > 0) fd.add(v.scale(1000 / dur));
+    }
+    if (fv.total() > 0) {
+      fVol.add(fv);
+      fDps.add(fd);
+      fighterOut.push({ fighter_index: it.reqIndex, type_id: it.typeId, name: c.typeName(i), squadron_size: n, volley: fv.json(), dps: fd.json() });
+    }
+  }
+  const tVol = wVol.clone(); tVol.add(dVol); tVol.add(fVol);
+  const tDps = wDps.clone(); tDps.add(dDps); tDps.add(fDps);
+  return {
+    weapons, drones: droneOut, fighters: fighterOut,
+    total: {
+      weapon_dps: wDps.total(), weapon_volley: wVol.total(), drone_dps: dDps.total(), drone_volley: dVol.total(),
+      fighter_dps: fDps.total(), fighter_volley: fVol.total(), dps: tDps.json(), volley: tVol.json(),
+    },
+    vs_target_profile: { dps: tDps.vs(tpRes), volley: tVol.vs(tpRes) },
+  };
+}
