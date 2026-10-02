@@ -876,6 +876,10 @@ func (f *Fit) registerItem(i int) {
 		if len(e.Mods) == 0 && kind == KModule && state >= Active && f.localSpecial(i, e.Name, srcCat) {
 			continue
 		}
+		if kind == KBeacon && e.Name == "OffensiveDefensiveReduction" {
+			f.incursionEffect(i)
+			continue
+		}
 		if !stateOK(e.Category, state) {
 			continue
 		}
@@ -957,7 +961,7 @@ func (f *Fit) registerProjected(i int) {
 	ship := uint32(f.Ship)
 	for _, te := range it.Effects {
 		e := ds.effect(te.ID)
-		if e == nil || (e.Category != 2 && e.Category != 3 && e.Name != "ECMBurstJammer") {
+		if e == nil || (e.Category != 2 && e.Category != 3 && e.Name != "ECMBurstJammer" && !strings.HasPrefix(e.Name, "doomsdayAOE")) {
 			continue
 		}
 		if it.HasAbil && strings.HasPrefix(e.Name, "fighterAbility") && !containsU32(it.Abilities, te.ID) {
@@ -994,7 +998,10 @@ func (f *Fit) registerProjected(i int) {
 			f.push(bItem, ship, target, amod{op: op, kind: srcProj, item: int32(i), ship: int32(f.Ship), attr: src,
 				c: factor, a2: resist, mul: op == 4 || op == 0, from: int32(i)}, srcCat)
 		}
-		if len(e.Mods) > 0 {
+		// burst projectors and the Standup weapon disruptor stay engine-side even if a dataset revision gives them
+		// modifiers (eve-sde-pipeline proposed patch 0101): the generic path has no AoE full-strength rule
+		engineSide := strings.HasPrefix(e.Name, "doomsdayAOE") || e.Name == "structureModuleEffectWeaponDisruption"
+		if len(e.Mods) > 0 && !engineSide {
 			for _, m := range e.Mods {
 				if (m.Domain == DomTargetID || m.Domain == DomTarget || m.Domain == DomShip) && m.Func == FuncItem {
 					push(m.Modified, m.Modifying, int8(m.Op))
@@ -1024,7 +1031,68 @@ func (f *Fit) registerProjected(i int) {
 			}
 			continue
 		}
+		// burst projectors (Pyfa Effect6476-6482/6513): full strength on every ship in the AoE (no range factor)
+		full := func(target, src uint32) {
+			f.push(bItem, ship, target, amod{op: 6, kind: srcProj, item: int32(i), ship: int32(f.Ship), attr: src, c: 1, a2: resist, from: int32(i)}, srcCat)
+		}
+		switch n {
+		case "doomsdayAOEWeb":
+			if targetOffenseOK {
+				full(a("maxVelocity"), a("speedFactor"))
+			}
+			continue
+		case "doomsdayAOEPaint":
+			if targetOffenseOK {
+				full(a("signatureRadius"), a("signatureRadiusBonus"))
+			}
+			continue
+		case "doomsdayAOEDamp":
+			if targetOffenseOK {
+				full(a("maxTargetRange"), a("maxTargetRangeBonus"))
+				full(a("scanResolution"), a("scanResolutionBonus"))
+			}
+			continue
+		case "doomsdayAOENeut":
+			f.ProjSpecials = append(f.ProjSpecials, ProjSpecial{Item: i, Amount: a("energyNeutralizerAmount"), Duration: a("duration"), Factor: 1, Resist: resist, Sign: 1})
+			continue
+		case "doomsdayAOEECM":
+			if targetOffenseOK {
+				f.ProjSpecials = append(f.ProjSpecials, ProjSpecial{Ecm: true, Item: i, Factor: 1, Resist: resist})
+			}
+			continue
+		case "doomsdayAOEBubble", "doomsdayAOEGuide":
+			continue
+		}
+		weaponDisruption := n == "doomsdayAOETrack" || n == "structureModuleEffectWeaponDisruption"
 		switch {
+		case weaponDisruption:
+			// AoE weapon disruption burst (full strength) / Standup Weapon Disruptor (range factor): turrets and missiles
+			if targetOffenseOK {
+				tf := 1.0
+				if n != "doomsdayAOETrack" {
+					tf = RangeFactor(pbase("maxRange"), pbase("falloffEffectiveness"), it.Distance, true)
+				}
+				gun, _ := ds.TypeByName("Gunnery")
+				mls, _ := ds.TypeByName("Missile Launcher Operation")
+				for t := range f.Items {
+					ti := &f.Items[t]
+					if ti.Loc != LShip || !ti.Owned {
+						continue
+					}
+					var pairs [][2]string
+					if ti.Kind == KModule && containsU32(ti.ReqSkills, gun) {
+						pairs = [][2]string{{"trackingSpeedBonus", "trackingSpeed"}, {"maxRangeBonus", "maxRange"}, {"falloffBonus", "falloff"}}
+					} else if ti.Kind == KCharge && containsU32(ti.ReqSkills, mls) {
+						pairs = [][2]string{{"aoeCloudSizeBonus", "aoeCloudSize"}, {"aoeVelocityBonus", "aoeVelocity"}, {"missileVelocityBonus", "maxVelocity"}, {"explosionDelayBonus", "explosionDelay"}}
+					} else {
+						continue
+					}
+					for _, pr := range pairs {
+						f.push(bItem, uint32(t), a(pr[1]), amod{op: 6, kind: srcProj, item: int32(i), ship: int32(f.Ship),
+							attr: a(pr[0]), c: tf, a2: resist, from: int32(i)}, srcCat)
+					}
+				}
+			}
 		case strings.HasPrefix(n, "remoteWebifier") || n == "structureModuleEffectStasisWebifier":
 			push(a("maxVelocity"), a("speedFactor"), 6)
 		case strings.HasPrefix(n, "remoteTargetPaint") || n == "structureModuleEffectTargetPainter":
@@ -1115,6 +1183,8 @@ func (f *Fit) localSpecial(i int, name string, srcCat uint32) bool {
 		for _, t := range [4]string{"Gravimetric", "Magnetometric", "Radar", "Ladar"} {
 			attr(a("scan"+t+"Strength"), 6, a("scan"+t+"StrengthPercent"), srcCat)
 		}
+	case "moduleBonusBreacherPodDamageControl":
+		attr(a("breacherPodDamageResistance"), 6, a("breacherPodActivatedDamageReceivedPercentage"), 6)
 	case "microJumpPortalDrive", "microJumpPortalDriveCapital":
 		attr(a("signatureRadius"), 6, a("signatureRadiusBonusPercent"), srcCat)
 	case "warpDisruptSphere":
@@ -1138,6 +1208,57 @@ func (f *Fit) localSpecial(i int, name string, srcCat uint32) bool {
 		return false
 	}
 	return true
+}
+
+// incursionEffect: Sansha / Drifter incursion system effects (Pyfa Effect4728 OffensiveDefensiveReduction, LGPL;
+// re-expressed): unpenalised PostPercent of missile-charge and smartbomb damage, turret and drone
+// damageMultiplier by systemEffectDamageReduction, and of the ship's armor/shield resonances by the beacon's
+// resistance bonuses.
+func (f *Fit) incursionEffect(b int) {
+	ds := f.DS
+	a := ds.AttrID
+	red := a("systemEffectDamageReduction")
+	mls, _ := ds.TypeByName("Missile Launcher Operation")
+	gunnery, _ := ds.TypeByName("Gunnery")
+	smartbomb := uint32(0)
+	for gid, g := range ds.Groups {
+		if g != nil && g.Name == "Smart Bomb" {
+			smartbomb = gid
+			break
+		}
+	}
+	mod := func(t int, attr, src uint32) {
+		f.push(bItem, uint32(t), attr, amod{op: 6, kind: srcAttr, item: int32(b), attr: src, from: int32(b)}, 6)
+	}
+	for t := range f.Items {
+		it := &f.Items[t]
+		if !it.Owned || (it.Loc != LShip && it.Kind != KDrone) {
+			continue
+		}
+		dmgB, mult := false, false
+		switch it.Kind {
+		case KCharge:
+			dmgB = containsU32(it.ReqSkills, mls)
+		case KModule:
+			dmgB = it.Group == smartbomb
+			mult = containsU32(it.ReqSkills, gunnery)
+		case KDrone:
+			mult = true
+		}
+		if dmgB {
+			for _, d := range [4]string{"em", "thermal", "kinetic", "explosive"} {
+				mod(t, a(d+"Damage"), red)
+			}
+		}
+		if mult {
+			mod(t, a("damageMultiplier"), red)
+		}
+	}
+	for _, d := range [4]string{"Em", "Thermal", "Kinetic", "Explosive"} {
+		for _, l := range [2]string{"armor", "shield"} {
+			mod(f.Ship, a(l+d+"DamageResonance"), a(l+d+"DamageResistanceBonus"))
+		}
+	}
 }
 
 // pyRound2 is Python round(v, 2): correctly rounded on the exact binary value (ties to even).
@@ -1312,6 +1433,34 @@ func (f *Fit) registerBuffs(req *FitRequest) {
 			offer(id, f.Get(i, w.warfareVal[k]), amod{kind: srcAttr, item: int32(i), attr: w.warfareVal[k], from: int32(i)})
 		}
 	}
+	// abyssal weather / AoE cloud beacons (Pyfa weather_* / aoe_beacon_* effects): warfareBuff1/2 of the
+	// environment item join the same command-bonus pool (strongest |value| per buff id)
+	for i := range f.Items {
+		if f.Items[i].Kind != KBeacon {
+			continue
+		}
+		weather := false
+		for _, e := range f.Items[i].Effects {
+			if ei := ds.effect(e.ID); ei != nil && (strings.HasPrefix(ei.Name, "weather_") || strings.HasPrefix(ei.Name, "aoe_beacon_")) {
+				weather = true
+				break
+			}
+		}
+		if !weather {
+			continue
+		}
+		for k := 0; k < 2; k++ {
+			id := uint32(0)
+			if f.Has(i, w.warfareID[k]) {
+				id = uint32(f.Get(i, w.warfareID[k]))
+			}
+			if _, explicit := agg[id]; id == 0 || explicit {
+				continue
+			}
+			v := f.Get(i, w.warfareVal[k])
+			offer(id, v, amod{kind: srcConst, c: v, from: int32(f.Ship)})
+		}
+	}
 	for k := range req.Fleet.BoosterFits {
 		breq := req.Fleet.BoosterFits[k]
 		breq.Fleet.BoosterFits = nil
@@ -1351,23 +1500,54 @@ func (f *Fit) registerBuffs(req *FitRequest) {
 	f.Invalidate()
 }
 
+var droneBuffAttrs = map[uint32][]string{
+	79: {"signatureRadius"},
+	90: {"shieldEmDamageResonance", "armorEmDamageResonance", "emDamageResonance"},
+	93: {"shieldExplosiveDamageResonance", "armorExplosiveDamageResonance", "explosiveDamageResonance"},
+	95: {"shieldThermalDamageResonance", "armorThermalDamageResonance", "thermalDamageResonance"},
+	99: {"shieldKineticDamageResonance", "armorKineticDamageResonance", "kineticDamageResonance"},
+	94: {"shieldCapacity"},
+	96: {"armorHP"},
+	97: {"maxRange", "falloff"},
+	98: {"maxVelocity"},
+}
+
 func (f *Fit) applyBuff(id uint32, src amod) {
 	info := f.DS.Dbuffs[id]
 	if info == nil {
 		return
 	}
 	src.op = int8(info.Op)
+	// Pyfa applies most buffs stacking-penalised; the abyssal weather resistance/HP/velocity buffs are not
+	cat := uint32(0)
+	switch id {
+	case 90, 93, 94, 95, 96, 98, 99:
+		cat = 6
+	}
 	for _, a := range info.Item {
-		f.push(bItem, uint32(f.Ship), a, src, 0)
+		f.push(bItem, uint32(f.Ship), a, src, cat)
+	}
+	// AoE cloud / weather buffs also hit drones that require the Drones skill (Pyfa fit.py commandBonus)
+	if names := droneBuffAttrs[id]; len(names) > 0 {
+		for d := range f.Items {
+			if f.Items[d].Kind != KDrone || !containsU32(f.Items[d].ReqSkills, 3436) {
+				continue
+			}
+			for _, n := range names {
+				if a := f.DS.AttrID(n); a != 0 {
+					f.push(bItem, uint32(d), a, src, cat)
+				}
+			}
+		}
 	}
 	for _, a := range info.Location {
-		f.push(bShipLoc, 0, a, src, 0)
+		f.push(bShipLoc, 0, a, src, cat)
 	}
 	for _, p := range info.LocationGroup {
-		f.push(bShipGroup, p[1], p[0], src, 0)
+		f.push(bShipGroup, p[1], p[0], src, cat)
 	}
 	for _, p := range info.LocationSkill {
-		f.push(bShipSkill, p[1], p[0], src, 0)
+		f.push(bShipSkill, p[1], p[0], src, cat)
 	}
 	f.Invalidate()
 }
