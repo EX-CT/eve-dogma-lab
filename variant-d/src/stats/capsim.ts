@@ -129,6 +129,7 @@ export function simulate(capacity: number, rechargeMs: number, drains: Drain[], 
   let ranOut = false;
   const key = (v: Ev[]) => v.map((e) => [e.duration, e.capNeed] as [number, number]).sort((x, y) => x[0] - y[0] || x[1] - y[1]).map((x) => `${x[0]}:${x[1]}`).join(',');
   let lastEv: Ev | null = null;
+  let dtA = NaN, exA = 0, dtB = NaN, exB = 0;
   const fire = (inj: Ev, tNow: number) => {
     cap = Math.min(cap - inj.capNeed, capMax);
     inj.t = tNow + inj.duration;
@@ -148,7 +149,16 @@ export function simulate(capacity: number, rechargeMs: number, drains: Drain[], 
     if (tNow >= tMaxMs) { heap.pop(); lastEv = ev; break; }
     if (tNow > tLast && capMax > 0 && tau > 0) {
       const x = Math.sqrt(Math.max(cap / capMax, 0));
-      const y = 1 + (x - 1) * Math.exp((tLast - tNow) / tau);
+      // event gaps repeat (periodic modules): memoise exp() per gap (same value, the function is deterministic)
+      const dt = tLast - tNow;
+      let ex: number;
+      if (dt === dtA) ex = exA;
+      else if (dt === dtB) ex = exB;
+      else {
+        ex = Math.exp(dt / tau);
+        dtB = dtA; exB = exA; dtA = dt; exA = ex;
+      }
+      const y = 1 + (x - 1) * ex;
       cap = y * y * capMax;
     }
     if (tNow !== tLast) {
