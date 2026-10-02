@@ -5,6 +5,7 @@ pub mod capsim;
 pub mod data;
 pub mod eft;
 pub mod engine;
+pub mod hash;
 pub mod request;
 pub mod stats;
 

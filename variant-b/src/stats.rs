@@ -965,10 +965,10 @@ impl<'a> Fit<'a> {
         let (a_mgf, a_mtf, a_mgo, a_mga) =
             (ds.attr_id("maxGroupFitted"), ds.attr_id("maxTypeFitted"), ds.attr_id("maxGroupOnline"), ds.attr_id("maxGroupActive"));
         let (a_rig, a_csize) = (ds.attr_id("rigSize"), ds.attr_id("chargeSize"));
-        let mut fitted_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
-        let mut fitted_type: rustc_hash::FxHashMap<u32, u32> = Default::default();
-        let mut active_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
-        let mut online_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
+        let mut fitted_group: crate::hash::FxHashMap<u32, u32> = Default::default();
+        let mut fitted_type: crate::hash::FxHashMap<u32, u32> = Default::default();
+        let mut active_group: crate::hash::FxHashMap<u32, u32> = Default::default();
+        let mut online_group: crate::hash::FxHashMap<u32, u32> = Default::default();
         for &i in &modules {
             let it = &self.items[i];
             let idx = it.req_index;
@@ -997,7 +997,7 @@ impl<'a> Fit<'a> {
             if it.state >= State::Active {
                 *active_group.entry(it.group).or_default() += 1;
             }
-            let check = |a: u32, map: &rustc_hash::FxHashMap<u32, u32>, key: u32| -> Option<(f64, u32)> {
+            let check = |a: u32, map: &crate::hash::FxHashMap<u32, u32>, key: u32| -> Option<(f64, u32)> {
                 let lim = mt.attr(a)?;
                 let n = *map.get(&key).unwrap_or(&0);
                 if lim > 0.0 && n as f64 > lim { Some((lim, n)) } else { None }
@@ -1033,8 +1033,8 @@ impl<'a> Fit<'a> {
             }
         }
         // skills
-        let mut have: rustc_hash::FxHashMap<u32, f64> =
-            rustc_hash::FxHashMap::with_capacity_and_hasher(self.skills.len(), Default::default());
+        let mut have: crate::hash::FxHashMap<u32, f64> =
+            crate::hash::FxHashMap::with_capacity_and_hasher(self.skills.len(), Default::default());
         for &(s, l) in &self.skills {
             have.insert(s, l as f64);
         }

@@ -1,5 +1,5 @@
 //! Engine dataset (format v1, produced by `eve-sde-pipeline`).
-use rustc_hash::FxHashMap;
+use crate::hash::FxHashMap;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::Read;
@@ -281,13 +281,11 @@ impl Dataset {
         // cache key from file identity (absolute path, size, mtime, inode, device) instead of hashing the
         // contents on every start: the pipeline always writes a new file (new mtime/inode) for a new dataset.
         let key = {
-            use sha2::Digest;
             use std::os::unix::fs::MetadataExt;
             let md = std::fs::metadata(path).map_err(|e| format!("read {path}: {e}"))?;
             let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
             let id = format!("{}|{}|{}.{}|{}|{}", abs.display(), md.len(), md.mtime(), md.mtime_nsec(), md.ino(), md.dev());
-            let d = sha2::Sha256::digest(id.as_bytes());
-            d.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            sha256_hex(id.as_bytes())
         };
         let dir = std::env::var_os("EVE_DOGMA_CACHE")
             .map(std::path::PathBuf::from)
@@ -453,11 +451,7 @@ impl Dataset {
         // hash on a second thread while parsing (the hash is only reported in `meta`)
         let t0 = std::time::Instant::now();
         let (sha256, raw) = std::thread::scope(|sc| {
-            let h = sc.spawn(|| {
-                use sha2::Digest;
-                let d = sha2::Sha256::digest(&json);
-                d.iter().map(|b| format!("{b:02x}")).collect::<String>()
-            });
+            let h = sc.spawn(|| sha256_hex(&json));
             let raw: Result<RawDs, String> = serde_json::from_slice(&json).map_err(|e| format!("dataset json: {e}"));
             (h.join().expect("sha thread"), raw)
         });
@@ -623,7 +617,7 @@ impl Dataset {
     }
 }
 
-// Small self-contained SHA-256 (avoids an extra dependency).
+/// SHA-256 as lowercase hex (small self-contained implementation; avoids a crypto dependency).
 pub fn sha256_hex(data: &[u8]) -> String {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
@@ -637,14 +631,15 @@ pub fn sha256_hex(data: &[u8]) -> String {
     ];
     let mut h: [u32; 8] =
         [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-    let mut msg = data.to_vec();
-    let bitlen = (data.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
+    // full blocks straight from the input, then the padded tail (one or two blocks)
+    let full = data.len() / 64 * 64;
+    let mut tail = data[full..].to_vec();
+    tail.push(0x80);
+    while tail.len() % 64 != 56 {
+        tail.push(0);
     }
-    msg.extend_from_slice(&bitlen.to_be_bytes());
-    for chunk in msg.chunks(64) {
+    tail.extend_from_slice(&(data.len() as u64).wrapping_mul(8).to_be_bytes());
+    for chunk in data[..full].chunks_exact(64).chain(tail.chunks_exact(64)) {
         let mut w = [0u32; 64];
         for i in 0..16 {
             w[i] = u32::from_be_bytes([chunk[4 * i], chunk[4 * i + 1], chunk[4 * i + 2], chunk[4 * i + 3]]);
@@ -1141,3 +1136,31 @@ struct Snapshot {
 }
 
 const SNAP_MAGIC: &[u8; 8] = b"EVEDVB04";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sha256_known_vectors() {
+        assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        // 56 bytes: the length no longer fits the first padding block
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+        let big: Vec<u8> = (0..1000u32).map(|i| (i * 7 % 251) as u8).collect();
+        assert_eq!(sha256_hex(&big), "59425e4412e296fc74736673ce067027f384203f59c0d2c3e6be7b13347b3ffc");
+    }
+
+    #[test]
+    fn name_hash_is_stable() {
+        // persisted in the snapshot: changing it needs a SNAPSHOT_VERSION bump
+        assert_eq!(fnv1a(b""), 0);
+        assert_eq!(fnv1a(b"Rifter"), 0x3f55a9af);
+        assert_eq!(fnv1a(b"Large Shield Extender II"), 0x882a98f9);
+        assert_ne!(fnv1a(b"Rifter"), fnv1a(b"rifter"));
+        assert_ne!(fnv1a(b"abcdefgh"), fnv1a(b"abcdefgh\0"));
+    }
+}

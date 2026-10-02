@@ -679,4 +679,39 @@ mod tests {
             assert!(same(&a, &b), "case {case}: {drains:?} cap {cap} rr {rr} reload {reload} stagger {stagger}\n{a:?}\n{b:?}");
         }
     }
+
+    fn drain(duration: f64, cap_need: f64) -> Drain {
+        Drain { duration, cap_need, clip_size: 0, reload_ms: 0.0, is_injector: false, disable_stagger: false }
+    }
+
+    #[test]
+    fn no_drains_is_stable_at_full() {
+        let r = simulate(500.0, 200_000.0, &[], 1.0, false, true, 600_000.0);
+        assert!(r.stable);
+        assert_eq!(r.depletes_in_s, None);
+        assert!((r.stable_low - 1.0).abs() < 1e-9, "{r:?}");
+    }
+
+    #[test]
+    fn light_drain_is_stable_heavy_drain_runs_out() {
+        // peak recharge of 500 GJ / 200 s is 2.5 * 500 / 200 = 6.25 GJ/s
+        let light = simulate(500.0, 200_000.0, &[drain(5000.0, 10.0)], 1.0, false, true, 3_600_000.0);
+        assert!(light.stable && light.stable_low > 0.25 && light.stable_low < 1.0, "{light:?}");
+        let heavy = simulate(500.0, 200_000.0, &[drain(1000.0, 50.0)], 1.0, false, true, 3_600_000.0);
+        assert!(!heavy.stable, "{heavy:?}");
+        let t = heavy.depletes_in_s.expect("runs out");
+        // 50 GJ/s use against at most 6.25 GJ/s recharge: between 500/50 and 500/(50-6.25) seconds
+        assert!(t > 9.0 && t < 12.0, "{t}");
+    }
+
+    #[test]
+    fn injector_extends_cap_life() {
+        let base = [drain(1000.0, 50.0)];
+        let mut with_inj = base.to_vec();
+        with_inj.push(Drain { duration: 12_000.0, cap_need: -400.0, clip_size: 1, reload_ms: 10_000.0, is_injector: true, disable_stagger: false });
+        let a = simulate(500.0, 200_000.0, &base, 1.0, true, true, 3_600_000.0);
+        let b = simulate(500.0, 200_000.0, &with_inj, 1.0, true, true, 3_600_000.0);
+        let (ta, tb) = (a.depletes_in_s.unwrap(), b.depletes_in_s.unwrap_or(f64::INFINITY));
+        assert!(tb > ta, "{ta} vs {tb}");
+    }
 }
