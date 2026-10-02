@@ -161,7 +161,9 @@ def _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms):
     ran_out = False
     exp, sqrt = math.exp, math.sqrt
     rate = float(np.sum(1.0 / durs))
-    width = max(4096.0 / rate, float(durs.max()) * 2.0)
+    # windows grow geometrically: most fits settle within a few hundred events, long sims get big windows
+    width = max(256.0 / rate, float(durs.max()) * 1.01)
+    width_max = max(16384.0 / rate, width)
     t0 = 0.0
     done = False
     while not done:
@@ -173,6 +175,7 @@ def _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms):
         g = np.repeat(np.arange(len(durs)), cnt)
         if len(g) == 0:
             t0 = t1
+            width = min(width * 2.0, width_max)
             continue
         first = np.repeat(np.cumsum(cnt) - cnt, cnt)
         k = np.repeat(k0, cnt) + (np.arange(len(g)) - first)
@@ -213,6 +216,7 @@ def _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms):
                     break
                 cap_lowest = cap
         t0 = t1
+        width = min(width * 2.0, width_max)
     avg_drain = float(sum((needs / durs).tolist()))
     eve_stable = 0.0
     if cap_max > 0.0:

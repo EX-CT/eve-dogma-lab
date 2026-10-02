@@ -55,6 +55,18 @@ def _tkey(fit, cls, x):
     return ((np.asarray(fit, np.int64) * 8 + cls) << KEY_X_BITS) | np.asarray(x, np.int64)
 
 
+def _sorted_unique(x):
+    """np.unique via a stable (timsort) sort: the keys arrive mostly sorted (item-major), which makes this
+    several times faster than NumPy 2's hash-based unique"""
+    x = np.sort(x, kind="stable")
+    if len(x) == 0:
+        return x
+    keep = np.empty(len(x), bool)
+    keep[0] = True
+    np.not_equal(x[1:], x[:-1], out=keep[1:])
+    return x[keep]
+
+
 def _expand_ranges(lo, hi):
     """for ranges [lo_i, hi_i): (owner index per element, element positions)"""
     n = hi - lo
@@ -829,7 +841,7 @@ def evaluate(batch, fit_mask=None):
     sk_vals = np.concatenate(sk_vals) if sk_vals else np.zeros(0)
     refs = [M["a"], M["b"], M["c"]]
     refs = [r[r >= 0] for r in refs]
-    keys = np.unique(np.concatenate([base_keys, ov_keys, sk_keys, tgt_key] + refs))
+    keys = _sorted_unique(np.concatenate([base_keys, ov_keys, sk_keys, tgt_key] + refs))
     n = len(keys)
     node_item = keys >> B
     node_attr = keys & ((1 << B) - 1)
