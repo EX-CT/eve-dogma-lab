@@ -32,8 +32,8 @@ Bench integration is in `bench.yaml` (`build`, `cmd`, `batch_cmd` with `{dataset
 
 ## Status
 
-- eve-dogma-bench: **249/249 cases, 13,812/13,812 values**.
-- Full-output diff against reference A (eve-dogma-rs 086dcb4) over all bench cases plus the 11 sustain/reload cases: identical
+- eve-dogma-bench 1.4.0: **289/289 cases, 18,591/18,591 values (100 %)**. Scorecard in `bench/scorecard.md`.
+- Full-output diff against reference A (eve-dogma-rs ae4bfb0) over all 289 bench cases and the reference's 162 test cases: identical
   within 1e-9 relative tolerance. Run `tools/compare_ref.py`.
 - Not implemented: the EFT text import and export RPC methods (`eft_parse` and `eft_export` return `UNKNOWN_METHOD`).
 

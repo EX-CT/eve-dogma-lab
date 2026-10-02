@@ -42,8 +42,8 @@ load time rather than silently mid-calc. Rules refer to `k.MaxVelocity` and simi
    `DataDrivenModifierRule`, which interprets the dataset's `modifierInfo`, is always **last**. Adding a special case means
    writing a class and placing it in the list. Nothing else changes.
 3. **Projected rules** (`IProjectedRule`) handle effects applied onto another fit (webs, painters, damps, sensor boosters,
-   data-driven projections). The `IncomingEffects` table describes non-modifier projections (remote reps, neuts, nos, cap transfer)
-   as typed `IncomingRepair` / `IncomingCapacitor` records that the stats layer consumes.
+   data-driven projections). Fighter projected abilities (web, warp disruption) have their own handler. The `IncomingEffects` table describes non-modifier projections (remote reps, neuts, nos, cap transfer, ECM)
+   as typed `IncomingRepair` / `IncomingCapacitor` / `IncomingEcm` records that the stats layer consumes.
 4. **Fit passes** (`IFitPass`) are whole-fit steps that need evaluated attributes: warfare/command bursts (strongest per buff id
    across own bursts and fleet booster fits, explicit buffs override) and the Reactive Armor Hardener adaptation.
 
