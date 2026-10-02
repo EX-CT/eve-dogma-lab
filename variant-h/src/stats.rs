@@ -90,6 +90,13 @@ fn tidy(v: &mut Value) {
     }
 }
 
+/// every entity carrying component T, in spawn order (a fresh world allocates ids sequentially)
+fn in_spawn_order<T: hecs::Component + Copy>(fit: &Fit) -> Vec<(Entity, T)> {
+    let mut v: Vec<(Entity, T)> = fit.world.query::<&T>().iter().map(|(e, c)| (e, *c)).collect();
+    v.sort_unstable_by_key(|x| x.0.id());
+    v
+}
+
 struct Ctx<'f, 'a> {
     fit: &'f Fit<'a>,
     c: Calc<'f>,
@@ -437,8 +444,8 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     // incoming remote repairs (Pyfa applied-RR diminishing-returns formula)
     {
         let mut lists: [Vec<(f64, f64)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        for &e in &fit.order {
-            if let Ok(r) = fit.world.get::<&IncomingRep>(e) {
+        for (e, r) in in_spawn_order::<IncomingRep>(fit) {
+            {
                 let dur = g(e, a.duration) / 1000.0;
                 if dur > 0.0 {
                     lists[r.layer as usize].push((g(e, r.amount_attr) * r.mult * r.factor, dur));
@@ -522,8 +529,8 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     }
     // incoming neuts / nos / cap transfers (extra simulation drains after the fit's own modules)
     let sig_now = g(ship, a.sig);
-    for &e in &fit.order {
-        if let Ok(d) = fit.world.get::<&IncomingDrain>(e) {
+    for (e, d) in in_spawn_order::<IncomingDrain>(fit) {
+        {
             let mut need = g(e, d.amount_attr) * d.factor * d.sign;
             if d.resist != 0 {
                 need *= g(ship, d.resist);
@@ -682,8 +689,8 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         }
         let sensors = best.1;
         let mut keep = 1.0f64;
-        for &e in &fit.order {
-            if let Ok(j) = fit.world.get::<&IncomingEcm>(e) {
+        for (_, j) in in_spawn_order::<IncomingEcm>(fit) {
+            {
                 let an = if j.fighter { format!("fighterAbilityECMStrength{}", st.0) } else { format!("scan{}StrengthBonus", st.0) };
                 let id = ds.attr_id(&an);
                 let mut strength = if id != 0 && x.c.has(j.src, id) { g(j.src, id) } else { 0.0 } * j.factor;
