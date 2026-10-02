@@ -62,6 +62,8 @@ pub struct ProfileReq {
     pub signature_radius: Option<f64>,
     #[serde(default)]
     pub radius: Option<f64>,
+    #[serde(default)]
+    pub hp: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

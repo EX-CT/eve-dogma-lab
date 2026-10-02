@@ -127,6 +127,23 @@ impl<'a> Mad<'a> {
         self.original(a, ds)
     }
 
+    /// getModifiedItemAttrExtended(extraMultipliers={'default': extra}): extra penalised multipliers joined to the
+    /// attribute's default stacking group, not stored
+    pub fn get_extended(&self, a: u32, extra: &[f64], ds: &Dataset) -> f64 {
+        let mut e = match self.entries.get(&a) {
+            Some(e) if e.placeholder => e.clone(),
+            Some(e) if e.inter.is_some() => return e.inter.unwrap(),
+            _ => Entry { mult: 1.0, ..Default::default() },
+        };
+        if !extra.is_empty() {
+            match e.pen.iter_mut().find(|x| x.0 == 0) {
+                Some(g) => g.1.extend_from_slice(extra),
+                None => e.pen.push((0, extra.to_vec())),
+            }
+        }
+        self.calculate(a, &e, ds)
+    }
+
     fn calculate(&self, a: u32, e: &Entry, ds: &Dataset) -> f64 {
         let info = attr_lite(a, ds);
         let min_v = info.and_then(|i| i.min_attr).and_then(|m| self.get(m, ds));

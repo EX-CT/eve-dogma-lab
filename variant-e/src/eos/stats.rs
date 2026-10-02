@@ -229,6 +229,10 @@ impl<'a> Fit<'a> {
 
     /// getVolleyParameters -> list of (time, volley)
     pub(crate) fn volley_params(&self, m: It, default_spool: Option<Spool>) -> Vec<(f64, Dmg)> {
+        self.volley_params_sp(m, self.spool_opts(m, default_spool))
+    }
+    /// getVolleyParameters with already-resolved spool options
+    pub(crate) fn volley_params_sp(&self, m: It, spool: Option<Spool>) -> Vec<(f64, Dmg)> {
         if self.items[m].state < ACTIVE {
             return vec![(0.0, Dmg::default())];
         }
@@ -272,7 +276,7 @@ impl<'a> Fit<'a> {
             self.g(m, "damageMultiplierBonusMax"),
             self.g(m, "damageMultiplierBonusPerCycle"),
             self.raw_cycle_time(m) / 1000.0,
-            self.spool_opts(m, default_spool),
+            spool,
         )
         .0;
         base.into_iter().map(|(t, d)| (t, d.mul(1.0 + sp))).collect()
