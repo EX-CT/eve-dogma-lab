@@ -287,6 +287,14 @@ func (r *FitRequest) UnmarshalJSON(b []byte) error {
 	// One decoding pass into wire structs whose defaulted fields are pointers (no nested custom
 	// unmarshalers, which would re-validate and re-scan every sub-object), then apply serde defaults.
 	var w wireFit
+	if fastDecodeWire(b, &w) {
+		if w.missingShip() {
+			return fmt.Errorf("missing field `ship`")
+		}
+		w.to(r)
+		return nil
+	}
+	w = wireFit{}
 	err := json.Unmarshal(b, &w)
 	if _, syntax := err.(*json.SyntaxError); syntax {
 		return err
