@@ -192,6 +192,28 @@ fn main() {
             m["load_ms"] = json!(t0.elapsed().as_secs_f64() * 1000.0);
             writeln!(out, "{}", serde_json::to_string_pretty(&m).unwrap()).unwrap();
         }
+        "bench-phases" => {
+            let n: usize = take_flag(&mut args, "-n").and_then(|v| v.parse().ok()).unwrap_or(1000);
+            let ds = load(dataset);
+            let s = read_input(args.get(1));
+            let req: FitRequest = serde_json::from_str(&s).expect("bad request");
+            eve_dogma::engine::prof_enable(true);
+            let t1 = Instant::now();
+            let mut st = 0.0;
+            let mut gs = (0, 0, 0);
+            for _ in 0..n {
+                let f = eve_dogma::engine::Fit::build(&ds, &req).unwrap();
+                let t = Instant::now();
+                std::hint::black_box(f.compute_stats(&req));
+                st += t.elapsed().as_secs_f64();
+                gs = f.graph_stats();
+            }
+            let el = t1.elapsed().as_secs_f64();
+            let acc = eve_dogma::engine::PROF_ACC.with(|a| *a.borrow());
+            let us = |x: f64| x / n as f64 * 1e6;
+            writeln!(out, "{}", json!({"per_calc_us": us(el), "build_items_us": us(acc[0]), "register_us": us(acc[1]), "compile_us": us(acc[2]),
+                "staged_us": us(acc[3]), "stats_us": us(st), "nodes": gs.0, "mods": gs.1, "evaluated_nodes": gs.2, "items": 0})).unwrap();
+        }
         "bench" => {
             let n: usize = take_flag(&mut args, "-n").and_then(|v| v.parse().ok()).unwrap_or(1000);
             let t0 = Instant::now();

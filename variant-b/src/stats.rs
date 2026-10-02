@@ -741,8 +741,8 @@ impl<'a> Fit<'a> {
         }
         // skills
         let mut have: rustc_hash::FxHashMap<u32, f64> = Default::default();
-        for (i, it) in self.items.iter().enumerate().filter(|(_, i)| i.kind == Kind::Skill) {
-            have.insert(it.type_id, self.base(i, crate::engine::ATTR_SKILL_LEVEL));
+        for &(s, l) in &self.skills {
+            have.insert(s, l as f64);
         }
         let lvl_attrs = ["requiredSkill1Level", "requiredSkill2Level", "requiredSkill3Level", "requiredSkill4Level", "requiredSkill5Level", "requiredSkill6Level"];
         let skill_attrs = ["requiredSkill1", "requiredSkill2", "requiredSkill3", "requiredSkill4", "requiredSkill5", "requiredSkill6"];

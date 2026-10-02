@@ -140,6 +140,8 @@ pub struct Dataset {
     type_by_name: FxHashMap<String, u32>,
     /// all skill type ids (category 16)
     pub skills: Vec<u32>,
+    /// Variant B: dataset-derived precomputation (skill folding tables), built once on first use.
+    pub prepared: std::sync::OnceLock<crate::engine::Prepared>,
 }
 
 // ---------- raw serde shapes ----------
@@ -391,6 +393,7 @@ impl Dataset {
             effect_by_name,
             type_by_name,
             skills,
+            prepared: std::sync::OnceLock::new(),
         })
     }
 

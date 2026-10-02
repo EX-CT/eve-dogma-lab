@@ -185,6 +185,9 @@ pub struct Fit<'a> {
     idx_char_loc: Vec<u32>,
     idx_char_skillable: Vec<u32>,
     pub stats_evals: Cell<u64>,
+    /// trained skill levels (type id, level 0..5), sorted; skills are folded, not instantiated
+    pub skills: Vec<(u32, u8)>,
+    folded: bool,
 }
 
 #[derive(Debug)]
@@ -337,7 +340,10 @@ impl<'a> Fit<'a> {
             idx_char_loc: Vec::new(),
             idx_char_skillable: Vec::new(),
             stats_evals: Cell::new(0),
+            skills: Vec::new(),
+            folded: false,
         };
+        prof_start();
         let ship = fit.new_item(req.ship.type_id, Kind::Ship, Loc::Ship, "/ship/type_id")?;
         fit.ship = ship;
         fit.is_structure = fit.items[ship].category == 65;
@@ -369,14 +375,21 @@ impl<'a> Fit<'a> {
                 Err(p) => skill_ids.insert(p, (id, l)),
             }
         }
-        for (s, l) in skill_ids {
-            if !ds.types.contains_key(&s) {
-                continue;
-            }
-            let idx = fit.new_item(s, Kind::Skill, Loc::Char, "/character/skills")?;
-            fit.items[idx].set_base(ATTR_SKILL_LEVEL, l.min(5) as f64);
-            fit.items[idx].owned = false;
+        skill_ids.retain(|(s, _)| ds.types.contains_key(s));
+        for x in skill_ids.iter_mut() {
+            x.1 = x.1.min(5);
         }
+        let prep = ds.prepared.get_or_init(|| Prepared::new(ds));
+        // folding is exact unless something can modify skill attributes from outside the skill itself
+        fit.folded = prep.skills_foldable && !req.overrides.iter().any(|o| ds.types.get(&o.type_id).map(|t| t.category == 16).unwrap_or(false));
+        if !fit.folded {
+            for &(s, l) in &skill_ids {
+                let idx = fit.new_item(s, Kind::Skill, Loc::Char, "/character/skills")?;
+                fit.items[idx].set_base(ATTR_SKILL_LEVEL, l as f64);
+                fit.items[idx].owned = false;
+            }
+        }
+        fit.skills = skill_ids;
         let mode_id = req.ship.mode_type_id.or_else(|| {
             let ship_name = ds.types.get(&req.ship.type_id)?.name.to_lowercase();
             let m = ds
@@ -506,14 +519,18 @@ impl<'a> Fit<'a> {
                 it.set_base(o.attribute_id, o.value);
             }
         }
+        prof(0);
         fit.build_indexes();
         fit.register_all(req);
+        prof(1);
         fit.compile();
+        prof(2);
         // stage 2: command bursts need evaluated buff ids
         if fit.register_local_bursts(req) {
             fit.compile();
         }
         fit.apply_rah(req);
+        prof(3);
         Ok(fit)
     }
 
@@ -639,7 +656,12 @@ impl<'a> Fit<'a> {
                 .map(|(t, s)| (ds.attr_id(t), ds.attr_id(s)))
                 .collect();
         let mut targets: Vec<u32> = Vec::with_capacity(64);
+        let mut skills_done = false;
         for i in 0..n {
+            if i == self.char + 1 && self.folded {
+                self.register_folded_skills(&mut targets);
+                skills_done = true;
+            }
             let kind = self.items[i].kind;
             if kind == Kind::Projected {
                 self.register_projected(i);
@@ -722,7 +744,32 @@ impl<'a> Fit<'a> {
                 }
             }
         }
+        if self.folded && !skills_done {
+            self.register_folded_skills(&mut targets);
+        }
         self.register_explicit_buffs(req);
+    }
+
+    /// Skills as constant modifier sources: values of the skill's own attributes at the trained level
+    /// come from the dataset-level fold table (same registration order as instantiated skills).
+    fn register_folded_skills(&mut self, targets: &mut Vec<u32>) {
+        let ds = self.ds;
+        let prep = ds.prepared.get().expect("prepared");
+        let skills = std::mem::take(&mut self.skills);
+        for &(s, l) in &skills {
+            let Some(f) = prep.fold(ds, s) else { continue };
+            let vals = if self.is_structure { &f.values_structure[l as usize] } else { &f.values[l as usize] };
+            for (k, m) in f.outgoing.iter().enumerate() {
+                if self.is_structure && !m.structure_ok {
+                    continue;
+                }
+                self.for_targets(self.char, m.func, m.domain, m.extra, targets);
+                for &t in targets.iter() {
+                    self.push_mod(t as usize, m.modified, m.op, Src::Const(vals[k]), f.category);
+                }
+            }
+        }
+        self.skills = skills;
     }
 
     fn register_projected(&mut self, i: usize) {
@@ -1285,4 +1332,183 @@ pub fn infer_slot(_ds: &Dataset, t: &TypeInfo) -> Option<Slot> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------- phase profiler (bench-phases)
+thread_local! {
+    static PROF_ON: Cell<bool> = const { Cell::new(false) };
+    static PROF_T: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+    pub static PROF_ACC: RefCell<[f64; 4]> = const { RefCell::new([0.0; 4]) };
+}
+pub fn prof_enable(on: bool) {
+    PROF_ON.with(|p| p.set(on));
+}
+#[inline]
+fn prof_start() {
+    if PROF_ON.with(|p| p.get()) {
+        PROF_T.with(|t| t.set(Some(std::time::Instant::now())));
+    }
+}
+#[inline]
+fn prof(k: usize) {
+    if PROF_ON.with(|p| p.get()) {
+        let now = std::time::Instant::now();
+        PROF_T.with(|t| {
+            if let Some(t0) = t.get() {
+                PROF_ACC.with(|a| a.borrow_mut()[k] += (now - t0).as_secs_f64());
+            }
+            t.set(Some(now));
+        });
+    }
+}
+
+// ---------------------------------------------------------------- skill folding (dataset-level)
+/// An outgoing (non-self) modifier of a skill effect.
+#[derive(Debug, Clone)]
+pub struct OutMod {
+    func: Func,
+    domain: Domain,
+    modified: u32,
+    op: i32,
+    extra: u32,
+    structure_ok: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillFold {
+    category: u32,
+    outgoing: Vec<OutMod>,
+    /// values[level][k] = value of outgoing[k]'s modifying attribute on the skill at `level`
+    values: Vec<Vec<f64>>,
+    values_structure: Vec<Vec<f64>>,
+}
+
+/// Dataset-derived, request-independent precomputation. Built once per dataset (OnceLock), immutable.
+pub struct Prepared {
+    pub skills_foldable: bool,
+    folds: std::sync::Mutex<Vec<(u32, Option<std::sync::Arc<SkillFold>>)>>,
+    table: Vec<(u32, Option<std::sync::Arc<SkillFold>>)>,
+}
+
+impl Prepared {
+    pub fn new(ds: &Dataset) -> Prepared {
+        // can any modifier reach a skill from outside? (char-location / char-location-group on a skill group)
+        let skill_groups: Vec<u32> = ds.groups.iter().filter(|(_, g)| g.category == 16).map(|(id, _)| *id).collect();
+        let foldable = !ds.effects.values().any(|e| {
+            e.mods.iter().any(|m| {
+                m.domain == Domain::Char && (m.func == Func::Location || (m.func == Func::LocationGroup && skill_groups.contains(&m.extra)))
+            })
+        });
+        let mut table: Vec<(u32, Option<std::sync::Arc<SkillFold>>)> = Vec::with_capacity(ds.skills.len());
+        if foldable {
+            for &s in &ds.skills {
+                table.push((s, build_fold(ds, s).map(std::sync::Arc::new)));
+            }
+        }
+        Prepared { skills_foldable: foldable, folds: std::sync::Mutex::new(Vec::new()), table }
+    }
+
+    fn fold(&self, ds: &Dataset, s: u32) -> Option<std::sync::Arc<SkillFold>> {
+        if let Ok(p) = self.table.binary_search_by_key(&s, |x| x.0) {
+            return self.table[p].1.clone();
+        }
+        // explicit non-category-16 "skill" ids: compute on demand (rare)
+        let mut g = self.folds.lock().unwrap();
+        if let Some(x) = g.iter().find(|x| x.0 == s) {
+            return x.1.clone();
+        }
+        let f = build_fold(ds, s).map(std::sync::Arc::new);
+        g.push((s, f.clone()));
+        f
+    }
+}
+
+fn build_fold(ds: &Dataset, s: u32) -> Option<SkillFold> {
+    let t = ds.types.get(&s)?;
+    let structure_ok_ids: Vec<u32> = STRUCTURE_SKILL_EFFECT_NAMES.iter().map(|n| ds.effect_id(n)).collect();
+    let mut outgoing = Vec::new();
+    let mut modifying = Vec::new();
+    for &(eid, _) in &t.effects {
+        if eid == EFFECT_SKILL_EFFECT {
+            continue;
+        }
+        let Some(e) = ds.effects.get(&eid) else { continue };
+        if e.fitting_usage_chance_attr.is_some() || !state_ok(e.category, State::Online) {
+            continue;
+        }
+        let structure_ok = structure_ok_ids.contains(&eid) || e.mods.iter().all(|m| m.domain == Domain::Item);
+        for m in &e.mods {
+            if m.func == Func::EffectStopper || m.op == 9 || matches!(m.domain, Domain::TargetId | Domain::Target) {
+                continue;
+            }
+            if m.domain == Domain::Item || m.domain == Domain::Other {
+                continue; // self modifiers are folded into the values; skills have no charge/parent
+            }
+            let extra = if m.extra == 0 && matches!(m.func, Func::LocationRequiredSkill | Func::OwnerRequiredSkill) { s } else { m.extra };
+            outgoing.push(OutMod { func: m.func, domain: m.domain, modified: m.modified, op: m.op, extra, structure_ok });
+            modifying.push(m.modifying);
+        }
+    }
+    let mut values = Vec::with_capacity(6);
+    let mut values_structure = Vec::with_capacity(6);
+    for structure in [false, true] {
+        for level in 0..=5u8 {
+            let probe = Fit::probe(ds, s, level, structure);
+            let v: Vec<f64> = modifying.iter().map(|&a| probe.get(0, a)).collect();
+            if structure { values_structure.push(v) } else { values.push(v) }
+        }
+    }
+    Some(SkillFold { category: t.category, outgoing, values, values_structure })
+}
+
+impl<'a> Fit<'a> {
+    /// A one-item fit holding only skill `s` at `level`, with the skill's self modifiers registered.
+    fn probe(ds: &'a Dataset, s: u32, level: u8, structure: bool) -> Fit<'a> {
+        let mut fit = Fit {
+            ds,
+            items: Vec::with_capacity(1),
+            ship: 0,
+            char: 0,
+            warnings: Vec::new(),
+            is_structure: structure,
+            raw: Vec::new(),
+            g: Graph::default(),
+            idx_ship_loc: Vec::new(),
+            idx_owned: Vec::new(),
+            idx_char_loc: Vec::new(),
+            idx_char_skillable: Vec::new(),
+            stats_evals: Cell::new(0),
+            skills: Vec::new(),
+            folded: false,
+        };
+        let idx = fit.new_item(s, Kind::Skill, Loc::Char, "").expect("skill type");
+        fit.items[idx].set_base(ATTR_SKILL_LEVEL, level as f64);
+        fit.items[idx].owned = false;
+        let structure_ok_ids: Vec<u32> = STRUCTURE_SKILL_EFFECT_NAMES.iter().map(|n| ds.effect_id(n)).collect();
+        let effects = fit.items[idx].effects.clone();
+        for (eid, _) in effects {
+            if eid == EFFECT_SKILL_EFFECT {
+                continue;
+            }
+            let Some(e) = ds.effects.get(&eid) else { continue };
+            if structure && !structure_ok_ids.contains(&eid) && !e.mods.iter().all(|m| m.domain == Domain::Item) {
+                continue;
+            }
+            if e.fitting_usage_chance_attr.is_some() || !state_ok(e.category, State::Online) {
+                continue;
+            }
+            for m in &e.mods {
+                if m.func == Func::EffectStopper || m.op == 9 || m.domain != Domain::Item || m.func != Func::Item {
+                    continue;
+                }
+                fit.push_mod(0, m.modified, m.op, Src::Attr { item: 0, attr: m.modifying }, t_cat(ds, s));
+            }
+        }
+        fit.compile();
+        fit
+    }
+}
+
+fn t_cat(ds: &Dataset, s: u32) -> u32 {
+    ds.types.get(&s).map(|t| t.category).unwrap_or(16)
 }
