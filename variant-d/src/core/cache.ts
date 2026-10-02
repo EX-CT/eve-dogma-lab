@@ -167,7 +167,9 @@ export function datasetFromCache(bytes: Uint8Array): Dataset {
   const ei = h.effect_index;
   ds.effects = new LazyEffects(tab, ei.id, ei.off, ei.len);
   ds.setEffectNames(ei.id, ei.name);
-  ds.mutaSource = () => JSON.parse(tab.slice(h.muta[0], h.muta[1]));
+  // closures capture only offsets: capturing `h` would keep the whole parsed header (raw attributes etc.) alive
+  const [mo, ml] = h.muta;
+  ds.mutaSource = () => JSON.parse(tab.slice(mo, ml));
   const [zo, zl] = h.zh;
   ds.zhSource = () => JSON.parse(tab.slice(zo, zl));
   return ds;
