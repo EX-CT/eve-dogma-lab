@@ -21,7 +21,23 @@ fn slot_name(t: &TypeInfo) -> Value {
 
 /// Case-insensitive search over English and Chinese names (contract v1.4.1): exact > prefix > substring (best of
 /// the two names), ties by type id ascending; published types only; default limit 20.
-pub fn search(ds: &Dataset, query: &str, limit: Option<usize>) -> Value {
+/// Contract kind of a searchable type: ship, module, charge, drone, fighter, implant, booster, subsystem, skill.
+fn kind_of(ds: &Dataset, t: &crate::data::TypeInfo) -> &'static str {
+    match t.category {
+        6 => "ship",
+        7 => "module",
+        8 => "charge",
+        16 => "skill",
+        18 => "drone",
+        20 if ds.group_names.get(&t.group).map(|g| g.contains("Booster")).unwrap_or(false) => "booster",
+        20 => "implant",
+        32 => "subsystem",
+        87 => "fighter",
+        _ => "",
+    }
+}
+
+pub fn search(ds: &Dataset, query: &str, limit: Option<usize>, kinds: Option<&[String]>) -> Value {
     let q = query.trim().to_lowercase();
     let limit = limit.unwrap_or(20);
     if q.is_empty() {
@@ -31,6 +47,12 @@ pub fn search(ds: &Dataset, query: &str, limit: Option<usize>) -> Value {
     for t in ds.types.values() {
         if !SEARCH_CATEGORIES.contains(&t.category) || !t.published || t.name.is_empty() {
             continue;
+        }
+        if let Some(k) = kinds {
+            let kd = kind_of(ds, t);
+            if !k.iter().any(|x| x.eq_ignore_ascii_case(kd)) {
+                continue;
+            }
         }
         let rank = |name: &str| -> Option<u8> {
             let n = name.to_lowercase();
@@ -53,10 +75,11 @@ pub fn search(ds: &Dataset, query: &str, limit: Option<usize>) -> Value {
     hits.truncate(limit);
     Value::Array(
         hits.into_iter()
-            .map(|(_, id)| {
+            .map(|(r, id)| {
                 let t = &ds.types[&id];
                 json!({"type_id": id, "name": t.name, "name_zh": t.name_zh, "group": group_name(ds, t),
-                       "category_id": t.category, "meta_level": t.meta_level, "slot": slot_name(t)})
+                       "category_id": t.category, "kind": kind_of(ds, t), "meta_level": t.meta_level, "slot": slot_name(t),
+                       "match": (["exact", "prefix", "substring"][r as usize])})
             })
             .collect(),
     )
@@ -340,7 +363,17 @@ pub fn eft_export(ds: &Dataset, req: &FitRequest, name: Option<&str>) -> String 
     };
     let mut sections: Vec<String> = Vec::new();
     let mut racks: Vec<String> = Vec::new();
-    for rack in [Slot::Low, Slot::Mid, Slot::High, Slot::Rig, Slot::Subsystem, Slot::Service] {
+    // Pyfa's GUI fit is fill()ed: every free slot (modified total - modules in the rack) is an "[Empty X slot]"
+    let stats = crate::calc(ds, req);
+    let total = |k: &str| stats.pointer(&format!("/resources/slots/{k}/total")).and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0) as usize;
+    for (rack, key, label) in [
+        (Slot::Low, "low", "Low"),
+        (Slot::Mid, "mid", "Med"),
+        (Slot::High, "high", "High"),
+        (Slot::Rig, "rig", "Rig"),
+        (Slot::Subsystem, "subsystem", "Subsystem"),
+        (Slot::Service, "service", "Service"),
+    ] {
         let mut lines = Vec::new();
         for m in &req.modules {
             let slot = m.slot.or_else(|| ds.types.get(&m.type_id).and_then(infer_slot));
@@ -356,6 +389,9 @@ pub fn eft_export(ds: &Dataset, req: &FitRequest, name: Option<&str>) -> String 
             }
             l.push_str(&mref(&m.mutation));
             lines.push(l);
+        }
+        for _ in lines.len()..total(key) {
+            lines.push(format!("[Empty {label} slot]"));
         }
         if !lines.is_empty() {
             racks.push(lines.join("\n"));

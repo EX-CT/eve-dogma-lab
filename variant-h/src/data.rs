@@ -14,6 +14,21 @@ pub struct TypeTable {
     offs: Vec<u32>,
     blob: Vec<u8>,
     cells: Vec<OnceLock<TypeInfo>>,
+    /// dense id -> index + 1 (0 = absent), for ids below DENSE_MAX
+    dense: Vec<u32>,
+}
+
+const DENSE_MAX: u32 = 1 << 22;
+
+fn dense_of(ids: &[u32]) -> Vec<u32> {
+    let n = ids.iter().copied().filter(|&i| i < DENSE_MAX).max().map(|m| m as usize + 1).unwrap_or(0);
+    let mut d = vec![0u32; n];
+    for (i, &id) in ids.iter().enumerate() {
+        if id < DENSE_MAX {
+            d[id as usize] = i as u32 + 1;
+        }
+    }
+    d
 }
 
 impl TypeTable {
@@ -29,7 +44,19 @@ impl TypeTable {
             let _ = c.set(t);
             cells.push(c);
         }
-        TypeTable { ids, offs, blob, cells }
+        let dense = dense_of(&ids);
+        TypeTable { ids, offs, blob, cells, dense }
+    }
+    #[inline]
+    fn idx(&self, id: u32) -> Option<usize> {
+        if id < DENSE_MAX {
+            match self.dense.get(id as usize) {
+                Some(&x) if x != 0 => Some(x as usize - 1),
+                _ => None,
+            }
+        } else {
+            self.ids.binary_search(&id).ok()
+        }
     }
     #[inline]
     fn at(&self, i: usize) -> &TypeInfo {
@@ -37,10 +64,10 @@ impl TypeTable {
     }
     #[inline]
     pub fn get(&self, id: &u32) -> Option<&TypeInfo> {
-        self.ids.binary_search(id).ok().map(|i| self.at(i))
+        self.idx(*id).map(|i| self.at(i))
     }
     pub fn contains_key(&self, id: &u32) -> bool {
-        self.ids.binary_search(id).is_ok()
+        self.idx(*id).is_some()
     }
     pub fn len(&self) -> usize {
         self.ids.len()
@@ -103,7 +130,8 @@ impl<'de> Deserialize<'de> for TypeTable {
         let (ids, offs, blob) = <(Bytes, Bytes, Bytes)>::deserialize(d)?;
         let ids = bytes_to_u32s(&ids.0);
         let cells = (0..ids.len()).map(|_| OnceLock::new()).collect();
-        Ok(TypeTable { ids, offs: bytes_to_u32s(&offs.0), blob: blob.0, cells })
+        let dense = dense_of(&ids);
+        Ok(TypeTable { ids, offs: bytes_to_u32s(&offs.0), blob: blob.0, cells, dense })
     }
 }
 

@@ -137,7 +137,10 @@ fn main() {
                             }
                             "search" => {
                                 let q = p.get("query").and_then(|t| t.as_str()).unwrap_or("");
-                                tools::search(&ds, q, p.get("limit").and_then(|l| l.as_u64()).map(|l| l as usize))
+                                {
+                                    let kinds: Option<Vec<String>> = p.get("kinds").and_then(|k| k.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
+                                    tools::search(&ds, q, p.get("limit").and_then(|l| l.as_u64()).map(|l| l as usize), kinds.as_deref())
+                                }
                             }
                             "type" => {
                                 let key = match p.get("id") {
@@ -182,7 +185,7 @@ fn main() {
         "search" => {
             let ds = load(dataset);
             let q = args[1..].join(" ");
-            writeln!(out, "{}", serde_json::to_string_pretty(&tools::search(&ds, &q, limit)).unwrap()).unwrap();
+            writeln!(out, "{}", serde_json::to_string_pretty(&tools::search(&ds, &q, limit, None)).unwrap()).unwrap();
         }
         "type" => {
             let ds = load(dataset);

@@ -1,29 +1,26 @@
 # Variant H: results
 
-## Official bench: `python3 bench.py --only H --quick`
+## Official bench (`run.py`, the same harness as `bench.py`)
 
-Run at 04:57 CST with bench 1.4.0 (65fab29: 289 cases, 18 591 Pyfa-expected values, including sustained tank, jam
-chance, warp scramble and drone/fighter application). The full scorecard is in [results/scorecard.md](results/scorecard.md).
+Bench **1.5.0** (contract 1.4.2: 295 cases, 18 978 Pyfa-expected values, including amount>1 projected fits with
+tracking/guidance disruptors), run at 05:33 CST:
 
 | | cases | values |
 |---|---|---|
-| vs Pyfa (bench 1.4.0) | **289/289** | **18591/18591 (100.00 %)** |
-| vs Pyfa (bench 1.3.0, 249 cases, 04:45 CST) | 249/249 | 13812/13812 |
+| vs Pyfa (bench 1.5.0) | **295/295** | **18978/18978 (100.00 %)** |
+| vs Pyfa (bench 1.4.0, 04:57 CST) | 289/289 | 18591/18591 |
+| EFT export vs Pyfa `exportEft` after `fill()` (`tools/check_eft_export.py`, informational) | **295/295** | |
 
-Every group is at 100 %.
-
-| perf (same harness) | H @ 1.4.0 (box load ~15) | H @ 1.3.0 (04:45) | A (bench results/A) |
+| perf (same harness, box load ~13) | H @ 1.5.0 05:33 | H @ 1.4.0 04:57 | A (bench results/A) |
 |---|---|---|---|
-| latency, one fit (exct_rifter), ms/calc | 0.801 | **0.417** | ~1.3–1.43 |
-| batch throughput, fits/s | 1251 | **1542** | 460 (corpus x5) |
-| startup + one calc, ms | 19.9 | 19.1 | 150.1 |
-| one process per case, median ms | 19.4 | 20.5 | 216.5 |
+| latency, one fit (exct_rifter), ms/calc | **0.412** | 0.801 | 0.911 |
+| batch throughput, fits/s | **2321** | 1251 | 912 |
+| startup + one calc, ms | **11.1** | 19.9 | 119.3 |
+| one process per case, median ms | **9.8** | 19.4 | 123.4 |
 | deterministic | yes | yes | yes |
 
-The 1.4.0 run was taken at load average ~15 on the shared box. Instruction counts (callgrind, below) moved only
-+0.9 % between the two runs, so the latency difference is load, not code.
-
-The H cold start assumes the derived cache (`dataset.hcache`) has been warmed. `bench.yaml`'s build step runs
+The box is shared and loaded, so wall times are noisy. The instruction counts below are the stable measure.
+The H cold start assumes the derived cache (`dataset.hcache`) has been warmed; `bench.yaml`'s build step runs
 `meta` once to write it. Without the cache, cold start is about 120 ms.
 
 ## Extra self-checks (beyond the bench corpus)
@@ -54,6 +51,14 @@ Every output leaf was compared, abs 1e-6 / rel 1e-9, against A's working-tree bu
 | capsim ranks, batch skill spawn, in-place tidy | 1.01 G |
 | component queries for incoming effects | 0.997 G |
 | + ECM/fighter abilities/EFT tools (same 249 fits) | 1.006 G |
+| capsim re-arms the current event in place (peek_mut) | 0.939 G |
+| skills whose modifiers cannot reach the request are not spawned | 0.755 G |
+| capsim packed u128 event keys | 0.717 G |
+| lazily decoded type table with dense id index (also cold start) | 0.676 G |
+
+Every perf step above was checked byte-identical on all outputs: 749–755 fits (bench and local cases, plus each at
+skill levels 0 and 3). The capsim fast path also has a randomised equivalence test against the generic simulator
+(`cargo test`).
 
 ## Bomb launchers (local Pyfa oracle)
 
