@@ -276,6 +276,7 @@ def time_cache(c, tmax):
     for D in dealers(c):
         i = D.item
         segs, dmg = [], {}
+        segmemo, keep = {}, []  # keep: volley lists referenced by id() in segmemo keys stay alive
         if D.kind == "drone":
             cyc_ms = c.drone_cycle_ms(i)
             cyc = Cycle(((cyc_ms, 0.0, INF, False),), 1) if cyc_ms else None
@@ -291,10 +292,14 @@ def time_cache(c, tmax):
             res[D.key] = ([], [], [])
             continue
         cur, nonstop = 0.0, 0
+        # _spool_mult is 1.0 for every cycle unless both spool attributes are set
+        spooling = D.key[0] == "mod" and bool(c.g(i, "damageMultiplierBonusMax")
+                                             and c.g(i, "damageMultiplierBonusPerCycle"))
+        rawnz = {}
         for act, ina, rl in cyc.iter():
             if D.kind == "mod":
                 pass
-            if D.key[0] == "mod":
+            if spooling:
                 sm = _spool_mult(c, i, nonstop)
                 vols = {k: (v.scaled(sm) if sm != 1.0 else v) for k, v in D.vparams.items()}
             else:
@@ -306,7 +311,12 @@ def time_cache(c, tmax):
                 t = cur + k / 1000
                 if D.breacher:
                     t += 1
-                if v.raw_total() != 0:
+                nz = rawnz.get(id(v))
+                if nz is None:
+                    nz = v.raw_total() != 0
+                    if not spooling:
+                        rawnz[id(v)] = nz
+                if nz:
                     vv = Dmg(v.v, {t + kk: L for kk, L in v.b.items()})
                     dmg[t] = vv
                 if D.breacher:
@@ -315,12 +325,23 @@ def time_cache(c, tmax):
             if D.breacher:
                 ts, tf = ts + 1, tf + 1
             if cv:
-                s = Dmg()
-                for v in cv:
-                    s = s.plus(v)
-                if s.raw_total() > 0:
-                    best = max(cv, key=lambda v: v.raw_total())
-                    segs.append((ts, tf, s.scaled(1 / (tf - ts)), best))
+                # identical (volleys, duration) pairs give identical segment values: build them once
+                mk = (tuple(map(id, cv)), tf - ts)
+                sv = segmemo.get(mk)
+                if sv is None:
+                    s = Dmg()
+                    for v in cv:
+                        s = s.plus(v)
+                    if s.raw_total() > 0:
+                        best = max(cv, key=lambda v: v.raw_total())
+                        sd = s.scaled(1 / (tf - ts))
+                        sv = (sd, best, sd.key(), best.key())
+                    else:
+                        sv = False
+                    segmemo[mk] = sv
+                    keep.append(cv)
+                if sv:
+                    segs.append((ts, tf, sv[0], sv[1], sv[2], sv[3]))
             if D.key[0] == "mod":
                 nonstop = 0 if ina > 0 else nonstop + 1
             if cur > tmax:
@@ -329,15 +350,15 @@ def time_cache(c, tmax):
         # change points
         pts = []
         prev, prev_end = None, None
-        for ts, tf, dps, vol in segs:
+        for ts, tf, dps, vol, kd, kv in segs:
             if not pts:
                 pts.append((ts, dps, vol))
             elif float_unerr(prev_end) < float_unerr(ts):
                 pts.append((prev_end, Dmg(), Dmg()))
                 pts.append((ts, dps, vol))
-            elif dps.key() != prev[0].key() or vol.key() != prev[1].key():
+            elif kd != prev[0] or kv != prev[1]:
                 pts.append((ts, dps, vol))
-            prev, prev_end = (dps, vol), tf
+            prev, prev_end = (kd, kv), tf
         dts = sorted(dmg)
         res[D.key] = (pts, dts, [dmg[t] for t in dts])
     c.memo["timecache"] = (tmax, res)
