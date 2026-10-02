@@ -81,6 +81,10 @@ impl<T: Serialize + serde::de::DeserializeOwned> LazyTable<T> {
     pub fn values(&self) -> impl Iterator<Item = &T> {
         (0..self.ids.len()).map(|i| self.at(i))
     }
+    /// (id, value) in ascending id order (decodes every record)
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &T)> {
+        (0..self.ids.len()).map(|i| (self.ids[i], self.at(i)))
+    }
 }
 
 impl<T: Serialize + serde::de::DeserializeOwned> std::ops::Index<&u32> for LazyTable<T> {
@@ -290,14 +294,17 @@ pub struct Dataset {
     pub build: u64,
     pub sha256: String,
     pub types: TypeTable,
-    pub group_names: FxHashMap<u32, String>,
-    pub category_names: FxHashMap<u32, String>,
+    pub group_names: LazyTable<String>,
+    pub category_names: LazyTable<String>,
     pub attrs: LazyTable<AttrInfo>,
     pub effects: LazyTable<EffectInfo>,
-    pub dbuffs: FxHashMap<u32, DbuffInfo>,
-    pub mutaplasmids: FxHashMap<u32, MutaInfo>,
-    attr_by_name: FxHashMap<String, u32>,
-    effect_by_name: FxHashMap<String, u32>,
+    pub dbuffs: LazyTable<DbuffInfo>,
+    pub mutaplasmids: LazyTable<MutaInfo>,
+    /// name -> id maps, built on first use (only special-case paths look attributes/effects up by name)
+    #[serde(skip)]
+    attr_by_name: OnceLock<FxHashMap<String, u32>>,
+    #[serde(skip)]
+    effect_by_name: OnceLock<FxHashMap<String, u32>>,
     /// lowercased name -> id (published type wins, else the lowest id); built on first use
     #[serde(skip)]
     type_by_name: OnceLock<FxHashMap<String, u32>>,
@@ -305,7 +312,7 @@ pub struct Dataset {
     pub published_skills: Vec<u32>,
     /// tactical destroyer modes (group 1306): (lowercased name, id), sorted by id
     pub t3d_modes: Vec<(String, u32)>,
-    pub skill_reach: FxHashMap<u32, SkillReach>,
+    pub skill_reach: LazyTable<SkillReach>,
     pub a: crate::ids::AttrIds,
     pub e: crate::ids::EffectIds,
 }
@@ -552,14 +559,14 @@ impl Dataset {
             build: raw.sde.build,
             sha256,
             types: TypeTable::from_map(types),
-            group_names,
-            category_names,
+            group_names: LazyTable::from_map(group_names),
+            category_names: LazyTable::from_map(category_names),
             attrs: LazyTable::from_map(attrs),
             effects: LazyTable::from_map(effects),
-            dbuffs: raw.dbuffs.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect(),
-            mutaplasmids: raw.mutaplasmids.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect(),
-            attr_by_name,
-            effect_by_name,
+            dbuffs: LazyTable::from_map(raw.dbuffs.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect()),
+            mutaplasmids: LazyTable::from_map(raw.mutaplasmids.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect()),
+            attr_by_name: OnceLock::from(attr_by_name),
+            effect_by_name: OnceLock::from(effect_by_name),
             type_by_name: {
                 let c = OnceLock::new();
                 let _ = c.set(type_by_name);
@@ -567,17 +574,17 @@ impl Dataset {
             },
             published_skills,
             t3d_modes,
-            skill_reach,
+            skill_reach: LazyTable::from_map(skill_reach),
             a,
             e,
         })
     }
 
     pub fn attr_id(&self, name: &str) -> u32 {
-        *self.attr_by_name.get(name).unwrap_or(&0)
+        *self.attr_by_name.get_or_init(|| self.attrs.iter().map(|(id, a)| (a.name.clone(), id)).collect()).get(name).unwrap_or(&0)
     }
     pub fn effect_id(&self, name: &str) -> u32 {
-        *self.effect_by_name.get(name).unwrap_or(&0)
+        *self.effect_by_name.get_or_init(|| self.effects.iter().map(|(id, e)| (e.name.clone(), id)).collect()).get(name).unwrap_or(&0)
     }
     pub fn type_by_name(&self, name: &str) -> Option<u32> {
         self.type_by_name
