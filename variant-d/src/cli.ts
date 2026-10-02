@@ -92,6 +92,108 @@ function lines(fn: (l: string) => string): Promise<void> {
   });
 }
 
+const builtin = (name: string): unknown => (process as any).getBuiltinModule(name);
+
+/**
+ * `batch`: answers JSONL in input order. Small inputs are computed on the main thread only (no thread start-up);
+ * once a backlog builds up, worker threads (each its own dataset load from the cache) take units of lines as they
+ * become idle while the main thread keeps computing too. Every answer is the same pure calcJson, so the output is
+ * byte-identical to a serial run. Threads: --threads N / $EVE_DOGMA_TS_THREADS (0 = cores, max 8; default 1 = serial).
+ */
+function batchParallel(ds: ReturnType<typeof load>, threadsWanted: number): Promise<void> {
+  const UNIT = 8, START_BACKLOG = 48;
+  const os = builtin('node:os') as typeof import('node:os');
+  const threads = Math.max(1, Math.min(threadsWanted > 0 ? threadsWanted : Math.min(os.availableParallelism(), 8), 32));
+  return new Promise((done) => {
+    let rest = '', ended = false;
+    const queue: string[] = [];
+    let qHead = 0, nextSeq = 0, nextOut = 0, inFlight = 0, scheduled = false;
+    const results = new Map<number, string>();
+    type W = { w: import('node:worker_threads').Worker; idle: boolean; units: number; readyMs: number };
+    let mainUnits = 0;
+    const t0 = performance.now();
+    let pool: W[] | null = null;
+    const take = (): { seq: number; lines: string[] } | null => {
+      if (qHead >= queue.length) return null;
+      const lines = queue.slice(qHead, qHead + UNIT);
+      qHead += lines.length;
+      if (qHead > 4096) { queue.splice(0, qHead); qHead = 0; }
+      return { seq: nextSeq++, lines };
+    };
+    const flushOut = () => {
+      let o = '';
+      for (let r = results.get(nextOut); r !== undefined; r = results.get(nextOut)) {
+        results.delete(nextOut++);
+        o += r;
+        if (o.length > 1 << 20) { writeAll(o); o = ''; }
+      }
+      if (o) writeAll(o);
+    };
+    const finish = () => {
+      if (!ended || inFlight > 0 || qHead < queue.length) return;
+      flushOut();
+      if (pool) for (const p of pool) p.w.terminate();
+      if (process.env.VD_BATCH_DEBUG) process.stderr.write(`batch: main ${mainUnits} units, workers ${pool ? pool.map((p) => `${p.units}@${p.readyMs.toFixed(0)}ms`).join(' ') : '-'} t=${(performance.now() - t0).toFixed(0)}ms\n`);
+      done();
+    };
+    const feed = (p: W) => {
+      const u = take();
+      if (!u) { p.idle = true; return; }
+      p.idle = false;
+      inFlight++;
+      p.w.postMessage(u);
+    };
+    const startPool = () => {
+      const { Worker } = builtin('node:worker_threads') as typeof import('node:worker_threads');
+      const wargs = ['__batch-worker'];
+      if (datasetArg !== null) wargs.push('--dataset', datasetArg);
+      pool = [];
+      for (let i = 1; i < threads; i++) {
+        const p: W = { w: new Worker(process.argv[1], { argv: wargs, stdout: false, stderr: false }), idle: false, units: 0, readyMs: 0 };
+        p.w.on('message', (m: { seq: number; out: string }) => {
+          if (m.seq < 0) p.readyMs = performance.now() - t0;
+          else p.units++;
+          if (m.seq >= 0) { inFlight--; results.set(m.seq, m.out); flushOut(); }
+          feed(p);
+          pump();
+          finish();
+        });
+        pool.push(p);
+      }
+    };
+    // main thread: one unit per macrotask, so worker messages are handled in between
+    const step = () => {
+      scheduled = false;
+      const u = take();
+      if (u) {
+        let o = '';
+        for (const l of u.lines) o += calcJson(ds, l) + '\n';
+        results.set(u.seq, o);
+        mainUnits++;
+        flushOut();
+        if (pool) for (const p of pool) if (p.idle) feed(p);
+      }
+      pump();
+      finish();
+    };
+    const pump = () => {
+      if (!pool && threads > 1 && queue.length - qHead >= START_BACKLOG) startPool();
+      if (!scheduled && qHead < queue.length) { scheduled = true; setImmediate(step); }
+    };
+    const add = (text: string, final: boolean) => {
+      const parts = text.split('\n');
+      rest = final ? '' : parts.pop()!;
+      for (const raw of parts) {
+        const l = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+        if (l.trim()) queue.push(l);
+      }
+    };
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (c: string) => { add(rest + c, false); pump(); });
+    process.stdin.on('end', () => { add(rest, true); ended = true; pump(); finish(); });
+  });
+}
+
 async function main() {
   const cmd = args[0] ?? '';
   switch (cmd) {
@@ -103,8 +205,21 @@ async function main() {
       break;
     }
     case 'batch': {
+      const threads = Number(takeFlag('--threads') ?? process.env.EVE_DOGMA_TS_THREADS ?? 1);
       const ds = load();
-      await lines((l) => calcJson(ds, l));
+      await batchParallel(ds, threads);
+      break;
+    }
+    case '__batch-worker': {
+      // worker thread of `batch`: {seq, lines[]} in -> {seq, out} back (same calcJson as the main thread)
+      const { parentPort } = builtin('node:worker_threads') as typeof import('node:worker_threads');
+      const ds = load();
+      parentPort!.on('message', (m: { seq: number; lines: string[] }) => {
+        let o = '';
+        for (const l of m.lines) o += calcJson(ds, l) + '\n';
+        parentPort!.postMessage({ seq: m.seq, out: o });
+      });
+      parentPort!.postMessage({ seq: -1, out: '' });
       break;
     }
     case 'serve-stdio': {
