@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,8 +23,9 @@ const usage = `eve-dogma-go <command> [--dataset PATH] [args]
 
 Commands:
   calc [FILE]            FitRequest JSON (file or stdin) -> FitStats JSON
-  batch [-j N]           JSONL FitRequests on stdin -> JSONL FitStats on stdout (order preserved)
-  serve-stdio            JSONL RPC: {"id":..,"method":"calc|eft_parse|eft_export|search|type|meta","params":..}
+  batch [-j N]           JSONL FitRequests on stdin -> JSONL FitStats on stdout (order preserved; streams,
+                         so it also works as a long-running calc process)
+  serve-stdio [-j N]     long-running JSONL RPC (ordered, flushed per reply): {"id":..,"method":"calc|eft_parse|eft_export|search|type|meta","params":..}
   serve-http [-addr :8080]  HTTP: POST /v1/calc, /v1/eft/parse, /v1/eft/export, /v1/rpc; GET /v1/search?q=, /v1/type/{id}, /v1/meta
   eft [FILE]             EFT text (file or stdin) -> FitRequest JSON (add --calc to compute, --skills N)
   search QUERY           search types by name (en/zh)
@@ -171,7 +173,9 @@ func rpc(ds *dogma.Dataset, line []byte) any {
 		method = *v.Method
 	}
 	var p map[string]json.RawMessage
-	_ = json.Unmarshal(v.Params, &p)
+	if method != "calc" { // calc passes params through untouched
+		_ = json.Unmarshal(v.Params, &p)
+	}
 	str := func(k string) string {
 		var s string
 		_ = json.Unmarshal(p[k], &s)
@@ -180,12 +184,8 @@ func rpc(ds *dogma.Dataset, line []byte) any {
 	var result any
 	switch method {
 	case "calc":
-		var r dogma.FitRequest
-		if err := json.Unmarshal(v.Params, &r); err != nil {
-			result = errObj("BAD_REQUEST", err.Error())
-		} else {
-			result = dogma.Calc(ds, &r)
-		}
+		// CalcJSON output is embedded verbatim (no second encode pass)
+		result = json.RawMessage(dogma.CalcJSON(ds, v.Params))
 	case "eft_parse":
 		r, err := dogma.ParseEFT(ds, str("text"))
 		if err != nil {
@@ -272,17 +272,12 @@ func main() {
 	case "serve-stdio":
 		ds := load(dsPath)
 		fmt.Fprintf(os.Stderr, "eve-dogma-go serve-stdio ready (sde %d)\n", ds.Build)
-		sc := bufio.NewScanner(os.Stdin)
-		sc.Buffer(make([]byte, 1<<20), 64<<20)
-		for sc.Scan() {
-			line := sc.Bytes()
-			if len(strings.TrimSpace(string(line))) == 0 {
-				continue
-			}
-			out.Write(dogma.Marshal(rpc(ds, line)))
-			out.WriteByte('\n')
-			out.Flush()
+		jv, _ := takeFlag(&args, "-j")
+		j, _ := strconv.Atoi(jv)
+		if j <= 0 {
+			j = runtime.NumCPU()
 		}
+		pipeline(os.Stdin, out, j, func(line []byte) []byte { return dogma.Marshal(rpc(ds, line)) })
 	case "serve-http":
 		addr, ok := takeFlag(&args, "-addr")
 		if !ok {
@@ -366,6 +361,14 @@ func main() {
 
 // batch computes JSONL requests with j workers, preserving input order.
 func batch(ds *dogma.Dataset, in io.Reader, out *bufio.Writer, j int) {
+	pipeline(in, out, j, func(line []byte) []byte { return dogma.CalcJSON(ds, line) })
+}
+
+// pipeline is the long-running JSONL engine behind batch and serve-stdio: lines are processed by j
+// workers, replies are written in input order, and output is flushed whenever no further reply is
+// pending, so an interactive client (MCP server, editor plugin, web backend) gets each answer as
+// soon as it is ready while a bulk stream is still written in large chunks.
+func pipeline(in io.Reader, out *bufio.Writer, j int, fn func([]byte) []byte) {
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	type job struct {
@@ -373,14 +376,14 @@ func batch(ds *dogma.Dataset, in io.Reader, out *bufio.Writer, j int) {
 		res  chan []byte
 	}
 	jobs := make(chan job, j*4)
-	order := make(chan chan []byte, j*4)
+	order := make(chan chan []byte, j*16)
 	var wg sync.WaitGroup
 	for w := 0; w < j; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for jb := range jobs {
-				jb.res <- dogma.CalcJSON(ds, jb.line)
+				jb.res <- fn(jb.line)
 			}
 		}()
 	}
@@ -389,12 +392,16 @@ func batch(ds *dogma.Dataset, in io.Reader, out *bufio.Writer, j int) {
 		for ch := range order {
 			out.Write(<-ch)
 			out.WriteByte('\n')
+			if len(order) == 0 {
+				out.Flush()
+			}
 		}
+		out.Flush()
 		close(done)
 	}()
 	for sc.Scan() {
 		line := sc.Bytes()
-		if len(strings.TrimSpace(string(line))) == 0 {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		jb := job{append([]byte(nil), line...), make(chan []byte, 1)}

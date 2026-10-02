@@ -269,18 +269,22 @@ type FitRequest struct {
 func (r *FitRequest) UnmarshalJSON(b []byte) error {
 	type alias FitRequest
 	a := alias{Options: Options{Validate: true}}
-	var probe struct {
-		Ship *json.RawMessage `json:"ship"`
-	}
-	if err := json.Unmarshal(b, &probe); err != nil {
+	// the outer Ship shadows alias.Ship (shallower field wins), which tells "missing" from "zero" in one pass
+	w := struct {
+		*alias
+		Ship *ShipReq `json:"ship"`
+	}{alias: &a}
+	err := json.Unmarshal(b, &w)
+	if _, syntax := err.(*json.SyntaxError); syntax {
 		return err
 	}
-	if probe.Ship == nil {
+	if w.Ship == nil {
 		return fmt.Errorf("missing field `ship`")
 	}
-	if err := json.Unmarshal(b, &a); err != nil {
+	if err != nil {
 		return err
 	}
+	a.Ship = *w.Ship
 	*r = FitRequest(a)
 	return nil
 }

@@ -76,6 +76,12 @@ func (e *jsonEnc) value(v any, inTree bool) {
 			e.value(el, true)
 		}
 		e.b = append(e.b, ']')
+	case json.RawMessage:
+		if len(x) == 0 {
+			e.b = append(e.b, "null"...)
+			return
+		}
+		e.b = append(e.b, x...) // pre-encoded (e.g. CalcJSON output embedded in an RPC reply)
 	case []string:
 		if x == nil {
 			e.b = append(e.b, "null"...)
