@@ -97,6 +97,22 @@ class TypeTable implements TypeStore {
   }
   get(id: number): TypeInfo | undefined { const r = this.rowOf.get(id); return r === undefined ? undefined : this.at(r); }
   has(id: number): boolean { return this.rowOf.has(id); }
+  nameIndex(): Map<string, number> {
+    const m = new Map<string, number>();
+    const id = this.c.id, pub = this.c.published, rowOf = this.rowOf;
+    for (let r = 0; r < id.length; r++) {
+      const key = this.name(r).toLowerCase();
+      const prev = m.get(key);
+      if (prev === undefined || (pub[r] && !pub[rowOf.get(prev)!])) m.set(key, id[r]);
+    }
+    return m;
+  }
+  idsInGroup(group: number): number[] {
+    const out: number[] = [];
+    const g = this.c.group, id = this.c.id;
+    for (let r = 0; r < g.length; r++) if (g[r] === group) out.push(id[r]);
+    return out;
+  }
   *[Symbol.iterator](): IterableIterator<[number, TypeInfo]> {
     for (let r = 0; r < this.c.id.length; r++) yield [this.c.id[r], this.at(r)];
   }

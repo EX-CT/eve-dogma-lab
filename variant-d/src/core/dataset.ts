@@ -45,6 +45,10 @@ export interface TypeStore {
   readonly size: number;
   /** ascending type id order */
   [Symbol.iterator](): IterableIterator<[number, TypeInfo]>;
+  /** optional fast path: ids of a group in ascending order without materialising other types */
+  idsInGroup?(group: number): number[];
+  /** optional fast path: lower-cased name -> id (published preferred, then lowest id) without materialising types */
+  nameIndex?(): Map<string, number>;
 }
 
 export interface GroupInfo { name: string; category: number }
@@ -81,12 +85,23 @@ export class Dataset {
   private modeCache = new Map<number, number | null>();
 
   /** T3D default mode: lowest type id in group 1306 whose name starts with the ship name (memoised) */
+  /** type ids of a group, ascending (memoised) */
+  groupIds(group: number): number[] {
+    let l = this.groupIdCache.get(group);
+    if (l !== undefined) return l;
+    if (this.types.idsInGroup) l = this.types.idsInGroup(group);
+    else { l = []; for (const [id, t] of this.types) if (t.group === group) l.push(id); }
+    this.groupIdCache.set(group, l);
+    return l;
+  }
+  private groupIdCache = new Map<number, number[]>();
+
   defaultMode(shipId: number): number | null {
     let m = this.modeCache.get(shipId);
     if (m !== undefined) return m;
     const shipName = this.types.get(shipId)!.name.toLowerCase();
     m = null;
-    for (const [id, t] of this.types) if (t.group === 1306 && t.name.toLowerCase().startsWith(shipName) && (m === null || id < m)) m = id;
+    for (const id of this.groupIds(1306)) if (this.types.get(id)!.name.toLowerCase().startsWith(shipName) && (m === null || id < m)) m = id;
     this.modeCache.set(shipId, m);
     return m;
   }
@@ -188,6 +203,7 @@ export class Dataset {
   typeByName(name: string): number | undefined {
     if (this.typeByNameMap === null) {
       // built on first use; prefer published types, among equals keep the lowest id (deterministic)
+      if (this.types.nameIndex) { this.typeByNameMap = this.types.nameIndex(); return this.typeByNameMap.get(name.trim().toLowerCase()); }
       const m = new Map<string, number>();
       for (const [id, t] of this.types) {
         const key = t.name.toLowerCase();
