@@ -1002,6 +1002,52 @@ def _mods_table(batch):
     return M
 
 
+def _needed_rows(batch, M, tgt_key):
+    """Rows that write skill attributes are kept only if the written value can reach a non-skill item: the stats
+    layer never reads skill nodes, so a skill bonus whose consumers do not exist in the fit (no matching module,
+    no such ship bonus, ...) is dead work. Backward closure from the rows targeting non-skill items over source
+    edges (a, b, c) and min/max cap edges of skill nodes. None = keep everything."""
+    B = ATTR_BITS
+    kind = batch.it_kind
+    skill_tgt = kind[M["tgt"]] == SKILL
+    if not skill_tgt.any():
+        return None
+    ds = batch.ds
+    amask = (1 << B) - 1
+
+    def skill_srcs(rows):
+        parts = []
+        for col in ("a", "b", "c"):
+            x = M[col][rows]
+            x = x[x >= 0]
+            parts.append(x[kind[x >> B] == SKILL])
+        return np.concatenate(parts)
+
+    def with_caps(k):
+        attr = k & amask
+        out = [k]
+        for tab in (ds.attr_min, ds.attr_max):
+            ca = tab[attr].astype(np.int64)
+            h = ca >= 0
+            out.append(((k[h] >> B) << B) | ca[h])
+        return np.concatenate(out)
+
+    keep = ~skill_tgt
+    needed = _sorted_unique(with_caps(skill_srcs(keep)))
+    cand = np.nonzero(skill_tgt)[0]
+    while len(cand) and len(needed):
+        p = np.minimum(np.searchsorted(needed, tgt_key[cand]), len(needed) - 1)
+        hit = needed[p] == tgt_key[cand]
+        if not hit.any():
+            break
+        rows = cand[hit]
+        keep[rows] = True
+        cand = cand[~hit]
+        new = with_caps(skill_srcs(rows))
+        needed = _sorted_unique(np.concatenate([needed, new]))
+    return keep
+
+
 def evaluate(batch, fit_mask=None):
     """Evaluate every attribute of every fit (or of fits where fit_mask is True)."""
     ds = batch.ds
@@ -1013,6 +1059,10 @@ def evaluate(batch, fit_mask=None):
         sel = fit_mask[item_fit[M["tgt"]]]
         M = {k: v[sel] for k, v in M.items()}
         tgt_key = tgt_key[sel]
+    keep = _needed_rows(batch, M, tgt_key)
+    if keep is not None:
+        M = {k: v[keep] for k, v in M.items()}
+        tgt_key = tgt_key[keep]
     # ---- node set
     full = np.isin(batch.it_kind, FULL_KINDS)
     if fit_mask is not None:
