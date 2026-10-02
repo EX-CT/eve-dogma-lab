@@ -195,6 +195,9 @@ EVEJ_LTO:BOOL=OFF
 //tune for the build machine (-march=native)
 EVEJ_NATIVE:BOOL=OFF
 
+//link the executable fully static (faster process start-up)
+EVEJ_STATIC:BOOL=ON
+
 //Value Computed by CMake
 eve_dogma_j_BINARY_DIR:STATIC=/workspace/exct-eve/lab-j/variant-j/build-prof
 
