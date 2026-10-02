@@ -75,20 +75,8 @@ pub struct Frozen {
 /// Required skills and groups of every type the request mentions (any `*type_id`/`*type_ids` field, implants;
 /// nested projected and fleet fits included), plus the character and the T3D modes a ship may default to.
 fn request_reach(ds: &Dataset, req: &FitRequest) -> (rustc_hash::FxHashSet<u32>, rustc_hash::FxHashSet<u32>) {
-    fn walk(v: &serde_json::Value, key: &str, out: &mut Vec<u32>) {
-        match v {
-            serde_json::Value::Number(n) if key == "implants" || key.ends_with("type_id") || key.ends_with("type_ids") => {
-                if let Some(x) = n.as_u64() {
-                    out.push(x as u32)
-                }
-            }
-            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, key, out)),
-            serde_json::Value::Object(o) => o.iter().for_each(|(k, x)| walk(x, k, out)),
-            _ => {}
-        }
-    }
     let mut ids = vec![CHARACTER_TYPE];
-    walk(&serde_json::to_value(req).unwrap_or_default(), "", &mut ids);
+    crate::idwalk::type_ids(req, &mut ids);
     if let Some(ship) = ds.types.get(&req.ship.type_id) {
         let n = ship.name.to_lowercase();
         ids.extend(ds.t3d_modes.iter().filter(|(m, _)| m.starts_with(&n)).map(|x| x.1));

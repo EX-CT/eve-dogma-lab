@@ -8,6 +8,7 @@ pub mod components;
 pub mod data;
 pub mod fit;
 pub mod ids;
+pub mod idwalk;
 pub mod request;
 pub mod sha256;
 pub mod stats;
