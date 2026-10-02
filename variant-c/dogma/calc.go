@@ -32,13 +32,17 @@ func calcRaw(ds *Dataset, req *FitRequest) obj {
 func CalcJSON(ds *Dataset, request []byte) []byte {
 	var req FitRequest
 	var v any
-	if err := json.Unmarshal(request, &req); err != nil {
+	if err := DecodeRequest(request, &req); err != nil {
 		v = obj{"error": obj{"code": "BAD_REQUEST", "message": err.Error(), "path": ""}}
 	} else {
 		v = calcRaw(ds, &req)
 	}
 	return appendJSON(make([]byte, 0, 8<<10), v, true) // typical response is ~5 KB
 }
+
+// DecodeRequest decodes a FitRequest (same result and errors as json.Unmarshal, but skips
+// encoding/json's up-front validation scan when the fast decoder accepts the input).
+func DecodeRequest(b []byte, r *FitRequest) error { return r.UnmarshalJSON(b) }
 
 // Marshal encodes without HTML escaping (keys sorted by encoding/json).
 func Marshal(v any) []byte { return appendJSON(nil, v, false) }

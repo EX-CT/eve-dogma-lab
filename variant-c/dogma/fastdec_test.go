@@ -72,3 +72,21 @@ func FuzzFastDecoder(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, src []byte) { checkFastDecode(t, src) })
 }
+
+// DecodeRequest must return exactly what json.Unmarshal returns (value and error text).
+func TestDecodeRequestMatchesUnmarshal(t *testing.T) {
+	seeds := fastDecodeSeeds(t)
+	seeds = append(seeds, []byte(`{"ship":{"type_id":"x"}}`), []byte(`{"ship":{"type_id":1},"fleet":{"booster_fits":[{}]}}`),
+		[]byte(` {"ship":{"type_id":1}} `), []byte(`{"ship":`), []byte(`{"modules":[{"type_id":1,"state":"bogus"}],"ship":{"type_id":1}}`))
+	for _, src := range seeds {
+		var a, b FitRequest
+		ea := json.Unmarshal(src, &a)
+		eb := DecodeRequest(src, &b)
+		if (ea == nil) != (eb == nil) || (ea != nil && ea.Error() != eb.Error()) {
+			t.Fatalf("error differs for %.120s: %v vs %v", src, ea, eb)
+		}
+		if ea == nil && !reflect.DeepEqual(a, b) {
+			t.Fatalf("value differs for %.120s", src)
+		}
+	}
+}

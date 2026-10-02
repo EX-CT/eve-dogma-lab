@@ -196,7 +196,7 @@ func rpc(ds *dogma.Dataset, line []byte) any {
 		}
 	case "eft_export":
 		var r dogma.FitRequest
-		if err := json.Unmarshal(p["fit"], &r); err != nil {
+		if err := dogma.DecodeRequest(p["fit"], &r); err != nil {
 			result = errObj("BAD_REQUEST", err.Error())
 		} else {
 			name := str("name")
@@ -339,7 +339,7 @@ func main() {
 		ds := load(dsPath)
 		loadMs := float64(time.Since(t0).Microseconds()) / 1000
 		var req dogma.FitRequest
-		if err := json.Unmarshal(readInput(args[1:]), &req); err != nil {
+		if err := dogma.DecodeRequest(readInput(args[1:]), &req); err != nil {
 			fmt.Fprintln(os.Stderr, "bad request:", err)
 			os.Exit(2)
 		}
@@ -449,7 +449,7 @@ func serveHTTP(ds *dogma.Dataset, addr string) {
 	})
 	mux.HandleFunc("POST /v1/eft/export", func(w http.ResponseWriter, r *http.Request) {
 		var req dogma.FitRequest
-		if err := json.Unmarshal(body(r), &req); err != nil {
+		if err := dogma.DecodeRequest(body(r), &req); err != nil {
 			writeJSON(w, 400, dogma.Marshal(errObj("BAD_REQUEST", err.Error())))
 			return
 		}
