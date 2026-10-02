@@ -609,8 +609,11 @@ impl<'a> Fit<'a> {
                     self.targets(&v, e, m.func, m.domain, extra, &mut tg);
                     // Bastion hull resists are not stacking penalised in game; SDE marks the attrs non-stackable
                     let cat = if eid == ef.bastion && HULL_RESONANCES.contains(&m.modified) { 6 } else { src_cat };
-                    for &t in &tg {
-                        self.pending(t, m.modified, m.op, Src::Attr { e, attr: m.modifying }, cat, &mut pend);
+                    if !tg.is_empty() {
+                        let stackable = ds.attrs.get(&m.modified).map(|x| x.stackable).unwrap_or(true);
+                        let penalized = !stackable && !EXEMPT_CATEGORIES.contains(&cat);
+                        let md = Mod { op: m.op as i8, penalized, src: Src::Attr { e, attr: m.modifying } };
+                        pend.extend(tg.iter().map(|&t| PendingMod { target: t, attr: m.modified, m: md }));
                     }
                 }
             }

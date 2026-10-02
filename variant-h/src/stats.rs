@@ -74,19 +74,19 @@ fn round6(v: f64) -> f64 {
     if v.is_finite() { (v * 1e6).round() / 1e6 } else { v }
 }
 
-fn tidy(v: Value) -> Value {
+/// round every float leaf to 6 decimals in place (non-finite -> null, like serde_json's f64 conversion)
+fn tidy(v: &mut Value) {
     match v {
         Value::Number(n) => {
             if n.is_f64() {
                 if let Some(f) = n.as_f64() {
-                    return json!(round6(f));
+                    *v = json!(round6(f));
                 }
             }
-            Value::Number(n)
         }
-        Value::Array(a) => Value::Array(a.into_iter().map(tidy).collect()),
-        Value::Object(o) => Value::Object(o.into_iter().map(|(k, v)| (k, tidy(v))).collect()),
-        x => x,
+        Value::Array(a) => a.iter_mut().for_each(tidy),
+        Value::Object(o) => o.values_mut().for_each(tidy),
+        _ => {}
     }
 }
 
@@ -702,7 +702,9 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     if let Some(sel) = req.options.include_attributes.as_deref() {
         out.insert("attributes".into(), dump_attributes(fit, &x.c, sel));
     }
-    tidy(Value::Object(out))
+    let mut out = Value::Object(out);
+    tidy(&mut out);
+    out
 }
 
 fn dump(fit: &Fit, c: &Calc, e: Entity, filter: &Option<Vec<&str>>) -> Value {
