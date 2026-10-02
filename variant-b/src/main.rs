@@ -196,20 +196,63 @@ fn main() {
                 .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
                 .max(1);
             let ds = load(dataset);
-            let stdin = std::io::stdin();
-            let mut lines = stdin.lock().lines().map(|l| l.unwrap()).filter(|l| !l.trim().is_empty());
-            let chunk = 64 * threads;
-            loop {
-                let batch: Vec<String> = lines.by_ref().take(chunk).collect();
-                if batch.is_empty() {
-                    break;
-                }
-                let results = eve_dogma::calc_many(&ds, &batch, threads);
-                for r in results {
-                    writeln!(out, "{r}").unwrap();
+            if threads == 1 {
+                for line in std::io::stdin().lock().lines() {
+                    let line = line.unwrap();
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    writeln!(out, "{}", eve_dogma::calc_json(ds, &line)).unwrap();
                 }
                 out.flush().unwrap();
+                return;
             }
+            drop(out); // the writer thread takes the stdout lock
+            // streaming pipeline (no per-chunk barrier): this thread reads lines into a bounded job queue, workers
+            // compute, a writer thread restores input order and writes as soon as the next result is ready
+            let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<(usize, String)>(threads * 16);
+            let job_rx = std::sync::Mutex::new(job_rx);
+            let (res_tx, res_rx) = std::sync::mpsc::channel::<(usize, String)>();
+            std::thread::scope(|sc| {
+                for _ in 0..threads {
+                    let res_tx = res_tx.clone();
+                    let job_rx = &job_rx;
+                    sc.spawn(move || loop {
+                        let job = job_rx.lock().unwrap().recv();
+                        let Ok((i, line)) = job else { break };
+                        let r = eve_dogma::calc_json(ds, &line);
+                        if res_tx.send((i, r)).is_err() {
+                            break;
+                        }
+                    });
+                }
+                drop(res_tx);
+                let writer = sc.spawn(move || {
+                    let mut out = std::io::BufWriter::with_capacity(1 << 16, std::io::stdout().lock());
+                    let mut pending: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+                    let mut next = 0usize;
+                    for (i, r) in res_rx {
+                        pending.insert(i, r);
+                        while let Some(r) = pending.remove(&next) {
+                            out.write_all(r.as_bytes()).unwrap();
+                            out.write_all(b"\n").unwrap();
+                            next += 1;
+                        }
+                    }
+                    out.flush().unwrap();
+                });
+                let mut n = 0usize;
+                for line in std::io::stdin().lock().lines() {
+                    let line = line.unwrap();
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    job_tx.send((n, line)).unwrap();
+                    n += 1;
+                }
+                drop(job_tx);
+                writer.join().unwrap();
+            });
         }
         "serve-stdio" => {
             let ds = load(dataset);

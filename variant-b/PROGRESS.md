@@ -77,3 +77,8 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
 - 06:57 compile pre-sizes per-item node lists and the node table (exact counts, no regrowth; -8.4M), NameIndex
   reads through a cached base pointer (no Arc<Blob> enum deref per word), raw_cycle_ms burst-duration ids resolved
   once per stats call: corpus 567.1M -> 550.1M instr. Identical vs A (corpus + reload variants).
+- 07:25 py_round2 fast path away from ties (A 8122ddd; rifter 1.44M -> 1.37M instr/fit). `batch` is now a
+  streaming pipeline (reader -> bounded job queue -> N workers -> ordered writer thread) instead of 64*N-line
+  chunks with a barrier per chunk and serial output: corpus x5 median 17.8k -> 19.9k fits/s (8 threads, same box,
+  interleaved runs). Output byte-identical (md5 of the corpus batch at 1 and 4 threads == previous build).
+  New test `snapshot_roundtrip`: snapshot-loaded dataset == parsed dataset on every tests/cases request.
