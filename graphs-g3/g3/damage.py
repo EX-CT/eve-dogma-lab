@@ -619,11 +619,11 @@ def tackle(c, tgt, settings, d, n, speed):
     out_v, out_s = speed.copy(), np.ones(n)
     if tgt.disallow():
         return out_v, out_s
-    groups = {}
-    for k in range(n):
-        groups.setdefault((bool(scr[k])), []).append(k)
-    for ign, idx in groups.items():
-        idx = np.array(idx)
+    scr = np.asarray(scr, bool)
+    groups = [(ign, np.flatnonzero(scr == ign)) for ign in (False, True)]
+    for ign, idx in groups:
+        if len(idx) == 0:
+            continue
         m = len(idx)
         dd = None if d is None else d[idx]
         lk, dc = lock[idx], dcr[idx]
@@ -944,10 +944,10 @@ class _Entries:
         self._res = {}
         self._ticks = None
 
-    def lookup(self, tq):
+    def lookup(self, tq, tqu=None):
         if self.times is None:
             return np.full(len(tq), -1)
-        return np.searchsorted(self.times, unerr(tq), side="right") - 1
+        return np.searchsorted(self.times, unerr(tq) if tqu is None else tqu, side="right") - 1
 
     def resisted(self, res):
         R = self._res.get(res)
@@ -1005,6 +1005,7 @@ def _per_point_maps(c, tq, n, what):
     tc = time_cache(c, tmax)
     prep = _prepared(c, tc)
     out = []
+    tqu = None
     for key, (pts, dts, dmgs) in tc.items():
         mode = "pts" + what if what in ("dps", "volley") else "cum"
         E = prep.get((key, mode))
@@ -1020,7 +1021,9 @@ def _per_point_maps(c, tq, n, what):
                     cum.append(acc)
                 E = _Entries(dts, cum)
             prep[(key, mode)] = E
-        out.append((key, _PP(E, E.lookup(tq))))
+        if tqu is None:
+            tqu = unerr(tq)
+        out.append((key, _PP(E, E.lookup(tq, tqu))))
     return out
 
 
