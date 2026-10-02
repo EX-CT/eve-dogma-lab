@@ -43,6 +43,11 @@ pub struct Session {
     subs: FxHashMap<(u8, u32), Box<Session>>,
     spec_cache: spec::SpecCache,
     capmemo: std::cell::RefCell<FxHashMap<Vec<u64>, crate::capsim::CapResult>>,
+    /// attribute evaluations of the last view, valid while the salsa revision is unchanged (a request that
+    /// sets no input re-reads them instead of re-evaluating)
+    ecache: std::cell::RefCell<engine::VCache>,
+    ecache_rev: Option<salsa::Revision>,
+    last_ship: Option<u32>,
 }
 
 /// Facade item consumed by stats (canonical order; indices are canonical positions).
@@ -82,6 +87,8 @@ pub struct Fit<'a> {
     pub proj_special: Vec<ProjSpecial>,
     /// per-view memo of evaluated values (skips salsa interning/validation on repeated reads)
     pub vcache: std::cell::RefCell<FxHashMap<u64, f64>>,
+    /// engine-side attribute evaluation cache for this view
+    pub ecache: &'a std::cell::RefCell<engine::VCache>,
     pub capmemo: &'a std::cell::RefCell<FxHashMap<Vec<u64>, crate::capsim::CapResult>>,
     /// layer maps 1..=layer, fetched once per view
     pub layers: Vec<&'a Arc<engine::LayerMap>>,
@@ -114,7 +121,7 @@ impl<'a> Fit<'a> {
         let v = if !self.modified(item, attr) && !self.db.consts().special(attr) {
             self.items[item].base(attr).unwrap_or_else(|| self.ds.attr_default(attr))
         } else {
-            engine::value(self.db, self.fit, self.slot_of[item], attr, self.layer)
+            engine::value_c(self.db, self.fit, self.slot_of[item], attr, self.layer, &mut self.ecache.borrow_mut())
         };
         self.vcache.borrow_mut().insert(k, v);
         v
@@ -168,24 +175,11 @@ impl<'a> Fit<'a> {
 impl Session {
     pub fn new(ds: Arc<Dataset>) -> Session {
         let consts = Arc::new(Consts::new(&ds));
-        Session { db: EngineDb { storage: salsa::Storage::default(), ds, consts }, fit: None, slots: Vec::new(), cur: Vec::new(), slot_of: FxHashMap::default(), calcs: 0, max_slots: 20_000, subs: FxHashMap::default(), spec_cache: Default::default(), capmemo: Default::default() }
+        Session { db: EngineDb { storage: salsa::Storage::default(), ds, consts }, fit: None, slots: Vec::new(), cur: Vec::new(), slot_of: FxHashMap::default(), calcs: 0, max_slots: 20_000, subs: FxHashMap::default(), spec_cache: Default::default(), capmemo: Default::default(), ecache: Default::default(), ecache_rev: None, last_ship: None }
     }
 
     pub fn ds(&self) -> &Dataset {
         &self.db.ds
-    }
-
-    /// New salsa database, keeping the dataset, constants and the spec / capsim caches (pure-function memos).
-    pub fn soft_reset(&mut self) {
-        let db = EngineDb { storage: salsa::Storage::default(), ds: self.db.ds.clone(), consts: self.db.consts.clone() };
-        self.db = db;
-        self.fit = None;
-        self.slots.clear();
-        self.cur.clear();
-        self.slot_of.clear();
-        for s in self.subs.values_mut() {
-            s.soft_reset();
-        }
     }
 
     /// Drop all memoised state (keeps the dataset).
@@ -275,6 +269,13 @@ impl Session {
         let t0 = std::time::Instant::now();
         let fit = self.load(req, &built, offers);
         prof(1, t0);
+        let rev = salsa::plumbing::current_revision(&self.db);
+        if self.ecache_rev != Some(rev) {
+            let memo = engine::attr_memo_policy().unwrap_or(self.last_ship == Some(req.ship.type_id));
+            *self.ecache.get_mut() = engine::VCache::new(memo);
+            self.ecache_rev = Some(rev);
+        }
+        self.last_ship = Some(req.ship.type_id);
         let db = &self.db;
         let ds: &Dataset = &self.db.ds;
         let n = built.items.len();
@@ -292,7 +293,7 @@ impl Session {
         let items: Vec<Arc<ItemSpec>> = built.items.clone();
         let layer = engine::plan(db, fit).final_layer;
         let layers: Vec<&Arc<engine::LayerMap>> = (1..=layer).map(|l| engine::layer_mods(db, fit, engine::LKey::new(db, l))).collect();
-        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special, vcache: Default::default(), capmemo: &self.capmemo, layers, imods: std::cell::RefCell::new(vec![None; n]) })
+        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special, vcache: Default::default(), ecache: &self.ecache, capmemo: &self.capmemo, layers, imods: std::cell::RefCell::new(vec![None; n]) })
     }
 
     fn load(&mut self, req: &FitRequest, b: &spec::Built, offers: Vec<(u32, F)>) -> FitIn {

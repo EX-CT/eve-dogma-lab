@@ -1033,13 +1033,14 @@ pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
         None => best.push((id, v, src)),
     };
     let roles = roles(db, fit);
+    let mut vc = VCache::default();
     for &s in &roles.active_modules {
         for (ida, vala) in c.warfare {
-            let id = if has(db, fit, s, ida) { value(db, fit, s, ida, 0) as u32 } else { 0 };
+            let id = if has(db, fit, s, ida) { value_c(db, fit, s, ida, 0, &mut vc) as u32 } else { 0 };
             if id == 0 || explicit(id) {
                 continue;
             }
-            let v = value(db, fit, s, vala, 0);
+            let v = value_c(db, fit, s, vala, 0, &mut vc);
             offer(&mut best, id, v, Src::Attr { item: s, attr: vala });
         }
     }
@@ -1047,11 +1048,11 @@ pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
     // environment item join the same command-bonus pool (strongest |value| per buff id)
     for &s in &roles.weather {
         for &(ida, vala) in &c.warfare[..2] {
-            let id = if has(db, fit, s, ida) { value(db, fit, s, ida, 0) as u32 } else { 0 };
+            let id = if has(db, fit, s, ida) { value_c(db, fit, s, ida, 0, &mut vc) as u32 } else { 0 };
             if id == 0 || explicit(id) {
                 continue;
             }
-            let v = value(db, fit, s, vala, 0);
+            let v = value_c(db, fit, s, vala, 0, &mut vc);
             offer(&mut best, id, v, Src::Const(F(v)));
         }
     }
@@ -1118,11 +1119,12 @@ pub fn layer_mods<'db>(db: &'db dyn Db, fit: FitIn, l: LKey<'db>) -> Arc<LayerMa
     let prev = layer - 1;
     let attrs = c.armor_res;
     let ship = core.ship;
-    let mut res: Vec<f64> = attrs.iter().map(|&a| value(db, fit, mo, a, prev)).collect();
+    let mut vc = VCache::default();
+    let mut res: Vec<f64> = attrs.iter().map(|&a| value_c(db, fit, mo, a, prev, &mut vc)).collect();
     if !ctx.rah_disable {
         let pattern = [ctx.pattern[0].0, ctx.pattern[1].0, ctx.pattern[2].0, ctx.pattern[3].0];
-        let base: Vec<f64> = (0..4).map(|k| pattern[k] * value(db, fit, ship, attrs[k], prev)).collect();
-        let shift = value(db, fit, mo, c.shift, prev) / 100.0;
+        let base: Vec<f64> = (0..4).map(|k| pattern[k] * value_c(db, fit, ship, attrs[k], prev, &mut vc)).collect();
+        let shift = value_c(db, fit, mo, c.shift, prev, &mut vc) / 100.0;
         let mut cycles: Vec<[f64; 4]> = Vec::new();
         let mut loop_start: isize = -20;
         for _ in 0..50 {
@@ -1180,22 +1182,117 @@ pub fn has(db: &dyn Db, fit: FitIn, item: u32, attr: u32) -> bool {
 
 /// Evaluated attribute. Fast path: an attribute without modifiers, caps or rounding is its base value, so no
 /// memoised query (and no interned key) is created for it; the caller then depends on `item_mods` + the spec.
+/// Attribute evaluation cache for one evaluation context (a stats view, or one tracked query execution).
+/// Attribute values are not salsa memos: they are pure functions of the memoised modifier graph
+/// (`item_mods`, `layer_mods`), evaluated on demand and cached here. Cycles get the base value for every
+/// participant, as salsa's `cycle_result` fallback did.
+#[derive(Default)]
+pub struct VCache {
+    /// evaluate non-plain attributes through the memoised `attr_value` query (fine-grained reuse across
+    /// revisions, best for edits) instead of inline (less bookkeeping, best when most of the fit changed)
+    pub memo: bool,
+    map: FxHashMap<u64, f64>,
+    stack: Vec<u64>,
+    /// per frame on `stack`: lowest stack index of a cycle head this frame's value depends on
+    low: Vec<usize>,
+    /// per item: its `item_mods` memo (fetched once per context)
+    ims: FxHashMap<u32, ItemMods>,
+    /// layer maps 1..=n (index l-1)
+    layers: Vec<Arc<LayerMap>>,
+}
+
+impl VCache {
+    pub fn new(memo: bool) -> VCache {
+        VCache { memo, ..Default::default() }
+    }
+    #[inline]
+    fn im(&mut self, db: &dyn Db, fit: FitIn, item: u32) -> ItemMods {
+        if let Some(m) = self.ims.get(&item) {
+            return m.clone();
+        }
+        let m = item_mods(db, fit, item).clone();
+        self.ims.insert(item, m.clone());
+        m
+    }
+    #[inline]
+    fn layer(&mut self, db: &dyn Db, fit: FitIn, l: u32) -> &Arc<LayerMap> {
+        while self.layers.len() < l as usize {
+            let n = self.layers.len() as u32 + 1;
+            self.layers.push(layer_mods(db, fit, LKey::new(db, n)).clone());
+        }
+        &self.layers[l as usize - 1]
+    }
+}
+
 #[inline]
+fn vkey(item: u32, attr: u32, layer: u32) -> u64 {
+    ((item as u64) << 40) | ((layer as u64) << 32) | attr as u64
+}
+
+/// `EVE_I_ATTR_MEMO=1` / `=0`: always / never use per-attribute memos for a view; unset: automatic
+/// (memoised when the request keeps the previous request's hull, i.e. looks like an edit).
+pub fn attr_memo_policy() -> Option<bool> {
+    static M: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    *M.get_or_init(|| match std::env::var("EVE_I_ATTR_MEMO").as_deref() {
+        Ok("1") => Some(true),
+        Ok("0") => Some(false),
+        _ => None,
+    })
+}
+
+/// Evaluated attribute with a throwaway cache (rare callers).
 pub fn value(db: &dyn Db, fit: FitIn, item: u32, attr: u32, layer: u32) -> f64 {
-    let im = item_mods(db, fit, item);
+    value_c(db, fit, item, attr, layer, &mut VCache::default())
+}
+
+#[inline]
+pub fn value_c(db: &dyn Db, fit: FitIn, item: u32, attr: u32, layer: u32, vc: &mut VCache) -> f64 {
+    let k = vkey(item, attr, layer);
+    if let Some(v) = vc.map.get(&k) {
+        return *v;
+    }
+    let im = vc.im(db, fit, item);
     if !im.mods.contains_key(&attr) && !db.consts().special(attr) {
         let mut plain = true;
         for l in 1..=layer {
-            if layer_mods(db, fit, LKey::new(db, l)).contains_key(&(item, attr)) {
+            if vc.layer(db, fit, l).contains_key(&(item, attr)) {
                 plain = false;
                 break;
             }
         }
         if plain {
-            return im.spec.base(attr).unwrap_or_else(|| db.ds().attr_default(attr));
+            let v = im.spec.base(attr).unwrap_or_else(|| db.ds().attr_default(attr));
+            vc.map.insert(k, v);
+            return v;
         }
     }
-    attr_value(db, fit, AKey::new(db, item, attr, layer)).0
+    if vc.memo {
+        let v = attr_value(db, fit, AKey::new(db, item, attr, layer)).0;
+        vc.map.insert(k, v);
+        return v;
+    }
+    if let Some(pos) = vc.stack.iter().position(|x| *x == k) {
+        // cycle: `k` is its head; every frame from the head up is a participant
+        for l in vc.low[pos..].iter_mut() {
+            *l = (*l).min(pos);
+        }
+        return im.spec.base(attr).unwrap_or_else(|| db.ds().attr_default(attr));
+    }
+    vc.stack.push(k);
+    vc.low.push(usize::MAX);
+    let mut v = attr_body(db, fit, item, attr, layer, vc);
+    vc.stack.pop();
+    let low = vc.low.pop().unwrap();
+    let me = vc.stack.len();
+    if low <= me {
+        v = im.spec.base(attr).unwrap_or_else(|| db.ds().attr_default(attr));
+        if low < me {
+            let p = vc.low.last_mut().unwrap();
+            *p = (*p).min(low);
+        }
+    }
+    vc.map.insert(k, v);
+    v
 }
 
 fn attr_cycle<'db>(db: &'db dyn Db, _id: salsa::Id, fit: FitIn, k: AKey<'db>) -> F {
@@ -1203,20 +1300,20 @@ fn attr_cycle<'db>(db: &'db dyn Db, _id: salsa::Id, fit: FitIn, k: AKey<'db>) ->
     F(it.spec(db).base(k.attr(db)).unwrap_or_else(|| db.ds().attr_default(k.attr(db))))
 }
 
-fn src_value(db: &dyn Db, fit: FitIn, s: &Src, layer: u32) -> f64 {
+fn src_value(db: &dyn Db, fit: FitIn, s: &Src, layer: u32, vc: &mut VCache) -> f64 {
     match *s {
-        Src::Attr { item, attr } => value(db, fit, item, attr, layer),
+        Src::Attr { item, attr } => value_c(db, fit, item, attr, layer, vc),
         Src::Const(v) => v.0,
         Src::Prop { module, ship, speed, thrust, mass } => {
-            let m = value(db, fit, ship, mass, layer);
-            if m == 0.0 { 1.0 } else { 1.0 + value(db, fit, module, speed, layer) / 100.0 * value(db, fit, module, thrust, layer) / m }
+            let m = value_c(db, fit, ship, mass, layer, vc);
+            if m == 0.0 { 1.0 } else { 1.0 + value_c(db, fit, module, speed, layer, vc) / 100.0 * value_c(db, fit, module, thrust, layer, vc) / m }
         }
         Src::Projected { item, attr, factor, target, resist, mul } => {
             let mut f = factor.0;
             if resist != 0 {
-                f *= value(db, fit, target, resist, layer);
+                f *= value_c(db, fit, target, resist, layer, vc);
             }
-            let v = value(db, fit, item, attr, layer);
+            let v = value_c(db, fit, item, attr, layer, vc);
             if mul { (v - 1.0) * f + 1.0 } else { v * f }
         }
     }
@@ -1225,22 +1322,26 @@ fn src_value(db: &dyn Db, fit: FitIn, s: &Src, layer: u32) -> f64 {
 #[salsa::tracked(returns(copy), cycle_result = attr_cycle)]
 pub fn attr_value<'db>(db: &'db dyn Db, fit: FitIn, k: AKey<'db>) -> F {
     qcount(9);
-    let (item, attr_id, layer) = (k.item(db), k.attr(db), k.layer(db));
+    F(attr_body(db, fit, k.item(db), k.attr(db), k.layer(db), &mut VCache::new(true)))
+}
+
+fn attr_body(db: &dyn Db, fit: FitIn, item: u32, attr_id: u32, layer: u32, vc: &mut VCache) -> f64 {
     let ds = db.ds();
-    let im = item_mods(db, fit, item);
+    let im = vc.im(db, fit, item);
     let base = im.spec.base(attr_id).unwrap_or_else(|| ds.attr_default(attr_id));
     let info = ds.attrs.get(&attr_id);
     let mut val = base;
     let mut vals: Vec<(i8, bool, f64)> = Vec::new();
     if let Some(ms) = im.mods.get(&attr_id) {
         for m in ms {
-            vals.push((m.op, m.penalized, src_value(db, fit, &m.src, layer)));
+            vals.push((m.op, m.penalized, src_value(db, fit, &m.src, layer, vc)));
         }
     }
     for l in 1..=layer {
-        if let Some(ms) = layer_mods(db, fit, LKey::new(db, l)).get(&(item, attr_id)) {
+        let lm = vc.layer(db, fit, l).clone();
+        if let Some(ms) = lm.get(&(item, attr_id)) {
             for m in ms {
-                vals.push((m.op, m.penalized, src_value(db, fit, &m.src, layer)));
+                vals.push((m.op, m.penalized, src_value(db, fit, &m.src, layer, vc)));
             }
         }
     }
@@ -1306,16 +1407,16 @@ pub fn attr_value<'db>(db: &'db dyn Db, fit: FitIn, k: AKey<'db>) -> F {
     }
     if let Some(info) = info {
         if let Some(mn) = info.min_attr {
-            val = val.max(value(db, fit, item, mn, layer));
+            val = val.max(value_c(db, fit, item, mn, layer, vc));
         }
         if let Some(mx) = info.max_attr {
-            val = val.min(value(db, fit, item, mx, layer));
+            val = val.min(value_c(db, fit, item, mx, layer, vc));
         }
         if db.consts().rounded.contains(&attr_id) {
             val = crate::stats::py_round2(val);
         }
     }
-    F(val)
+    val
 }
 
 pub static QCOUNT: [std::sync::atomic::AtomicU64; 10] = [const { std::sync::atomic::AtomicU64::new(0) }; 10];
