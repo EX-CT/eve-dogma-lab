@@ -10,6 +10,8 @@ Commands:
   calc [FILE]     FitRequest JSON (file or stdin) -> FitStats JSON (default when no command is given)
   batch           JSONL FitRequests on stdin -> JSONL FitStats on stdout
   serve-stdio     JSONL RPC {\"id\",\"method\":\"calc|eft_parse|eft_export|search|type|meta\",\"params\"} -> {\"id\",\"result\"}
+  graph [FILE]    GraphRequest JSON (CONTRACT-GRAPHS 0.1) -> GraphResult JSON
+  graph-batch     JSONL GraphRequests on stdin -> JSONL GraphResults
   eft FILE [--calc]  EFT text -> FitRequest JSON (with --calc: -> FitStats)
   search QUERY    type search (published ships/modules/charges/drones/fighters/implants/boosters/subsystems/skills)
   type ID|NAME    type info (attributes, effects)
@@ -123,6 +125,7 @@ fn main() {
                     Some("eft_parse") => api::eft_parse_value(&ds, &params),
                     Some("search") => api::search_value(&ds, &params),
                     Some("type") => api::type_value(&ds, &params),
+                    Some("graph") => eve_dogma_e::jv::Value::from(eve_dogma_e::graphs::graph_value(&ds, params)),
                     Some("meta") => eve_dogma_e::jv::Value::from(meta(&ds)),
                     m => api::err("UNKNOWN_METHOD", &format!("{m:?}"), "/method"),
                 };
@@ -134,6 +137,35 @@ fn main() {
             }
         }
         "meta" => out(&meta(&ds)),
+        "graph" => {
+            let mut s = String::new();
+            match args.get(1) {
+                Some(f) if f != "-" => s = std::fs::read_to_string(f).unwrap_or_default(),
+                _ => {
+                    let _ = std::io::stdin().read_to_string(&mut s);
+                }
+            }
+            let v = eve_dogma_e::graphs::graph_str(&ds, &s);
+            out(&v);
+            std::mem::forget(ds);
+            if v.get("error").is_some() {
+                std::process::exit(2);
+            }
+        }
+        "graph-batch" => {
+            let stdin = std::io::stdin();
+            let mut w = std::io::BufWriter::with_capacity(1 << 16, std::io::stdout().lock());
+            for line in stdin.lock().lines() {
+                let Ok(line) = line else { break };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let v = eve_dogma_e::graphs::graph_str(&ds, &line);
+                let _ = serde_json::to_writer(&mut w, &v);
+                let _ = w.write_all(b"\n");
+            }
+            let _ = w.flush();
+        }
         "search" => out(&api::search_value(&ds, &json!({"query": args[1..].join(" ")}))),
         "type" => out(&api::type_value(&ds, &json!({"id": args[1..].join(" ")}))),
         "eft" => {
