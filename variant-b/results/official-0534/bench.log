@@ -1,0 +1,39 @@
+$ (/tmp/benchcopy) git clone -q --depth 1 -b variant-b https://github.com/EX-CT/eve-dogma-lab /tmp/benchcopy/work/B
+$ (/tmp/benchcopy/work/B/variant-b) cargo build --release
+# Scorecard: B
+
+- command: `./target/release/eve-dogma-vb --dataset /workspace/exct-eve/data/dataset-3569502.json.gz calc`, batch: `./target/release/eve-dogma-vb --dataset /workspace/exct-eve/data/dataset-3569502.json.gz batch`
+- cases fully correct: **295/295**
+- values correct: **18978/18978** (100.00 %)
+- engine errors: 0
+
+| group | ok | total | % |
+|---|---|---|---|
+| application | 3501 | 3501 | 100.0 |
+| capacitor | 1035 | 1035 | 100.0 |
+| defense | 5308 | 5308 | 100.0 |
+| fitting | 2655 | 2655 | 100.0 |
+| navigation | 1759 | 1759 | 100.0 |
+| offense | 1180 | 1180 | 100.0 |
+| tank | 2065 | 2065 | 100.0 |
+| targeting | 1475 | 1475 | 100.0 |
+
+| perf | value |
+|---|---|
+| one process per case, median ms (cold start + calc) | 8.7 |
+| batch throughput (corpus x1) fits/s | 7530 |
+| latency one fit (exct_rifter) ms/calc | 0.097 |
+| startup + one calc ms | 10.7 |
+| deterministic | True |
+# Combined scorecard
+
+Generated 2026-10-03 05:34 CST — corpus: 295 cases, expected values from Pyfa (see README).
+
+Bench version 1.5.0+2d6f9cb (see CHANGELOG.md). Rows may come from different runs: see measured_at/bench_version in combined.json; perf numbers are only comparable at similar load.
+
+| variant | status | cases ok | values ok | accuracy % | application | capacitor | defense | fitting | navigation | offense | tank | targeting | ms/fit | fits/s (batch) | cold ms | deterministic | eft export | bench | measured |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A eve-dogma-rs main (Rust, lazy memoised modifier graph) | ok | 249/249 | 13812/13812 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 1.430 | 460 | 216 | True | – | ? | ? |
+| B data-oriented Rust | ok | 295/295 | 18978/18978 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.097 | 7530 | 9 | True | 295/295 | 1.5.0+2d6f9cb | 2026-10-03 05:33 CST |
+| E Pyfa-faithful Rust port | ok | 295/295 | 18978/18978 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.503 | 2880 | 24 | True | – | 1.5.0+2d6f9cb | 2026-10-03 05:31 CST |
+| K Kotlin/JVM or C# | ok | 292/295 | 18945/18978 | 99.83 | 99.1 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 1.382 | 483 | 89 | True | – | 1.5.0+2d6f9cb | 2026-10-03 05:29 CST |
