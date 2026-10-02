@@ -1028,9 +1028,17 @@ func (f *Fit) registerProjected(i int) {
 		case strings.HasPrefix(n, "remoteSensorDamp") || n == "structureModuleEffectRemoteSensorDampener":
 			push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
 			push(a("scanResolution"), a("scanResolutionBonus"), 6)
-		case n == "shipModuleTrackingDisruptor" || n == "shipModuleGuidanceDisruptor":
-			// Pyfa Effect6424 / Effect6423: the target's gunnery modules / missile charges
-			if targetOffenseOK {
+		case n == "shipModuleTrackingDisruptor" || n == "shipModuleGuidanceDisruptor" || n == "shipModuleRemoteTrackingComputer":
+			// Pyfa Effect6424 / Effect6423 / shipModuleRemoteTrackingComputer: the target's gunnery
+			// modules (TD, RTC) / missile charges (GD). RTCs are assistance-gated, TD/GD offense-gated.
+			allowed := targetOffenseOK
+			if n == "shipModuleRemoteTrackingComputer" {
+				allowed = true
+				if v, ok := f.baseOK(f.Ship, a("disallowAssistance")); ok {
+					allowed = v == 0
+				}
+			}
+			if allowed {
 				skill, kind := "Gunnery", KModule
 				pairs := [][2]string{{"trackingSpeedBonus", "trackingSpeed"}, {"maxRangeBonus", "maxRange"}, {"falloffBonus", "falloff"}}
 				if n == "shipModuleGuidanceDisruptor" {
@@ -1069,7 +1077,7 @@ func (f *Fit) registerProjected(i int) {
 var projDamageEffects = map[string]bool{"projectileFired": true, "targetAttack": true, "useMissiles": true, "barrage": true,
 	"targetDisintegratorAttack": true, "missileLaunchingForEntity": true, "fighterAbilityAttackM": true, "fighterAbilityMissiles": true,
 	"superWeaponAmarr": true, "superWeaponCaldari": true, "superWeaponGallente": true, "superWeaponMinmatar": true, "mining": true,
-	"miningLaser": true, "miningClouds": true, "dotMissileLaunching": true}
+	"miningLaser": true, "miningClouds": true, "dotMissileLaunching": true, "ChainLightning": true}
 
 // projSpecialFor mirrors Pyfa's 'projected' handlers for remote reps, cap transfers and neuts/nos (eos, LGPL).
 func (f *Fit) projSpecialFor(i int, name string, resist uint32) ([]ProjSpecial, bool) {
