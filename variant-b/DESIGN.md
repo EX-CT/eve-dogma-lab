@@ -58,7 +58,8 @@ FitRequest ──build──▶ items: Vec<Item>            (base attrs = sorted
    recompile (cheap: compile is O(m log m) on ~1k modifiers). Fleet booster fits and projected fits are separate
    recursive `Fit::build` calls (frozen values), like A.
 7. **Batch parallelism.** Requests are independent, the dataset (incl. the `OnceLock` fold tables) is `Sync`, a `Fit`
-   is thread-local. `batch` evaluates chunks on all cores (`--threads N`), output order preserved, byte-identical to
+   is thread-local. `batch` is a streaming pipeline (reader -> bounded job queue -> N workers -> ordered writer thread with a
+   reorder buffer; `--threads N`, default = available cores), output order preserved, byte-identical to
    `--threads 1`.
 8. **Fast cold start.** Dataset JSON is parsed with a borrowed-key visitor straight into `Vec<(id, T)>` (no key
    `String`s, no intermediate `HashMap`s), SHA-256 (only reported in `meta`) runs on a second thread (in-tree
@@ -68,7 +69,7 @@ FitRequest ──build──▶ items: Vec<Item>            (base attrs = sorted
 
 The request/response types (`request.rs`), dataset structs (`data.rs`, loader rewritten), EFT import/export
 (`eft.rs`), the capacitor simulator (`capsim.rs`) and the stats formulas (`stats.rs`) are taken from eve-dogma-rs
-(LGPL-3.0, same org) so that the comparison isolates the **modifier engine architecture**; `engine.rs` (≈1.6k lines)
+(LGPL-3.0, same org) so that the comparison isolates the **modifier engine architecture**; `engine.rs` (≈2.3k lines)
 is a fresh implementation. Every special case (AB/MWD, MJD, bastion, structures, T3D default mode, RAH, bursts,
 booster fits, projected fits, remote reps/neuts) is re-expressed in the compile/evaluate model.
 
