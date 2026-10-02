@@ -53,6 +53,13 @@ class Dataset:
         lo, hi = self.t_attr_ptr[ti], self.t_attr_ptr[ti + 1]
         return dict(zip(self.t_attr_ids[lo:hi].tolist(), self.t_attr_vals[lo:hi].tolist()))
 
+    def _tad_get(self, ti):
+        """shared (do not mutate) {attr: base value} of a type"""
+        d = self._tad.get(ti)
+        if d is None:
+            d = self._tad[ti] = self._type_attrs(ti)
+        return d
+
     def type_attrs(self, ti):
         """copy of a type's base attributes {attr: value}"""
         d = self._tad.get(ti)

@@ -92,6 +92,23 @@ def main():
     for k in range(3):
         pen *= 1.0 + (gb - 1.0) * math.exp(-(k * k) / 7.1289)
     check(abs(ratio - pen) < 1e-6, f"stacking penalty ratio {ratio} vs {pen}")
+    # 6. capacitor sim: NumPy periodic fast path == plain event loop (random drain sets, no injectors/clips)
+    import random
+    from evedogma_g import capsim
+    rnd = random.Random(7)
+    bad = 0
+    for _ in range(300):
+        drains = [(float(rnd.choice([1000, 2500, 3000, 4000, 5000, 6000, 8000, 10000, 12500, 15000, 45000])),
+                   rnd.uniform(0, 400), 0, 0.0, False, rnd.random() < 0.2) for _ in range(rnd.randint(1, 8))]
+        args = (rnd.uniform(200, 6000), rnd.uniform(100000, 600000), drains, rnd.choice([1.0, 0.5]), False,
+                rnd.random() < 0.5, 3600 * 1000.0)
+        capsim.FAST_PATH = True
+        a = capsim.simulate(*args)
+        capsim.FAST_PATH = False
+        b = capsim.simulate(*args)
+        capsim.FAST_PATH = True
+        bad += a != b
+    check(bad == 0, f"capsim fast path differs in {bad}/300 random cases")
     print("unit checks done")
     print("FAILED" if FAILS else "ALL OK", len(FAILS))
     sys.exit(1 if FAILS else 0)

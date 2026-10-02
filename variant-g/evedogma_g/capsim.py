@@ -2,6 +2,8 @@
 import heapq
 import math
 
+FAST_PATH = True  # tests switch this off to check the NumPy fast path against the plain event loop
+
 
 def simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_ms):
     """drains: list of dicts duration, cap_need, clip_size, reload_ms, is_injector, disable_stagger"""
@@ -48,7 +50,7 @@ def simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_m
         heapq.heappush(heap, (0.0, dur, need, 0, clip, rl, False, seq))
         seq += 1
     period = t_max_ms if (disable_period or period > t_max_ms) else float(period)
-    if heap and not any(e[6] or e[4] for e in heap):
+    if FAST_PATH and heap and not any(e[6] or e[4] for e in heap):
         return _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms)
 
     cap_max = capacity
@@ -144,8 +146,9 @@ def simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_m
 
 def _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms):
     """Fast path, same results as the event loop below when there are no injectors and no clips:
-    every drain fires at offset + k * duration, so the event sequence is generated with NumPy window by
-    window (sorted like the heap: time, duration, cap need) and only the capacitor recurrence is a Python loop."""
+    every drain fires at a running sum offset + dur + dur + ..., so the event sequence is generated with NumPy
+    window by window (sorted like the heap: time, duration, cap need) and only the capacitor recurrence is a
+    Python loop."""
     import numpy as np
     starts = np.array([e[0] for e in heap])
     durs = np.array([e[1] for e in heap])
@@ -164,37 +167,56 @@ def _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms):
     # windows grow geometrically: most fits settle within a few hundred events, long sims get big windows
     width = max(256.0 / rate, float(durs.max()) * 1.01)
     width_max = max(16384.0 / rate, width)
+    nxt = starts.copy()  # next fire time of every drain, built by repeated addition like the heap
     t0 = 0.0
     done = False
     while not done:
         t1 = t0 + width
-        # events with start + k*dur in [t0, t1)
-        k0 = np.maximum(np.ceil((t0 - starts) / durs), 0.0)
-        k1 = np.maximum(np.ceil((t1 - starts) / durs), 0.0)
-        cnt = (k1 - k0).astype(np.int64)
-        g = np.repeat(np.arange(len(durs)), cnt)
-        if len(g) == 0:
+        # all events with time < t1: per drain an exact running sum t, t + dur, (t + dur) + dur, ...
+        parts_t, parts_g = [], []
+        for j in range(len(durs)):
+            if nxt[j] >= t1:
+                continue
+            c = int(math.ceil((t1 - nxt[j]) / durs[j])) + 1
+            while True:
+                seq = np.full(c + 1, durs[j])
+                seq[0] = nxt[j]
+                acc = np.add.accumulate(seq)
+                if acc[-1] >= t1:
+                    break
+                c *= 2
+            m = int(np.searchsorted(acc, t1, "left"))
+            parts_t.append(acc[:m])
+            parts_g.append(np.full(m, j))
+            nxt[j] = acc[m]
+        if not parts_t:
             t0 = t1
             width = min(width * 2.0, width_max)
             continue
-        first = np.repeat(np.cumsum(cnt) - cnt, cnt)
-        k = np.repeat(k0, cnt) + (np.arange(len(g)) - first)
-        # times exactly like repeated addition of integral durations
-        tt = starts[g] + k * durs[g]
+        tt = np.concatenate(parts_t)
+        g = np.concatenate(parts_g)
         o = np.lexsort((needs[g], durs[g], tt))
         tt = tt[o]
         prev = np.concatenate(([t_last], tt[:-1]))
-        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-            decay = np.exp((prev - tt) / tau) if tau > 0.0 else np.ones(len(tt))
+        # math.exp (libm, like Rust f64::exp); NumPy's SIMD exp can differ in the last ulp
+        if tau > 0.0:
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                decay = np.array(list(map(exp, ((prev - tt) / tau).tolist())))
+        else:
+            decay = np.ones(len(tt))
         recharge = (tt > prev) & (cap_max > 0.0) & (tau > 0.0)
-        for t_now, need, dec, rc in zip(tt.tolist(), needs[g][o].tolist(), decay.tolist(), recharge.tolist()):
-            if t_now >= t_max_ms:
-                done = True
-                break
+        newt = tt != prev
+        cut = int(np.searchsorted(tt, t_max_ms, "left"))  # events at/after t_max end the simulation
+        if cut < len(tt):
+            done = True
+        nd = needs[g][o]
+        for t_now, need, dec, rc, nt in zip(tt[:cut].tolist(), nd[:cut].tolist(), decay[:cut].tolist(),
+                                            recharge[:cut].tolist(), newt[:cut].tolist()):
             if rc:
-                x = sqrt(max(cap / cap_max, 0.0))
+                x = cap / cap_max
+                x = sqrt(x) if x > 0.0 else 0.0
                 cap = (1.0 + (x - 1.0) * dec) ** 2 * cap_max
-            if t_now != t_last:
+            if nt:
                 if cap < cap_lowest_pre:
                     cap_lowest_pre = cap
                 if t_now == t_wrap:
@@ -208,7 +230,9 @@ def _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms):
             if iterations > 5_000_000:
                 done = True
                 break
-            cap = min(cap - need, cap_max)
+            cap -= need
+            if cap > cap_max:
+                cap = cap_max
             if cap < cap_lowest:
                 if cap < 0.0:
                     ran_out = True

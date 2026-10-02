@@ -16,6 +16,8 @@ The few effects that the SDE ships without modifierInfo (propulsion, MJD, slot/h
 projected ewar, warfare bursts, Reactive Armor Hardener) are registered by small per-fit Python code
 that appends rows to the same tables.
 """
+import math
+
 import numpy as np
 
 from .dataset import ATTR_BITS, SPECIAL_AB, SPECIAL_HARDPOINT, SPECIAL_MJD, SPECIAL_MWD, SPECIAL_SLOT
@@ -53,6 +55,11 @@ KEY_X_BITS = 20
 
 def _tkey(fit, cls, x):
     return ((np.asarray(fit, np.int64) * 8 + cls) << KEY_X_BITS) | np.asarray(x, np.int64)
+
+
+def _libm_exp(x):
+    """element-wise math.exp (libm, bit-identical to Rust f64::exp); NumPy's SIMD exp may differ by an ulp"""
+    return np.array(list(map(math.exp, x.tolist())), np.float64)
 
 
 def _sorted_unique(x):
@@ -109,6 +116,12 @@ class BaseOverrides(dict):
 
     def copy(self):
         return BaseOverrides(self)
+
+    def drop_items_from(self, n):
+        """remove every override of items >= n (rollback of a failed add_fit: it only creates new items)"""
+        for i in [i for i in self._by_item if i >= n]:
+            for at in self._by_item.pop(i):
+                del self[(i, at)]
 
 
 class Fit:
@@ -214,7 +227,6 @@ class Batch:
         fit.projected_frozen = projected_frozen
         n_items0, n_meta0 = self.n_items, len(self.meta)
         cols_len0 = {k: len(v) for k, v in self._cols.items()}
-        n_ov0 = self.overrides.copy()
         try:
             self._add_fit_items(fit, req)
         except RequestError:
@@ -223,7 +235,7 @@ class Batch:
             del self.meta[n_meta0:]
             for k, v in self._cols.items():
                 del v[cols_len0[k]:]
-            self.overrides = n_ov0
+            self.overrides.drop_items_from(n_items0)
             self.skill_blocks = [b for b in self.skill_blocks if b[0] != fit.index]
             self.extra_rows = [r for r in self.extra_rows if r[0] < n_items0]
             raise
@@ -786,8 +798,9 @@ def _round_half_away(x):
 class Evaluated:
     """values of every node of (a subset of) a batch"""
 
-    def __init__(self, keys, val, base):
-        self.keys, self.val, self.base = keys, val, base
+    def __init__(self, keys, val, base, full):
+        # full[i]: item i has all its type attributes (those without a node are unmodified base values)
+        self.keys, self.val, self.base, self.full = keys, val, base, full
 
     def lookup(self, keys):
         k = np.asarray(keys, np.int64)
@@ -826,7 +839,11 @@ def evaluate(batch, fit_mask=None):
     fi = np.nonzero(full)[0]
     ti = batch.it_ti[fi]
     owner, pos = _expand_ranges(ds.t_attr_ptr[ti], ds.t_attr_ptr[ti + 1])
-    base_keys = (fi[owner] << B) | ds.t_attr_ids[pos].astype(np.int64)
+    base_attr = ds.t_attr_ids[pos].astype(np.int64)
+    # unmodified base attributes are not materialised as nodes (Values serves them from the type table);
+    # only those the evaluation itself changes without a modifier (min/max caps, cpu/power rounding) are kept
+    keep = (ds.attr_min[base_attr] >= 0) | (ds.attr_max[base_attr] >= 0) | ds.attr_round[base_attr]
+    base_keys = (fi[owner[keep]] << B) | base_attr[keep]
     ov_keys = np.array([(i << B) | a for i, a in batch.overrides], np.int64)
     ov_vals = np.array(list(batch.overrides.values()), np.float64)
     if fit_mask is not None and len(ov_keys):
@@ -902,7 +919,7 @@ def evaluate(batch, fit_mask=None):
         lev = new
     val = base.copy()
     if not work.any():
-        return Evaluated(keys, val, base)
+        return Evaluated(keys, val, base, full)
     mlev = lev[tgt]
     reg = np.lexsort((M["o2"], M["o1"]))  # registration order (like the reference engine)
     order = reg[np.argsort(mlev[reg], kind="stable")]
@@ -976,7 +993,7 @@ def evaluate(batch, fit_mask=None):
                     start = np.maximum.accumulate(np.where(first, np.arange(len(g_s)), 0))
                     rank = np.empty(len(pm))
                     rank[srt] = np.arange(len(g_s)) - start
-                    f_mu[pidx] = 1.0 + (pm - 1.0) * np.exp(-(rank * rank) / PENALTY_DENOM)
+                    f_mu[pidx] = 1.0 + (pm - 1.0) * _libm_exp(-(rank * rank) / PENALTY_DENOM)
                     k_mu[pidx] = 1.0 + neg + rank / (len(pm) + 1.0)
                 # penalised rows with factor exactly 1 are dropped (no-op)
                 k_mu[pen & (mm == 1.0)] = 3.0
@@ -1015,7 +1032,7 @@ def evaluate(batch, fit_mask=None):
         if r.any():
             v = np.where(r, _round_half_away(v), v)
         val[nodes] = v
-    return Evaluated(keys, val, base)
+    return Evaluated(keys, val, base, full)
 
 
 def _resolve_base(batch, keys, node_item, node_attr, ov_keys, ov_vals, sk_keys, sk_vals):
@@ -1047,6 +1064,7 @@ class Values:
         self._n = len(ev.keys)
         self._items = {}
         self._bases = {}
+        self._full = ev.full.tolist()
         # item -> [lo, hi) range of its nodes
         it = ev.keys >> ATTR_BITS
         self._starts = np.searchsorted(it, np.arange(batch.n_items + 1))
@@ -1054,13 +1072,18 @@ class Values:
     def _range(self, i):
         return int(self._starts[i]), int(self._starts[i + 1])
 
+    def _type_dict(self, i):
+        return dict(self.ds._tad_get(self.batch.it_ti[i])) if self._full[i] else {}
+
     def item_dict(self, i):
         """all evaluated attributes of one item {attr: value}"""
         d = self._items.get(i)
         if d is None:
             lo, hi = self._range(i)
             mask = (1 << ATTR_BITS) - 1
-            d = self._items[i] = dict(zip((self._keys[lo:hi] & mask).tolist(), self.ev.val[lo:hi].tolist()))
+            d = self._type_dict(i)
+            d.update(zip((self._keys[lo:hi] & mask).tolist(), self.ev.val[lo:hi].tolist()))
+            self._items[i] = d
         return d
 
     def get(self, item, attr):
@@ -1075,17 +1098,11 @@ class Values:
         if d is None:
             lo, hi = self._range(item)
             mask = (1 << ATTR_BITS) - 1
-            d = self._bases[item] = dict(zip((self._keys[lo:hi] & mask).tolist(), self.ev.base[lo:hi].tolist()))
+            d = self._type_dict(item)
+            d.update(zip((self._keys[lo:hi] & mask).tolist(), self.ev.base[lo:hi].tolist()))
+            self._bases[item] = d
         v = d.get(attr)
         return v if v is not None else self.ds.attr_default(attr)
-
-    def many(self, items, attr):
-        """vector get for many items, same attribute"""
-        items = np.asarray(items, np.int64)
-        k = (items << ATTR_BITS) | attr
-        p = np.minimum(np.searchsorted(self._keys, k), max(self._n - 1, 0))
-        ok = self._keys[p] == k
-        return np.where(ok, self.ev.val[p], self.ds.attr_default(attr))
 
 
 WARFARE_PAIRS = [(f"warfareBuff{k}ID", f"warfareBuff{k}Value") for k in range(1, 5)]

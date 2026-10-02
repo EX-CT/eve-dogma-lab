@@ -494,12 +494,8 @@ class FitStats:
         return tidy(out)
 
     def dump(self, i):
-        ev = self.v.ev
-        lo = __import__("numpy").searchsorted(ev.keys, i << 14)
-        hi = __import__("numpy").searchsorted(ev.keys, (i + 1) << 14)
         out = {}
-        for k, x in zip(ev.keys[lo:hi].tolist(), ev.val[lo:hi].tolist()):
-            a = k & 0x3FFF
+        for a, x in self.v.item_dict(i).items():
             out[self.ds.attr_name.get(a, str(a))] = x
         return dict(sorted(out.items()))
 
