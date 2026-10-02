@@ -3,8 +3,9 @@
 ## Official bench (`bench.py --only H`, full run)
 
 Bench **1.8.0+0969967** (frozen for the 10:20 CST evaluation; 326 cases, 21 051 Pyfa-expected values, adding abyssal
-weather / AoE cloud beacons, incursion system effects, burst projectors and Standup weapon disruptors). Re-scored at
-07:01 CST on commit ab420d1 (first scored 06:19 CST on b430abe, also 326/326). Scorecards are committed in [`scorecards/`](scorecards/):
+weather / AoE cloud beacons, incursion system effects, burst projectors and Standup weapon disruptors). Official run in the
+shared bench checkout at 07:28 CST on commit 65e1eda (bench 1.8.0+33db85a, corpus unchanged since 0969967);
+earlier runs: 07:01 CST on ab420d1 and 06:19 CST on b430abe, both 326/326. Scorecards are committed in [`scorecards/`](scorecards/):
 [`bench-1.8.0.md`](scorecards/bench-1.8.0.md) and [`bench-1.7.0.md`](scorecards/bench-1.7.0.md), each with a `.json`.
 
 | | cases | values |
@@ -14,17 +15,17 @@ weather / AoE cloud beacons, incursion system effects, burst projectors and Stan
 | vs Pyfa (bench 1.6.0, 05:51 CST) | 297/297 | 19103/19103 |
 | eft export column (EFT export vs Pyfa `exportEft` after `fill()`, informational) | **326/326** | |
 
-| perf (bench harness, shared box under load) | H @ 1.8.0 07:01 (ab420d1) | H @ 1.8.0 06:19 | H @ 1.7.0 06:12 | H @ 1.6.0 05:51 | A @ 1.6.0 05:42 |
-|---|---|---|---|---|---|
-| ms/fit (exct_rifter latency) | **0.506**¹ | 0.281 | 0.255 | 0.308 | 0.432 |
-| batch throughput, fits/s | **2885** | 2662 | 3033 | 2863 | 1777 |
-| cold ms (one process per case, median) | **5.2** | 4.8 | 6.2 | 8.9 | 138 |
-| startup + one calc, ms | **7.9** | 6.2 | 6.0 | 7.8 | |
-| deterministic | yes | yes | yes | yes | yes |
+| perf (bench harness, shared box under load) | H @ 1.8.0 07:28 (65e1eda) | H @ 1.8.0 07:01 (ab420d1) | H @ 1.8.0 06:19 | H @ 1.7.0 06:12 | H @ 1.6.0 05:51 | A @ 1.6.0 05:42 |
+|---|---|---|---|---|---|---|
+| ms/fit (exct_rifter latency) | **0.381** | 0.506¹ | 0.281 | 0.255 | 0.308 | 0.432 |
+| batch throughput, fits/s | **1934** | 2885 | 2662 | 3033 | 2863 | 1777 |
+| cold ms (one process per case, median) | **6.7** | 5.2 | 4.8 | 6.2 | 8.9 | 138 |
+| startup + one calc, ms | **20.2** | 7.9 | 6.2 | 6.0 | 7.8 | |
+| deterministic | yes | yes | yes | yes | yes | yes |
 
 ¹ Load average was 7.4 during that run. Timed back to back under the same load, ab420d1 does 2887 fits/s
 (0.346 ms/fit including startup), against 2528 fits/s for the earlier reference build, so the latency figure is
-load noise, not a regression.
+load noise, not a regression. The 07:28 run had a load average of about 8.
 
 The 1.7.0 → 1.8.0 throughput difference is within run-to-run noise on the loaded box: the new code paths only run for
 fits that have beacons or projected bursts.
@@ -57,13 +58,23 @@ built with A's `eft` importer.
 | projected drones and fighters (every published type, Hyperion and Rifter targets, 5 km) | **480/480, 25908/25908** |
 | **hull sweep**: every published ship, empty (T3D in a mode) | 421/423. The 2 misses are Pyfa eve.db agility data (below) |
 | beacons, bursts, scripted bubbles, TD drones, RTC, special modules and states (`cases_v18`) | 301/301 |
+| every bench case at skill level 0 and 3 | 626/652. All 26 misses are bench `known_divergences` |
+| every bench case with modules reversed, all overheated, and both | 771/786. All 15 misses are known divergences |
+| every T3D mode and T3C subsystem | 66/66 |
+| every mutaplasmid at its high and low roll | 815/834. The 19 misses are low rolls clamped to Pyfa eve.db ranges (e.g. 0.938 vs SDE 0.9375) |
+| bench `pending-1.9.0.md` cases (breacher pods, Tengu overheat order, neut/nos vs MWD, EWAR drones) | 6/6 |
 
 Types that are missing from Pyfa's eve.db (newer than Pyfa's data) can't be compared and are left out of these sweeps.
 
 Bugs these sweeps found, all fixed: Pyfa evaluation order (pre-assign, additions, one unpenalized product, penalized
 chains, post-assign) for capsim `int()` truncation; capital MJFG; superweapon, slash, cone-DoT and HOG speed / warp
 handlers; projected mutadaptive RR at full spool; module state fallback (`isValidState`); the damage cycle of web
-drones (Orbweaver: `speed`, not the web `duration`); breacher pods (untyped DoT damage counted in totals).
+drones (Orbweaver: `speed`, not the web `duration`); breacher pods (`pure` damage, `kind: "breacher"`, only the strongest pod
+in fit totals); attribute caps that apply only to calculated values (a mutated DC with hull resonance above 1); and
+overheat effects that read `overload*` attributes in fit order (pending-1.9.0 Tengu case).
+
+`cargo test --release` runs `tests/pyfa_parity.rs`, which covers all 326 bench cases and 21 051 Pyfa-expected values
+grouped by family, plus the pending-1.9.0 cases, and `tests/unit.rs` (contract and helper behaviour).
 
 ### Known gaps (left on the SDE behaviour)
 
@@ -73,9 +84,11 @@ drones (Orbweaver: `speed`, not the web `duration`); breacher pods (untyped DoT 
 - **Pyfa eve.db data drift**: Paladin and Golem base agility is 0.858 / 0.963 in Pyfa's eve.db against 0.0858 /
   0.0963 in the dataset, so align time is 10×. The T3C maxSubSystems difference is the same kind of issue and the bench
   already accepts it.
-- **Breacher damage** is counted in `dps.total` / `volley.total` and `weapon_dps` the way Pyfa counts it, but there
-  is no per-type key for it (the contract has em / thermal / kinetic / explosive only). With no target HP, it is the
-  max damage per tick, at one tick per second.
+- **Breacher damage** follows eve-dogma-rs's additive contract: a `pure` key (present only when non-zero),
+  `kind: "breacher"`, and only the strongest pod in the totals. With no target HP, it is the max damage per tick, at
+  one tick per second. The bench contract has no breacher case yet; it is staged for 1.9.0.
+- **Mutaplasmid ranges**: Pyfa's eve.db rounds some ranges (e.g. 0.938 against the SDE's 0.9375), so low rolls are
+  clamped differently. H uses the dataset.
 
 ## Parity with Variant A
 
