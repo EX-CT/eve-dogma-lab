@@ -220,10 +220,16 @@ class Batch:
         c["state"].append(ONLINE); c["parent"].append(-1); c["charge"].append(-1)
         idx = self.n_items
         self.n_items += 1
+        tcache = ds.__dict__.get("_tinfo")
+        if tcache is None:
+            tcache = ds.__dict__["_tinfo"] = {}
+        tinfo = tcache.get(ti)
+        if tinfo is None:  # (effects (shared, read-only), group, category) per type
+            tinfo = tcache[ti] = (ds.t_effects[ti], int(ds.t_group[ti]), int(ds.t_cat[ti]))
         self.meta.append({"type_id": type_id, "ti": ti, "kind": kind, "slot": None, "req_index": None,
                           "quantity": 1, "active_count": 0, "state": ONLINE, "charge": None, "parent": None,
-                          "effects": ds.t_effects[ti], "fighter_abilities": None, "side_effects": (),
-                          "spool": None, "distance": None, "group": int(ds.t_group[ti]), "category": int(ds.t_cat[ti])})
+                          "effects": tinfo[0], "fighter_abilities": None, "side_effects": (),
+                          "spool": None, "distance": None, "group": tinfo[1], "category": tinfo[2]})
         fit.items.append(idx)
         self.meta_items.append(idx)
         return idx
@@ -1241,7 +1247,11 @@ class Values:
         self._n_def = len(self._defs)
         # item -> [lo, hi) range of its nodes
         it = ev.keys >> ATTR_BITS
-        self._starts = np.searchsorted(it, np.arange(batch.n_items + 1))
+        # item -> first node (keys are sorted by item): exclusive prefix sum of the per-item node counts
+        starts = np.zeros(batch.n_items + 1, np.int64)
+        if len(it):
+            np.cumsum(np.bincount(it, minlength=batch.n_items)[:batch.n_items], out=starts[1:])
+        self._starts = starts
         self._lists = None
 
     def _range(self, i):
