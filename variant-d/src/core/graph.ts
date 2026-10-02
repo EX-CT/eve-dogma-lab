@@ -120,7 +120,7 @@ export class AttrGraph {
     if (it.cells === null) it.cells = new Map();
     let c = it.cells.get(a);
     if (c === undefined) {
-      c = { base: this.has(i, a) ? this.base(i, a) : this.ds.attrDefault(a), mods: [], val: 0, epoch: 0, busy: false };
+      c = { base: this.base(i, a), mods: [], val: 0, epoch: 0, busy: false }; // base() already falls back to the default
       it.cells.set(a, c);
     }
     return c;

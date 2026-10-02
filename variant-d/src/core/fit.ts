@@ -58,6 +58,8 @@ export function inferSlot(effects: [number, number][]): SlotName | null {
 /** Inputs of a modifier source, without op/pen/src */
 export interface SrcSpec { k: SrcK; item?: number; attr?: number; v?: number; a2?: number; a3?: number; mul?: boolean }
 
+const NO_IDS: number[] = [];
+
 export class Fit extends AttrGraph {
   ship = 0;
   char = 0;
@@ -83,7 +85,7 @@ export class Fit extends AttrGraph {
       parent: -1, charge: -1, slot: null, reqIndex: null, quantity: 1, activeCount: 0,
       base: null, ovA: -1, ovV: 0, tattrs: this.ds.typeAttrs(typeId), cells: null,
       reqSkills: this.ds.requiredSkills(typeId), effects: t.effects,
-      fighterAbilities: null, boosterSideEffects: [], spool: null, distance: null,
+      fighterAbilities: null, boosterSideEffects: NO_IDS, spool: null, distance: null,
     };
     this.items.push(it);
     return it.idx;
@@ -316,7 +318,12 @@ export class Fit extends AttrGraph {
   /** modifier whose value is attribute `srcAttr` of item `srcItem` */
   pushAttr(target: number, attr: number, op: number, srcItem: number, srcAttr: number, sourceCat: number): void {
     const info = this.ds.attrs.get(attr);
-    const pen = info !== undefined && !info.stackable && !EXEMPT_CATEGORIES.has(sourceCat);
+    this.pushAttrNS(target, attr, op, srcItem, srcAttr, sourceCat, info !== undefined && !info.stackable);
+  }
+
+  /** pushAttr with the target attribute's non-stackable flag precomputed (compiled plans) */
+  pushAttrNS(target: number, attr: number, op: number, srcItem: number, srcAttr: number, sourceCat: number, nonStack: boolean): void {
+    const pen = nonStack && !EXEMPT_CATEGORIES.has(sourceCat);
     this.addMod(target, attr, { op, pen, k: SrcK.Attr, item: srcItem, attr: srcAttr, v: 0, a2: 0, a3: -1, mul: false, src: srcItem });
   }
 
@@ -370,7 +377,7 @@ export class Fit extends AttrGraph {
         for (const m of pe.mods) {
           const c = m.bastion ? 6 : cat;
           const ts = this.targets(i, m.func, m.domain, m.extra);
-          for (let k = 0; k < ts.length; k++) this.pushAttr(ts[k], m.modified, m.op, i, m.modifying, c);
+          for (let k = 0; k < ts.length; k++) this.pushAttrNS(ts[k], m.modified, m.op, i, m.modifying, c, m.nonStack);
         }
       }
     }
@@ -569,7 +576,7 @@ function applyRah(fit: Fit, req: NormRequest): void {
 }
 
 // ------------------------------------------------------------------ compiled per-type registration plans
-interface PlanMod { func: Func; domain: Domain; modified: number; modifying: number; op: number; extra: number; bastion: boolean }
+interface PlanMod { func: Func; domain: Domain; modified: number; modifying: number; op: number; extra: number; bastion: boolean; nonStack: boolean }
 interface PlanEffect { eid: number; e: import('./dataset.js').EffectInfo; isDefault: boolean; special: SpecialHandler | null; mods: PlanMod[] }
 interface Plan { effects: PlanEffect[]; outgoing: PlanMod[]; hasSpecial: boolean }
 /** memo keyed by the (immutable) effects array of a type, or of a mutated item */
@@ -592,7 +599,7 @@ function planFor(ds: Dataset, typeId: number, effects: [number, number][], eBast
       // EXCT convention: skill filter 0 = the type owning the effect (skill self-bonuses)
       const extra = m.extra === 0 && (m.func === Func.LocationRequiredSkill || m.func === Func.OwnerRequiredSkill) ? typeId : m.extra;
       // Bastion hull resists are not stacking penalised in game (observed by Pyfa)
-      const pm = { func: m.func, domain: m.domain, modified: m.modified, modifying: m.modifying, op: m.op, extra, bastion: eid === eBastion && HULL_RESONANCES.includes(m.modified) };
+      const pm = { func: m.func, domain: m.domain, modified: m.modified, modifying: m.modifying, op: m.op, extra, bastion: eid === eBastion && HULL_RESONANCES.includes(m.modified), nonStack: ds.attrs.get(m.modified)?.stackable === false };
       mods.push(pm);
       if (m.domain !== Domain.Item) p.outgoing.push(pm);
     }
