@@ -1,0 +1,25 @@
+[package]
+name = "eve-dogma-vb"
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-3.0-or-later"
+description = "EX-CT dogma lab, variant B: compiled flat modifier graph (CSR + iterative topo evaluation)"
+repository = "https://github.com/EX-CT/eve-dogma-lab"
+
+[lib]
+name = "eve_dogma"
+
+[[bin]]
+name = "eve-dogma-vb"
+path = "src/main.rs"
+
+[dependencies]
+flate2 = "1.1.10"
+rustc-hash = "2.1.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
