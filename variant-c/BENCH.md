@@ -1,19 +1,21 @@
 # Variant C bench results
 
-Harness: `EX-CT/eve-dogma-bench` **1.6.0** (a814f99): 297 cases, 19 103 Pyfa-expected values, contract 1.4.2.
-Official run: `python3 bench.py --only C` at 2026-10-03 05:46 CST on commit `6113708`.
+Harness: `EX-CT/eve-dogma-bench` **1.8.0** (0969967): 326 cases, 21 051 Pyfa-expected values, contract 1.4.3.
+Official run: `python3 bench.py --only C` at 2026-10-03 06:13 CST on commit `f5ef9d9`. Result: 326/326,
+0.075 ms/calc, 8 024 fits/s, cold 28 ms. At 1.7.0 (`24129ee`) the run gave 0.081 ms/calc, 10 013 fits/s and
+cold 25 ms.
 Raw scorecard: [bench-results/scorecard.md](bench-results/scorecard.md) / `.json`.
 
 ## Correctness
 
 | | result |
 |---|---|
-| cases fully correct | **297 / 297** |
-| values correct | **19 103 / 19 103 (100 %)** |
-| EFT export (Pyfa-exact, `rpc_cmd` column) | **297 / 297** |
+| cases fully correct | **326 / 326** |
+| values correct | **21 051 / 21 051 (100 %)** |
+| EFT export (Pyfa-exact, `rpc_cmd` column) | **326 / 326** |
 | engine errors | 0 |
 | deterministic | yes |
-| full-output diff vs eve-dogma-rs (all 297 bench requests, every field) | 0 differences |
+| full-output diff vs eve-dogma-rs (all 326 bench requests, every field) | 0 differences |
 
 ## Performance
 
