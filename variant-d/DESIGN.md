@@ -82,8 +82,17 @@ Stacking-penalty exemption is decided once at registration time from the source 
   bastion exemption already resolved, and the list of *outgoing* (non-self) modifiers.
 * **Lazy skills**: a skill's attributes are only ever read through its own outgoing modifiers. Skills are
   therefore materialised *after* the rest of the fit and only if at least one outgoing modifier resolves to an
-  item of this fit (or the skill has a special). A Rifter goes from ~500 skill items to the few dozen that matter;
-  validation reads trained levels from the request, not from items.
+  item of this fit (or the skill has a special). A Rifter goes from ~500 published skills to ~200 skill items.
+  Validation reads trained levels from the request, not from items.
+* **Deferred ship bonuses**: about 365 of a Rifter's ~700 modifiers are skill bonuses to ship attributes the hull
+  does not have (every other race's `shipBonus*`). While such an attribute has no cell, its modifiers are stored
+  as plain numbers (4 per modifier). They become real `Mod`s only when the attribute is touched: read through
+  `get`/`has`, given a cell by another modifier, or listed by an attribute dump. Because deferral only happens
+  while there is no cell, the order of modifiers in every cell is unchanged. Output is byte-identical, including
+  `include_attributes: all` dumps, and `Fit.build` is about 20% faster. Across the bench corpus, 301 of 115 621
+  deferred modifiers are ever materialised.
+* Per-dataset memos for the other per-calc lookups: published-skill set (`skillLevel`), skill reach tests as an
+  array aligned with the skill list, and per-type validation inputs.
 
 ### 3. Domain resolution through indexes
 
