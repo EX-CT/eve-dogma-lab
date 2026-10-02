@@ -82,7 +82,8 @@ fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
-pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool, stagger: bool, t_max_ms: f64) -> CapResult {
+/// Event templates (grouping, staggering, ranks) shared by both simulators.
+fn setup(recharge_ms: f64, drains: &[Drain], reload: bool, stagger: bool, t_max_ms: f64) -> (f64, Vec<Ev>, f64, u64) {
     let tau = recharge_ms / 5.0;
     let mut heap: Vec<Ev> = Vec::new();
     let mut seq = 0u64;
@@ -148,8 +149,13 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool,
             e.r2 = k2.partition_point(|x| x.0.cmp(&e.clip).then(f(x.1, e.reload)).then(x.2.cmp(&e.inj)) == Ordering::Less) as u16;
         }
     }
-    let mut heap = BinaryHeap::from(heap);
     let period = if disable_period || period as f64 > t_max_ms { t_max_ms } else { period as f64 };
+    (tau, heap, period, seq)
+}
+
+fn simulate_generic(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool, stagger: bool, t_max_ms: f64) -> CapResult {
+    let (tau, heap, period, mut seq) = setup(recharge_ms, drains, reload, stagger, t_max_ms);
+    let mut heap = BinaryHeap::from(heap);
 
     let cap_max = capacity;
     let mut cap = capacity;
@@ -268,5 +274,223 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool,
         t_s: t_last / 1000.0,
         eve_stable,
         iterations,
+    }
+}
+
+/// Heap entry of the fast path: one packed ordering key + template index. Key layout (high to low):
+/// t bits (t >= 0, so bit order = numeric order) | r1 (8) | shot (24) | r2 (8) | seq (24).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Hk {
+    k: u128,
+    i: u32,
+}
+impl PartialOrd for Hk {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl Ord for Hk {
+    #[inline]
+    fn cmp(&self, o: &Self) -> Ordering {
+        o.k.cmp(&self.k) // min-heap on the key
+    }
+}
+const M24: u128 = (1 << 24) - 1;
+#[inline]
+fn pack(t: f64, r1: u16, shot: u32, r2: u16, seq: u64) -> u128 {
+    ((t.to_bits() as u128) << 64) | ((r1 as u128) << 56) | (((shot as u128) & M24) << 32) | ((r2 as u128) << 24) | ((seq as u128) & M24)
+}
+#[inline]
+fn t_of(k: u128) -> f64 {
+    f64::from_bits((k >> 64) as u64)
+}
+#[inline]
+fn shot_of(k: u128) -> u32 {
+    ((k >> 32) & M24) as u32
+}
+
+pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool, stagger: bool, t_max_ms: f64) -> CapResult {
+    let (tau, evs, period, mut seq) = setup(recharge_ms, drains, reload, stagger, t_max_ms);
+    if evs.iter().any(|e| e.r1 > 255 || e.r2 > 255) || evs.len() > 1 << 20 {
+        return simulate_generic(capacity, recharge_ms, drains, reload, stagger, t_max_ms);
+    }
+    let tpl: Vec<Ev> = evs.clone();
+    let mut heap: BinaryHeap<Hk> =
+        evs.iter().enumerate().map(|(i, e)| Hk { k: pack(e.t, e.r1, e.shot, e.r2, e.seq), i: i as u32 }).collect();
+    // re-arm an event after it fired at `now` (same rules as Ev::advance)
+    let advance = |h: Hk, now: f64, seq: &mut u64| -> Hk {
+        let e = &tpl[h.i as usize];
+        let mut t = now + e.duration;
+        let mut shot = shot_of(h.k) + 1;
+        if e.clip > 0 && shot % e.clip == 0 {
+            shot = 0;
+            t += e.reload;
+        }
+        let s = *seq;
+        *seq += 1;
+        Hk { k: pack(t, e.r1, shot, e.r2, s), i: h.i }
+    };
+
+    let cap_max = capacity;
+    let mut cap = capacity;
+    let mut cap_wrap = cap;
+    let mut cap_lowest = cap;
+    let mut cap_lowest_pre = cap;
+    let mut t_wrap = period;
+    let mut t_last = 0.0f64;
+    let mut iterations = 0u64;
+    let mut awaiting: Vec<Hk> = Vec::new();
+    let mut awaiting_wrap: Vec<(u64, u64)> = Vec::new();
+    let mut ran_out = false;
+    let key = |v: &Vec<Hk>| {
+        let mut k: Vec<(u64, u64)> = v.iter().map(|h| (tpl[h.i as usize].duration.to_bits(), tpl[h.i as usize].cap_need.to_bits())).collect();
+        k.sort();
+        k
+    };
+    let mut last_ev: Option<Hk> = None;
+    while let Some(&h) = heap.peek() {
+        let e = &tpl[h.i as usize];
+        let now = t_of(h.k);
+        if now >= t_max_ms {
+            heap.pop();
+            last_ev = Some(h);
+            break;
+        }
+        if now > t_last && cap_max > 0.0 && tau > 0.0 {
+            let x = (cap / cap_max).max(0.0).sqrt();
+            cap = (1.0 + (x - 1.0) * ((t_last - now) / tau).exp()).powi(2) * cap_max;
+        }
+        if now != t_last {
+            if cap < cap_lowest_pre {
+                cap_lowest_pre = cap;
+            }
+            if now == t_wrap {
+                let k = key(&awaiting);
+                if cap >= cap_wrap && k == awaiting_wrap {
+                    heap.pop();
+                    last_ev = Some(h);
+                    break;
+                }
+                cap_wrap = (cap * 10.0).round() / 10.0;
+                awaiting_wrap = k;
+                t_wrap += period;
+            }
+        }
+        t_last = now;
+        iterations += 1;
+        if iterations > 5_000_000 {
+            heap.pop();
+            last_ev = Some(h);
+            break;
+        }
+        if e.inj && cap - e.cap_need > cap_max {
+            heap.pop();
+            awaiting.push(h);
+            continue;
+        }
+        if e.cap_need > cap && cap < cap_max {
+            while !awaiting.is_empty() && e.cap_need > cap && cap_max > cap {
+                let need = (e.cap_need - cap).min(cap_max - cap);
+                let gain = |i: usize| -tpl[awaiting[i].i as usize].cap_need;
+                let good: Vec<usize> = (0..awaiting.len()).filter(|&i| gain(i) >= need).collect();
+                let pick = if !good.is_empty() {
+                    *good.iter().min_by(|&&x, &&y| gain(x).partial_cmp(&gain(y)).unwrap()).unwrap()
+                } else {
+                    (0..awaiting.len()).max_by(|&x, &y| gain(x).partial_cmp(&gain(y)).unwrap()).unwrap()
+                };
+                let inj = awaiting.remove(pick);
+                cap = (cap - tpl[inj.i as usize].cap_need).min(cap_max);
+                heap.push(advance(inj, now, &mut seq));
+            }
+        }
+        cap = (cap - e.cap_need).min(cap_max);
+        if cap < cap_lowest {
+            if cap < 0.0 {
+                heap.pop();
+                ran_out = true;
+                last_ev = Some(h);
+                break;
+            }
+            cap_lowest = cap;
+        }
+        while !awaiting.is_empty() && cap < cap_max {
+            let need = cap_max - cap;
+            let gain = |i: usize| -tpl[awaiting[i].i as usize].cap_need;
+            let good: Vec<usize> = (0..awaiting.len()).filter(|&i| gain(i) <= need).collect();
+            if good.is_empty() {
+                break;
+            }
+            let pick = *good.iter().max_by(|&&x, &&y| gain(x).partial_cmp(&gain(y)).unwrap()).unwrap();
+            let inj = awaiting.remove(pick);
+            cap = (cap - tpl[inj.i as usize].cap_need).min(cap_max);
+            heap.push(advance(inj, now, &mut seq));
+        }
+        let next = advance(h, now, &mut seq);
+        *heap.peek_mut().unwrap() = next;
+    }
+    let mut all: Vec<Hk> = heap.into_vec();
+    if let Some(h) = last_ev {
+        all.push(h);
+    }
+    let avg_drain: f64 = all.iter().map(|h| tpl[h.i as usize].cap_need / tpl[h.i as usize].duration).sum();
+    let inner = -(2.0 * avg_drain * tau - cap_max) / cap_max;
+    let eve_stable = if inner >= 0.0 && cap_max > 0.0 { 0.25 * (1.0 + inner.sqrt()).powi(2) } else { 0.0 };
+    let stable = !ran_out;
+    CapResult {
+        stable,
+        stable_low: if stable && cap_max > 0.0 { cap_lowest / cap_max } else { 0.0 },
+        stable_high: if stable && cap_max > 0.0 { cap_lowest_pre / cap_max } else { 0.0 },
+        t_s: t_last / 1000.0,
+        eve_stable,
+        iterations,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// the packed-key fast path must agree exactly with the generic simulator
+    #[test]
+    fn fast_matches_generic() {
+        let mut x: u64 = 0x9E3779B97F4A7C15;
+        let mut rnd = |m: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % m
+        };
+        for case in 0..3000 {
+            let n = 1 + rnd(8) as usize;
+            let drains: Vec<Drain> = (0..n)
+                .map(|_| {
+                    let inj = rnd(5) == 0;
+                    let dur = [1000.0, 2500.0, 4000.0, 5000.0, 10000.0, 12000.0, 3333.0][rnd(7) as usize];
+                    let need = if inj { -(100.0 + rnd(1500) as f64) } else { rnd(400) as f64 - 20.0 };
+                    Drain {
+                        duration: dur,
+                        cap_need: need,
+                        clip_size: if inj || rnd(3) == 0 { 1 + rnd(9) as u32 } else { 0 },
+                        reload_ms: [0.0, 10000.0, 5000.0][rnd(3) as usize],
+                        is_injector: inj,
+                        disable_stagger: rnd(4) == 0,
+                    }
+                })
+                .collect();
+            // duplicate some entries so grouping/staggering paths run
+            let mut d2 = drains.clone();
+            if rnd(2) == 0 {
+                d2.extend(drains.iter().take(2).cloned());
+            }
+            let cap = 200.0 + rnd(5000) as f64;
+            let rech = 60000.0 + rnd(500000) as f64;
+            let (reload, stagger) = (rnd(2) == 0, rnd(2) == 0);
+            let a = simulate_generic(cap, rech, &d2, reload, stagger, 3_600_000.0);
+            let b = simulate(cap, rech, &d2, reload, stagger, 3_600_000.0);
+            assert_eq!(
+                (a.stable, a.stable_low.to_bits(), a.stable_high.to_bits(), a.t_s.to_bits(), a.eve_stable.to_bits(), a.iterations),
+                (b.stable, b.stable_low.to_bits(), b.stable_high.to_bits(), b.t_s.to_bits(), b.eve_stable.to_bits(), b.iterations),
+                "case {case}: {d2:?} cap {cap} rech {rech} reload {reload} stagger {stagger}"
+            );
+        }
     }
 }
