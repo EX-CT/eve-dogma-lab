@@ -1,10 +1,6 @@
 package dogma
 
-import (
-	"container/heap"
-	"math"
-	"sort"
-)
+import "math"
 
 // Drain is one capacitor consumer/injector for the simulation.
 type Drain struct {
@@ -58,13 +54,48 @@ func evLess(a, b *capEv) bool {
 	return a.seq < b.seq
 }
 
+// evHeap is a typed binary min-heap (no interface boxing: zero allocations per push/pop).
 type evHeap []capEv
 
-func (h evHeap) Len() int           { return len(h) }
-func (h evHeap) Less(i, j int) bool { return evLess(&h[i], &h[j]) }
-func (h evHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *evHeap) Push(x any)        { *h = append(*h, x.(capEv)) }
-func (h *evHeap) Pop() any          { o := *h; n := len(o); x := o[n-1]; *h = o[:n-1]; return x }
+func (h *evHeap) push(e capEv) {
+	*h = append(*h, e)
+	a := *h
+	i := len(a) - 1
+	for i > 0 {
+		p := (i - 1) / 2
+		if !evLess(&a[i], &a[p]) {
+			break
+		}
+		a[i], a[p] = a[p], a[i]
+		i = p
+	}
+}
+
+func (h *evHeap) pop() capEv {
+	a := *h
+	n := len(a) - 1
+	top := a[0]
+	a[0] = a[n]
+	a = a[:n]
+	i := 0
+	for {
+		l := 2*i + 1
+		if l >= n {
+			break
+		}
+		m := l
+		if r := l + 1; r < n && evLess(&a[r], &a[l]) {
+			m = r
+		}
+		if !evLess(&a[m], &a[i]) {
+			break
+		}
+		a[i], a[m] = a[m], a[i]
+		i = m
+	}
+	*h = a
+	return top
+}
 
 func gcd(a, b uint64) uint64 {
 	for b != 0 {
@@ -76,7 +107,8 @@ func gcd(a, b uint64) uint64 {
 // SimulateCap is an event-driven capacitor simulation, behaviour-compatible with Pyfa eos/capSim.py.
 func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64, reload, stagger bool, tMaxMs float64) CapResult {
 	tau := rechargeMs / 5
-	h := &evHeap{}
+	hh := make(evHeap, 0, 2*len(drains)+4)
+	h := &hh
 	var seq uint64
 	period := uint64(1)
 	disablePeriod := false
@@ -112,7 +144,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		}
 		if d.IsInjector {
 			for k := uint32(0); k < n; k++ {
-				heap.Push(h, capEv{0, d.Duration, d.CapNeed, 0, d.ClipSize, d.ReloadMs, true, seq})
+				h.push(capEv{0, d.Duration, d.CapNeed, 0, d.ClipSize, d.ReloadMs, true, seq})
 				seq++
 			}
 			continue
@@ -123,7 +155,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 			} else {
 				st := (d.Duration*float64(d.ClipSize) + d.ReloadMs) / (float64(n) * float64(d.ClipSize))
 				for k := uint32(1); k < n; k++ {
-					heap.Push(h, capEv{float64(k) * st, d.Duration, d.CapNeed, 0, d.ClipSize, d.ReloadMs, false, seq})
+					h.push(capEv{float64(k) * st, d.Duration, d.CapNeed, 0, d.ClipSize, d.ReloadMs, false, seq})
 					seq++
 				}
 			}
@@ -132,7 +164,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		}
 		dur := uint64(math.Max(math.Round(d.Duration), 1))
 		period = period / gcd(period, dur) * dur
-		heap.Push(h, capEv{0, d.Duration, d.CapNeed, 0, d.ClipSize, d.ReloadMs, false, seq})
+		h.push(capEv{0, d.Duration, d.CapNeed, 0, d.ClipSize, d.ReloadMs, false, seq})
 		seq++
 	}
 	periodF := float64(period)
@@ -148,17 +180,17 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 	var awaiting []capEv
 	var awaitingWrap [][2]uint64
 	ranOut := false
+	var keyBuf [][2]uint64
 	key := func(v []capEv) [][2]uint64 {
-		k := make([][2]uint64, len(v))
-		for i, e := range v {
-			k[i] = [2]uint64{math.Float64bits(e.duration), math.Float64bits(e.capNeed)}
+		k := keyBuf[:0]
+		for _, e := range v {
+			k = append(k, [2]uint64{math.Float64bits(e.duration), math.Float64bits(e.capNeed)})
 		}
-		sort.Slice(k, func(a, b int) bool {
-			if k[a][0] != k[b][0] {
-				return k[a][0] < k[b][0]
+		for i := 1; i < len(k); i++ {
+			for j := i; j > 0 && (k[j-1][0] > k[j][0] || (k[j-1][0] == k[j][0] && k[j-1][1] > k[j][1])); j-- {
+				k[j-1], k[j] = k[j], k[j-1]
 			}
-			return k[a][1] < k[b][1]
-		})
+		}
 		return k
 	}
 	eqKey := func(a, b [][2]uint64) bool {
@@ -172,7 +204,8 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		}
 		return true
 	}
-	var lastEv *capEv
+	var lastEv capEv
+	haveLast := false
 	reschedule := func(inj capEv, tNow float64) {
 		inj.t = tNow + inj.duration
 		inj.shot++
@@ -182,13 +215,13 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		}
 		inj.seq = seq
 		seq++
-		heap.Push(h, inj)
+		h.push(inj)
 	}
-	for h.Len() > 0 {
-		ev := heap.Pop(h).(capEv)
+	for len(*h) > 0 {
+		ev := h.pop()
 		tNow := ev.t
 		if tNow >= tMaxMs {
-			lastEv = &ev
+			lastEv, haveLast = ev, true
 			break
 		}
 		if tNow > tLast && capMax > 0 && tau > 0 {
@@ -203,18 +236,18 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 			if tNow == tWrap {
 				k := key(awaiting)
 				if cap >= capWrap && eqKey(k, awaitingWrap) {
-					lastEv = &ev
+					lastEv, haveLast = ev, true
 					break
 				}
 				capWrap = math.Round(cap*10) / 10
-				awaitingWrap = k
+				keyBuf, awaitingWrap = awaitingWrap, k
 				tWrap += periodF
 			}
 		}
 		tLast = tNow
 		iterations++
 		if iterations > 5_000_000 {
-			lastEv = &ev
+			lastEv, haveLast = ev, true
 			break
 		}
 		if ev.inj && cap-ev.capNeed > capMax {
@@ -247,7 +280,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		if cap < capLowest {
 			if cap < 0 {
 				ranOut = true
-				lastEv = &ev
+				lastEv, haveLast = ev, true
 				break
 			}
 			capLowest = cap
@@ -272,8 +305,8 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		reschedule(ev, tNow)
 	}
 	all := []capEv(*h)
-	if lastEv != nil {
-		all = append(all, *lastEv)
+	if haveLast {
+		all = append(all, lastEv)
 	}
 	avgDrain := 0.0
 	for _, e := range all {

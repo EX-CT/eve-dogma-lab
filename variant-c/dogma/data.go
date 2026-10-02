@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Modifier functions (dataset codes).
@@ -199,6 +200,9 @@ type Dataset struct {
 	PublishedSkills []uint32
 	typesByGroup    map[uint32][]uint32
 	ids             wellKnown
+
+	tplOnce sync.Once
+	tpl     [][]amod
 }
 
 // ---- raw JSON shapes ----

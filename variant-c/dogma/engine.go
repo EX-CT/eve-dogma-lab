@@ -111,10 +111,11 @@ type amod struct {
 	item   int32 // source item (attr owner)
 	ship   int32 // prop: ship ; proj: target
 	attr   uint32
-	a2, a3 uint32  // prop: thrust, mass ; proj: resist in a2
-	c      float64 // const value / projected range factor
-	from   int32   // item that registered the modifier
-	seq    uint32  // registration order (fold order = registration order, like eve-dogma-rs/Pyfa)
+	a2, a3 uint32     // prop: thrust, mass ; proj: resist in a2
+	c      float64    // const value / projected range factor
+	from   int32      // item that registered the modifier
+	sel    bucketKind // target selector kind
+	x      uint32     // selector argument: item index, group id or skill type id
 }
 
 type bucketKind uint8
@@ -130,10 +131,11 @@ const (
 	bCharSkill
 )
 
-type bkey struct {
-	k    bucketKind
-	x    uint32
-	attr uint32
+// attrMods holds every modifier registered on one attribute id, in registration order. Modifiers
+// registered before the skill phase come first (mods[:split]), then the shared skill template, then the rest.
+type attrMods struct {
+	mods  []amod
+	split int
 }
 
 // Fit is the evaluated object graph for one request. Not safe for concurrent use.
@@ -144,10 +146,13 @@ type Fit struct {
 	Warnings    []string
 	IsStructure bool
 
-	reg   map[bkey][]amod
-	nseq  uint32
-	cache map[uint64]float64
-	stack []uint64 // nodes being evaluated (cycle guard + dependency recording)
+	reg      map[uint32]*attrMods
+	skillTpl [][]amod // shared, immutable skill modifiers indexed by attr id (nil = skills registered per fit)
+	prePhase bool
+	// skillsCanonical: items 2.. are exactly ds.PublishedSkills (enables the shared skill template)
+	skillsCanonical bool
+	cache           map[uint64]float64
+	stack           []uint64 // nodes being evaluated (cycle guard + dependency recording)
 
 	// TrackDeps enables reverse-dependency recording so SetBase can invalidate precisely.
 	TrackDeps bool
@@ -293,7 +298,7 @@ func (f *Fit) addModule(i int, m *ModuleReq, path string) error {
 // except what the Reactive Armor Hardener simulation needs.
 func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 	nItems := 2 + len(ds.PublishedSkills) + 2*len(req.Modules) + len(req.Drones) + len(req.Fighters) + len(req.Implants) + len(req.Boosters) + 4
-	f := &Fit{DS: ds, Items: make([]Item, 0, nItems), reg: make(map[bkey][]amod, 1024), cache: make(map[uint64]float64, 512)}
+	f := &Fit{DS: ds, Items: make([]Item, 0, nItems), reg: make(map[uint32]*attrMods, 512), cache: make(map[uint64]float64, 512)}
 	ship, err := f.newItem(req.Ship.TypeID, KShip, LShip, "/ship/type_id")
 	if err != nil {
 		return nil, err
@@ -327,6 +332,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		}
 	}
 	skillIDs := ds.PublishedSkills
+	f.skillsCanonical = true
 	if len(extra) > 0 {
 		set := make(map[uint32]bool, len(skillIDs)+len(extra))
 		for _, s := range skillIDs {
@@ -334,6 +340,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		}
 		for s := range extra {
 			if !set[s] {
+				f.skillsCanonical = false
 				skillIDs = append(append([]uint32(nil), skillIDs...), s)
 				set[s] = true
 			}
@@ -569,10 +576,16 @@ func (f *Fit) push(k bucketKind, x uint32, attr uint32, m amod, sourceCat uint32
 		stackable = a.Stackable
 	}
 	m.pen = !stackable && !exemptCategory(sourceCat)
-	f.nseq++
-	m.seq = f.nseq
-	key := bkey{k, x, attr}
-	f.reg[key] = append(f.reg[key], m)
+	m.sel, m.x = k, x
+	am := f.reg[attr]
+	if am == nil {
+		am = &attrMods{}
+		f.reg[attr] = am
+	}
+	am.mods = append(am.mods, m)
+	if f.prePhase {
+		am.split = len(am.mods)
+	}
 }
 
 // selector maps (func, domain, extra) of a modifier declared on item src to a registry bucket.
@@ -649,9 +662,22 @@ func containsU32(l []uint32, v uint32) bool {
 }
 
 func (f *Fit) registerAll(req *FitRequest) {
+	tpl := f.DS.skillTemplate()
+	useTpl := !f.IsStructure && f.skillsCanonical
+	f.prePhase = true
 	for i := range f.Items {
+		if i == 2 {
+			f.prePhase = false
+			if useTpl {
+				f.skillTpl = tpl
+			}
+		}
+		if useTpl && f.Items[i].Kind == KSkill {
+			continue
+		}
 		f.registerItem(i)
 	}
+	f.prePhase = false
 	f.registerBuffs(req)
 }
 
@@ -1021,40 +1047,56 @@ func (f *Fit) Base(i int, attr uint32) float64 {
 	return f.DS.AttrDefault(attr)
 }
 
-// gather collects the registry buckets that can modify (item, attr) into out; returns count.
-func (f *Fit) gather(i int, attr uint32, out *[24][]amod) int {
-	n := 0
-	reg := f.reg
-	add := func(k bucketKind, x uint32) {
-		if l, ok := reg[bkey{k, x, attr}]; ok && n < len(out) {
-			out[n] = l
-			n++
-		}
+// applies reports whether a modifier with selector (k, x) reaches item i.
+func (f *Fit) applies(i int, it *Item, k bucketKind, x uint32) bool {
+	switch k {
+	case bItem:
+		return x == uint32(i)
+	case bShipLoc:
+		return it.Loc == LShip
+	case bShipGroup:
+		return it.Loc == LShip && it.Group == x
+	case bShipSkill:
+		return it.Loc == LShip && it.hasSkill(x)
+	case bOwnerSkill:
+		return it.Owned && it.hasSkill(x)
+	case bCharLoc:
+		return it.Loc == LChar
+	case bCharGroup:
+		return it.Loc == LChar && it.Group == x
+	case bCharSkill:
+		return (it.Owned || it.Loc == LChar) && it.Kind != KSkill && it.hasSkill(x)
 	}
+	return false
+}
+
+// collect appends, in registration order, the modifiers that reach (item, attr).
+func (f *Fit) collect(i int, attr uint32, out []*amod) []*amod {
 	it := &f.Items[i]
-	add(bItem, uint32(i))
-	if it.Loc == LShip {
-		add(bShipLoc, 0)
-		add(bShipGroup, it.Group)
-		for _, s := range it.ReqSkills {
-			add(bShipSkill, s)
+	am := f.reg[attr]
+	var pre, post []amod
+	if am != nil {
+		pre, post = am.mods[:am.split], am.mods[am.split:]
+	}
+	for k := range pre {
+		if m := &pre[k]; f.applies(i, it, m.sel, m.x) {
+			out = append(out, m)
 		}
 	}
-	if it.Owned {
-		for _, s := range it.ReqSkills {
-			add(bOwnerSkill, s)
+	if f.skillTpl != nil && int(attr) < len(f.skillTpl) {
+		l := f.skillTpl[attr]
+		for k := range l {
+			if m := &l[k]; f.applies(i, it, m.sel, m.x) {
+				out = append(out, m)
+			}
 		}
 	}
-	if it.Loc == LChar {
-		add(bCharLoc, 0)
-		add(bCharGroup, it.Group)
-	}
-	if (it.Owned || it.Loc == LChar) && it.Kind != KSkill {
-		for _, s := range it.ReqSkills {
-			add(bCharSkill, s)
+	for k := range post {
+		if m := &post[k]; f.applies(i, it, m.sel, m.x) {
+			out = append(out, m)
 		}
 	}
-	return n
+	return out
 }
 
 // Has reports whether the item carries the attribute (from its type or because a modifier targets it).
@@ -1062,8 +1104,8 @@ func (f *Fit) Has(i int, attr uint32) bool {
 	if _, ok := f.baseOK(i, attr); ok {
 		return true
 	}
-	var b [24][]amod
-	return f.gather(i, attr, &b) > 0
+	var b [foldBuf]*amod
+	return len(f.collect(i, attr, b[:0])) > 0
 }
 
 // Get returns the modified value of an attribute.
@@ -1076,9 +1118,9 @@ func (f *Fit) Get(i int, attr uint32) float64 {
 		return v
 	}
 	base, hasBase := f.baseOK(i, attr)
-	var buckets [24][]amod
-	nb := f.gather(i, attr, &buckets)
-	if !hasBase && nb == 0 {
+	var mbuf [foldBuf]*amod
+	ms := f.collect(i, attr, mbuf[:0])
+	if !hasBase && len(ms) == 0 {
 		return f.DS.AttrDefault(attr)
 	}
 	if !hasBase {
@@ -1090,7 +1132,7 @@ func (f *Fit) Get(i int, attr uint32) float64 {
 		}
 	}
 	f.stack = append(f.stack, key)
-	val := f.fold(attr, base, buckets[:nb])
+	val := f.fold(attr, base, ms)
 	info := f.DS.Attrs[attr]
 	if info != nil {
 		if info.MinAttr != 0 {
@@ -1159,21 +1201,7 @@ const foldBuf = 64
 
 // fold applies all modifiers in CCP operator order with stacking penalties. Within an operator, modifiers
 // are applied in registration order so results are bit-identical with eve-dogma-rs.
-func (f *Fit) fold(attr uint32, val float64, buckets [][]amod) float64 {
-	var pbuf [foldBuf]*amod
-	ms := pbuf[:0]
-	for _, l := range buckets {
-		for k := range l {
-			ms = append(ms, &l[k])
-		}
-	}
-	if len(buckets) > 1 { // merge buckets back into registration order (insertion sort, lists are short)
-		for i := 1; i < len(ms); i++ {
-			for j := i; j > 0 && ms[j-1].seq > ms[j].seq; j-- {
-				ms[j-1], ms[j] = ms[j], ms[j-1]
-			}
-		}
-	}
+func (f *Fit) fold(attr uint32, val float64, ms []*amod) float64 {
 	var vbuf [foldBuf]float64
 	vals := vbuf[:0]
 	var present uint16
@@ -1301,16 +1329,14 @@ func (f *Fit) AttrIDs(i int) []uint32 {
 	for _, a := range it.overlay.ids {
 		set[a] = true
 	}
-	for k := range f.reg {
-		switch k.k {
-		case bItem:
-			if k.x == uint32(i) {
-				set[k.attr] = true
-			}
-		default:
-			if !set[k.attr] && f.Has(i, k.attr) {
-				set[k.attr] = true
-			}
+	for a := range f.reg {
+		if !set[a] && f.Has(i, a) {
+			set[a] = true
+		}
+	}
+	for a, l := range f.skillTpl {
+		if len(l) > 0 && !set[uint32(a)] && f.Has(i, uint32(a)) {
+			set[uint32(a)] = true
 		}
 	}
 	out := make([]uint32, 0, len(set))
