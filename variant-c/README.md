@@ -92,3 +92,11 @@ go test -fuzz FuzzFastDecoder ./dogma   # fast request decoder vs encoding/json
 ```
 
 Bench harness entry: [bench.yaml](bench.yaml).
+
+## License
+
+Variant C is licensed under the **GNU Lesser General Public License v3.0 or later** (`LGPL-3.0-or-later`), the
+engine licence chosen in [eve-fit-docs/LICENSING.md](https://github.com/EX-CT/eve-fit-docs/blob/main/LICENSING.md).
+See [`LICENSE`](LICENSE) (LGPL-3.0 text) and [`LICENSE.GPL-3.0`](LICENSE.GPL-3.0) (the GPL-3.0 text the LGPL
+supplements). Behaviour was re-implemented from public formulas and the contract docs, with Pyfa used only as a
+black-box test oracle. EVE Online data is © CCP hf. and is not covered by this licence; datasets are not committed.
