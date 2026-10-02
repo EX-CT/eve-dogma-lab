@@ -290,9 +290,7 @@ impl<'a> Fit<'a> {
                     ab.push((e, false));
                     continue;
                 };
-                let on = if !em.has_handler {
-                    false
-                } else if em.name == "fighterAbilityAttackM" {
+                let on = if em.name == "fighterAbilityAttackM" {
                     std_seen = true;
                     true
                 } else {
@@ -358,6 +356,7 @@ impl<'a> Fit<'a> {
                     fit.items[idx].req_index = i;
                     fit.proj_drones.push(idx);
                 }
+                "fit" => {}
                 other => fit.warnings.push(format!("projected kind '{other}' not supported (index {i})")),
             }
         }
@@ -402,8 +401,15 @@ impl<'a> Fit<'a> {
     }
 
     fn calc_inner(&mut self, explicit_buffs: &[(u32, f64)], mut gang: Option<&mut Vec<CommandBonus>>) {
-        let m = self.meta;
         for rt in [RT_EARLY, RT_NORMAL, RT_LATE] {
+            self.calc_rt(rt, explicit_buffs, gang.as_deref_mut());
+        }
+    }
+
+    /// one runtime pass of Fit.calculateModifiedAttributes
+    pub fn calc_rt(&mut self, rt: u8, explicit_buffs: &[(u32, f64)], mut gang: Option<&mut Vec<CommandBonus>>) {
+        let m = self.meta;
+        {
             // (character, ship)
             for k in 0..self.skills.len() {
                 let s = self.skills[k];
@@ -489,6 +495,118 @@ impl<'a> Fit<'a> {
             }
             if gang.is_none() {
                 self.run_command_boosts(rt);
+            }
+        }
+    }
+
+    /// Fit.__runProjectionEffects: `src` (a projected fit, calculated up to `rt`) projects onto self.
+    /// Source items are mirrored into this fit with their current modified values.
+    pub fn project_from(&mut self, src: &Fit<'a>, rt: u8, amount: u32, range: Option<f64>, mirror: &mut Vec<(It, It)>) {
+        if mirror.is_empty() {
+            let srcs: Vec<It> = src.drones.iter().chain(src.fighters.iter()).chain(src.modules.iter()).copied().collect();
+            for si in srcs {
+                let s = &src.items[si];
+                let kind = match s.kind {
+                    Kind::Drone => Kind::ProjDrone,
+                    Kind::Fighter => Kind::Fighter,
+                    _ => Kind::ProjModule,
+                };
+                self.items.push(Item {
+                    t: s.t,
+                    kind,
+                    mad: Mad::new(&[]),
+                    charge: NONE,
+                    parent: NONE,
+                    state: s.state,
+                    amount: s.amount,
+                    amount_active: s.amount_active,
+                    level: 0,
+                    reload_time: s.reload_time,
+                    force_reload: s.force_reload,
+                    proj_range: if kind == Kind::ProjModule { range } else { Some(0.0) },
+                    slot: s.slot,
+                    req_index: s.req_index,
+                    spool: s.spool,
+                    effects: s.effects.clone(),
+                    abilities: s.abilities.clone(),
+                    side_effects: Vec::new(),
+                    active: s.active,
+                });
+                let ti = self.items.len() - 1;
+                mirror.push((si, ti));
+                if s.charge != NONE {
+                    let c = &src.items[s.charge];
+                    self.items.push(Item { t: c.t, kind: Kind::Charge, mad: Mad::new(&[]), charge: NONE, parent: ti, state: 0, amount: 1,
+                        amount_active: 0, level: 0, reload_time: None, force_reload: None, proj_range: None, slot: None, req_index: 0,
+                        spool: None, effects: c.effects.clone(), abilities: Vec::new(), side_effects: Vec::new(), active: true });
+                    let ci = self.items.len() - 1;
+                    self.items[ti].charge = ci;
+                    mirror.push((s.charge, ci));
+                }
+            }
+        }
+        for &(si, ti) in mirror.iter() {
+            let mut over: Vec<(u32, f64)> = Vec::new();
+            let mut ids: Vec<u32> = src.items[si].t.attrs.iter().map(|x| x.0).collect();
+            ids.extend(src.items[si].mad.over.iter().map(|x| x.0));
+            ids.extend(src.items[si].mad.entries.keys().copied());
+            ids.sort_unstable();
+            ids.dedup();
+            for a in ids {
+                if let Some(v) = src.attr_opt(si, a) {
+                    over.push((a, v));
+                }
+            }
+            let it = &mut self.items[ti];
+            it.mad = Mad::new(&[]);
+            it.mad.over = over;
+            it.reload_time = src.items[si].reload_time;
+        }
+        let m = self.meta;
+        for &(_, ti) in mirror.clone().iter() {
+            let kind = self.items[ti].kind;
+            if kind == Kind::Charge {
+                continue;
+            }
+            for _ in 0..amount {
+                let pr = self.items[ti].proj_range;
+                let effs = self.items[ti].effects.clone();
+                match kind {
+                    Kind::ProjDrone => {
+                        for &e in &effs {
+                            let Some(em) = m.get(&e) else { continue };
+                            if em.run_time == rt && em.active_by_default && em.is(T_PROJECTED) {
+                                let n = if em.grouped { 1 } else { self.items[ti].amount_active };
+                                for _ in 0..n {
+                                    self.run_effect(e, ti, Ctx::Projected as u16 | Ctx::Drone as u16, pr, ti);
+                                }
+                            }
+                        }
+                    }
+                    Kind::Fighter => {
+                        if !self.items[ti].active {
+                            continue;
+                        }
+                        for (e, on) in self.items[ti].abilities.clone() {
+                            let Some(em) = m.get(&e) else { continue };
+                            if on && em.run_time == rt && em.active_by_default && em.is(T_PROJECTED) {
+                                let n = if em.grouped { 1 } else { self.items[ti].amount };
+                                for _ in 0..n {
+                                    self.run_effect(e, ti, Ctx::Projected as u16 | Ctx::Fighter as u16, pr, ti);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        let state = self.items[ti].state;
+                        for &e in &effs {
+                            let Some(em) = m.get(&e) else { continue };
+                            if em.run_time == rt && em.active_by_default && self.effect_ok_module(em, state) && em.is(T_PROJECTED) {
+                                self.run_effect(e, ti, Ctx::Projected as u16 | Ctx::Module as u16, pr, ti);
+                            }
+                        }
+                    }
+                }
             }
         }
     }

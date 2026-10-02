@@ -5728,7 +5728,7 @@ fn e784(cx: &mut Cx, me: It) {
 /// ammoInfluenceCapNeed
 fn e804(cx: &mut Cx, me: It) {
     let mut v_rawAttr: f64 = cx.type_attr(me, 6);
-    if ((!false) && (v_rawAttr >= 0.0)) {
+    if ((!(!cx.type_has_attr(me, 6))) && (v_rawAttr >= 0.0)) {
         cx.op(me, Op::Boost, 6, { let t1 = cx.charge_attr(me, 317); if t1 != 0.0 { t1 } else { 0.0 } }, O { skill: 0, stack: false, group: 0, post: false, kw: true });
     }
 }

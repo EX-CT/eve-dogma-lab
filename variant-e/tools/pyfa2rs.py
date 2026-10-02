@@ -313,6 +313,8 @@ class Fn:
                 code = f"({lhs.code} == NONE)"
             elif lhs.kind == "none":
                 code = "true"
+            elif lhs.kind == "num" and getattr(lhs, "has", None):
+                code = f"(!{lhs.has})"
             elif lhs.kind in ("num", "bool", "str"):
                 code = "false"  # attribute values are never None for known attributes
             else:
@@ -559,7 +561,10 @@ class Fn:
                     return boolean(f"cx.req_skill({base.code}, cx.type_id({s.code}))")
                 raise Untranslatable("requiresSkill arg")
             if meth == "getAttribute":
-                return num(f"cx.type_attr({base.code}, {attr_id(pyval(self.expr(args[0])))})")
+                aid = attr_id(pyval(self.expr(args[0])))
+                v = num(f"cx.type_attr({base.code}, {aid})")
+                v.has = f"cx.type_has_attr({base.code}, {aid})"  # getAttribute() is None when the type lacks it
+                return v
             raise Untranslatable(f"item.item.{meth}")
         if base.kind == "list":
             if meth in FOPS:
@@ -609,7 +614,10 @@ class Fn:
             else:
                 self.declared[nm] = ty
                 self.emit(f"let mut {rn}: {ty} = {v.code};")
-            self.env[nm] = V(v.kind, rn)
+            nv = V(v.kind, rn)
+            if getattr(v, "has", None):
+                nv.has = v.has
+            self.env[nm] = nv
             return
         if v.kind in ("item", "list", "strsel", "group", "typ"):
             if v.kind == "item" and v.code not in ("me", "cx.ship", "cx.chr"):

@@ -16,11 +16,98 @@ pub fn run(cx: &mut Cx, eid: u32, me: It) -> bool {
         }
         4928 => rah(cx, me),
         6197 => {
-            // energyNosferatuFalloff (local part): capacitorNeed forced to -powerTransferAmount
-            let amount = cx.attr(me, cx.ds.attr_id("powerTransferAmount"));
-            if !cx.ctx(Ctx::Projected) && cx.ctx(Ctx::Module) {
+            // energyNosferatuFalloff
+            let mut amount = cx.g(me, "powerTransferAmount");
+            let time = cx.g(me, "duration");
+            if cx.ctx(Ctx::Projected) {
+                amount *= cx.resistance();
+                amount *= rf(cx, me, "maxRange", "falloffEffectiveness");
+                add_drain(cx, me, time, amount);
+            } else if cx.ctx(Ctx::Module) {
                 cx.op(me, Op::Force, cx.ds.attr_id("capacitorNeed"), -amount, O { kw: true, ..O::default() });
             }
+        }
+        // remote repairs: fit._shieldRr / _armorRr / _hullRr
+        6185 | 6186 | 6188 | 6651 | 6652 | 6687 | 6688 | 6689 | 7166 => {
+            if !cx.ctx(Ctx::Projected) || cx.g(cx.ship, "disallowAssistance") != 0.0 {
+                return true;
+            }
+            let (layer, attr) = match eid {
+                6185 | 6689 => (2, "structureDamageAmount"),
+                6186 | 6652 | 6688 => (0, "shieldBonus"),
+                _ => (1, "armorDamageAmount"),
+            };
+            let npc = matches!(eid, 6687 | 6688 | 6689);
+            if npc && cx.gd(me, "maxRange", 0.0) < cx.proj_range.unwrap_or(0.0) {
+                return true;
+            }
+            let mut amount = cx.g(me, attr);
+            if eid == 6651 {
+                let c = cx.charge_of(me);
+                if c != NONE && cx.items[c].t.name == "Nanite Repair Paste" {
+                    amount *= 3.0;
+                }
+            }
+            if !npc {
+                amount *= rf(cx, me, "maxRange", "falloffEffectiveness");
+            }
+            let cycle = cx.g(me, "duration") / 1000.0;
+            if eid == 7166 {
+                let max = cx.g(me, "repairMultiplierBonusMax");
+                let per = cx.g(me, "repairMultiplierBonusPerCycle");
+                let sp = cx.items[me].spool.or(Some(crate::request::Spool { kind: crate::request::SpoolType::SpoolScale, amount: 1.0 }));
+                amount *= 1.0 + super::stats::calculate_spoolup(max, per, cycle, sp).0;
+            }
+            cx.rr.push((layer, amount, cycle));
+        }
+        // remote capacitor transmitter
+        6184 => {
+            if !cx.ctx(Ctx::Projected) || cx.g(cx.ship, "disallowAssistance") != 0.0 {
+                return true;
+            }
+            if cx.gd(me, "maxRange", 0.0) < cx.proj_range.unwrap_or(0.0) {
+                return true;
+            }
+            let amount = cx.g(me, "powerTransferAmount") * cx.resistance();
+            let d = cx.g(me, "duration");
+            add_drain(cx, me, d, -amount);
+        }
+        // energy neutralizers
+        6187 | 6216 | 6477 | 6691 => {
+            if !cx.ctx(Ctx::Projected) {
+                return true;
+            }
+            let k = cx.items[me].kind;
+            let ok = (matches!(k, Kind::ProjModule | Kind::Module) && cx.items[me].state >= ACTIVE) || matches!(k, Kind::Drone | Kind::ProjDrone);
+            if !ok {
+                return true;
+            }
+            let mut amount = cx.g(me, "energyNeutralizerAmount");
+            let time;
+            if eid == 6691 {
+                if cx.gd(me, "energyNeutralizerRangeOptimal", 0.0) < cx.proj_range.unwrap_or(0.0) {
+                    return true;
+                }
+                time = cx.g(me, "energyNeutralizerDuration");
+            } else {
+                if eid != 6477 {
+                    amount *= rf(cx, me, "maxRange", "falloffEffectiveness");
+                }
+                time = cx.g(me, "duration");
+            }
+            amount *= cx.resistance();
+            add_drain(cx, me, time, amount);
+        }
+        6434 => {
+            if !cx.ctx(Ctx::Projected) {
+                return true;
+            }
+            let p = "fighterAbilityEnergyNeutralizer";
+            let mut amount = cx.g(me, &format!("{p}Amount")) * cx.items[me].amount as f64;
+            amount *= rf(cx, me, &format!("{p}OptimalRange"), &format!("{p}FalloffRange"));
+            amount *= cx.resistance();
+            let t = cx.g(me, &format!("{p}Duration"));
+            add_drain(cx, me, t, amount);
         }
         6672 => {
             // structureCombatRigSecurityModification
@@ -144,4 +231,21 @@ fn rah(cx: &mut Cx, me: It) {
 
 pub fn py_round3(v: f64) -> f64 {
     format!("{:.3}", v).parse().unwrap_or(v)
+}
+
+fn rf(cx: &Cx, me: It, opt: &str, fo: &str) -> f64 {
+    calc_range_factor(cx.g(me, opt), cx.g(me, fo), cx.proj_range, true)
+}
+
+/// Fit.addDrain
+fn add_drain(cx: &mut Cx, src: It, cycle: f64, need: f64) {
+    let res = cx.g(src, "energyNeutralizerSignatureResolution");
+    let sig = cx.g(cx.ship, "signatureRadius");
+    let mut need = need;
+    if res != 0.0 {
+        need *= (sig / res).min(1.0);
+    }
+    if need != 0.0 {
+        cx.extra_drains.push((cycle, need, 0.0, 0.0));
+    }
 }

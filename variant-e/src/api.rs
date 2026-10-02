@@ -1,6 +1,6 @@
 //! Request -> response glue (stateless). GPL-3.0-or-later.
 use crate::data::Dataset;
-use crate::eos::cx::{CommandBonus, Fit, NONE};
+use crate::eos::cx::{CommandBonus, Fit, NONE, RT_EARLY, RT_LATE, RT_NORMAL};
 use crate::eos::fit::BuildError;
 use crate::request::FitRequest;
 use serde_json::{Value, json};
@@ -57,5 +57,25 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Result<Value, BuildError> {
     fit.command_bonuses = bonuses;
     let explicit: Vec<(u32, f64)> = req.fleet.buffs.iter().map(|b| (b.buff_id, b.value)).collect();
     fit.calculate(&explicit);
+    // projected fits (Pyfa: after the local calculation, each projected fit runs its own calculation and
+    // projects its drones/fighters/modules after every runtime)
+    for (i, p) in req.projected.iter().enumerate() {
+        if p.kind != "fit" {
+            continue;
+        }
+        let Some(sreq) = &p.fit else { continue };
+        let mut sreq = (**sreq).clone();
+        sreq.projected.clear();
+        let mut sf = Fit::build(ds, &sreq).map_err(|mut e| {
+            e.path = format!("/projected/{i}/fit{}", e.path);
+            e
+        })?;
+        sf.command_bonuses.clear();
+        let mut mirror = Vec::new();
+        for rt in [RT_EARLY, RT_NORMAL, RT_LATE] {
+            sf.calc_rt(rt, &[], None);
+            fit.project_from(&sf, rt, p.amount, p.distance_m, &mut mirror);
+        }
+    }
     Ok(fit.stats(req))
 }
