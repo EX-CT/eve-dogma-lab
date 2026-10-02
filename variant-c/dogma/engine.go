@@ -1,0 +1,1346 @@
+package dogma
+
+import (
+	"fmt"
+	"math"
+	"sort"
+	"strings"
+)
+
+// Kind of an item in the fit graph.
+type Kind int8
+
+const (
+	KShip Kind = iota
+	KChar
+	KSkill
+	KModule
+	KCharge
+	KDrone
+	KFighter
+	KImplant
+	KBooster
+	KMode
+	KBeacon
+	KProjected
+)
+
+// Loc is the location an item lives in (what location-scoped modifiers can reach).
+type Loc int8
+
+const (
+	LShip Loc = iota
+	LChar
+	LSpace
+	LNowhere
+)
+
+const (
+	attrSkillLevel    = 280
+	effectSkillEffect = 132
+)
+
+var hullResonances = [4]uint32{113, 111, 109, 110}
+
+func exemptCategory(c uint32) bool {
+	switch c {
+	case 6, 8, 16, 20, 32, 65:
+		return true
+	}
+	return false
+}
+
+var structureSkillEffectNames = [...]string{
+	"targetingMaxTargetBonusModAddMaxLockedTargetsLocationChar",
+	"skillStructureMissileDamageBonus",
+	"skillStructureElectronicSystemsCapNeedBonus",
+	"skillStructureEngineeringSystemsCapNeedBonus",
+	"skillStructureDoomsdayDurationBonus",
+}
+
+// Item is one node of the fit graph (ship, character, skill, module, charge, drone, ...).
+type Item struct {
+	T           *TypeInfo
+	TypeID      uint32
+	Group       uint32
+	Category    uint32
+	Kind        Kind
+	State       State
+	Loc         Loc
+	Owned       bool
+	Parent      int32 // -1 = none
+	Charge      int32 // -1 = none
+	Slot        Slot
+	ReqIndex    int // index in the request list (-1 = none)
+	Quantity    uint32
+	ActiveCount uint32
+	ReqSkills   []uint32
+	Effects     []TypeEffect
+	Abilities   []uint32 // fighter abilities in use
+	SideEffects []uint32 // booster side effects selected
+	Spool       *Spool
+	Distance    *float64
+	overlay     attrSet // per-item base values that differ from the type (mutations, overrides, skill level)
+}
+
+func (it *Item) hasSkill(s uint32) bool {
+	for _, x := range it.ReqSkills {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// ---- modifier registry ----
+
+type srcKind uint8
+
+const (
+	srcAttr srcKind = iota
+	srcConst
+	srcProp
+	srcProj
+)
+
+type amod struct {
+	op     int8
+	pen    bool
+	kind   srcKind
+	mul    bool
+	item   int32 // source item (attr owner)
+	ship   int32 // prop: ship ; proj: target
+	attr   uint32
+	a2, a3 uint32  // prop: thrust, mass ; proj: resist in a2
+	c      float64 // const value / projected range factor
+	from   int32   // item that registered the modifier
+}
+
+type bucketKind uint8
+
+const (
+	bItem bucketKind = iota
+	bShipLoc
+	bShipGroup
+	bShipSkill
+	bOwnerSkill
+	bCharLoc
+	bCharGroup
+	bCharSkill
+)
+
+type bkey struct {
+	k    bucketKind
+	x    uint32
+	attr uint32
+}
+
+// Fit is the evaluated object graph for one request. Not safe for concurrent use.
+type Fit struct {
+	DS          *Dataset
+	Items       []Item
+	Ship, Char  int
+	Warnings    []string
+	IsStructure bool
+
+	reg   map[bkey][]amod
+	cache map[uint64]float64
+	stack []uint64 // nodes being evaluated (cycle guard + dependency recording)
+
+	// TrackDeps enables reverse-dependency recording so SetBase can invalidate precisely.
+	TrackDeps bool
+	rdeps     map[uint64][]uint64
+}
+
+// EngineError is a request-level error (unknown type etc.).
+type EngineError struct {
+	Code, Message, Path string
+}
+
+func (e *EngineError) Error() string { return e.Code + ": " + e.Message }
+
+func stateOK(cat uint8, s State) bool {
+	switch cat {
+	case 0, 4:
+		return s >= Online
+	case 1:
+		return s >= Active
+	case 5:
+		return s >= Overheated
+	case 7:
+		return true
+	}
+	return false
+}
+
+func nodeKey(item int, attr uint32) uint64 { return uint64(item)<<32 | uint64(attr) }
+
+func (f *Fit) newItem(typeID uint32, kind Kind, loc Loc, path string) (int, error) {
+	t := f.DS.Types[typeID]
+	if t == nil {
+		return 0, &EngineError{"UNKNOWN_TYPE", fmt.Sprintf("unknown type_id %d", typeID), path}
+	}
+	owned := false
+	switch kind {
+	case KModule, KCharge, KDrone, KFighter, KShip:
+		owned = true
+	}
+	f.Items = append(f.Items, Item{T: t, TypeID: typeID, Group: t.Group, Category: t.Category, Kind: kind,
+		State: Online, Loc: loc, Owned: owned, Parent: -1, Charge: -1, ReqIndex: -1, Quantity: 1,
+		ReqSkills: t.ReqSkills, Effects: t.Effects})
+	return len(f.Items) - 1, nil
+}
+
+func (f *Fit) setOverlay(i int, attr uint32, v float64) { f.Items[i].overlay.set(attr, v) }
+
+func (f *Fit) applyMutation(idx int, m *Mutation) {
+	ds := f.DS
+	it := &f.Items[idx]
+	if base := ds.Types[m.BaseTypeID]; base != nil {
+		own := it.T
+		for k, a := range base.raw.ids {
+			it.overlay.set(a, base.raw.vals[k])
+		}
+		for k, a := range own.raw.ids {
+			it.overlay.set(a, own.raw.vals[k])
+		}
+		effs := append([]TypeEffect(nil), it.Effects...)
+		for _, e := range base.Effects {
+			if !own.HasEffect(e.ID) {
+				effs = append(effs, e)
+			}
+		}
+		it.Effects = effs
+		if len(it.ReqSkills) == 0 {
+			it.ReqSkills = base.ReqSkills
+		}
+		if f.baseOf(idx, 4) == 0 && base.Mass != 0 {
+			it.overlay.set(4, base.Mass)
+		}
+	}
+	var muta *MutaInfo
+	if m.MutaplasmidTypeID != nil {
+		muta = ds.Mutaplasmids[*m.MutaplasmidTypeID]
+	}
+	baseT := ds.Types[m.BaseTypeID]
+	keys := make([]string, 0, len(m.Attributes))
+	for k := range m.Attributes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := m.Attributes[k]
+		aid := u32(k)
+		if aid == 0 && k != "0" {
+			continue
+		}
+		if muta != nil && baseT != nil {
+			rng, ok1 := muta.Attrs[k]
+			bv, ok2 := baseT.raw.get(aid)
+			if ok1 && ok2 {
+				a, b := bv*rng[0], bv*rng[1]
+				mn, mx := a, b
+				if b < a {
+					mn, mx = b, a
+				}
+				if bv != 0 {
+					v = math.Min(math.Max(v, mn), mx)
+				}
+			}
+		}
+		it.overlay.set(aid, v)
+	}
+}
+
+func (f *Fit) addModule(i int, m *ModuleReq, path string) error {
+	idx, err := f.newItem(m.TypeID, KModule, LShip, path)
+	if err != nil {
+		return err
+	}
+	it := &f.Items[idx]
+	slot := it.T.Slot
+	if m.Slot != nil {
+		slot = *m.Slot
+	}
+	it.Slot = slot
+	it.ReqIndex = i
+	it.Spool = m.Spool
+	it.State = Online
+	if m.State != nil {
+		it.State = *m.State
+	}
+	if (slot == SlotRig || slot == SlotSubsystem) && it.State != Offline {
+		it.State = Online
+	}
+	if m.Mutation != nil {
+		f.applyMutation(idx, m.Mutation)
+	}
+	if m.ChargeTypeID != nil {
+		c, err := f.newItem(*m.ChargeTypeID, KCharge, LShip, path+"/charge_type_id")
+		if err != nil {
+			return err
+		}
+		f.Items[c].Parent = int32(idx)
+		f.Items[c].ReqIndex = i
+		f.Items[idx].Charge = int32(c)
+	}
+	return nil
+}
+
+// Build constructs the object graph for a request and registers all modifiers. Nothing is evaluated
+// except what the Reactive Armor Hardener simulation needs.
+func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
+	nItems := 2 + len(ds.PublishedSkills) + 2*len(req.Modules) + len(req.Drones) + len(req.Fighters) + len(req.Implants) + len(req.Boosters) + 4
+	f := &Fit{DS: ds, Items: make([]Item, 0, nItems), reg: make(map[bkey][]amod, 1024), cache: make(map[uint64]float64, 512)}
+	ship, err := f.newItem(req.Ship.TypeID, KShip, LShip, "/ship/type_id")
+	if err != nil {
+		return nil, err
+	}
+	f.Ship = ship
+	f.IsStructure = f.Items[ship].Category == 65
+	ch, err := f.newItem(1373, KChar, LChar, "/character")
+	if err != nil {
+		return nil, err
+	}
+	f.Char = ch
+	if req.Character.SecurityStatus != nil {
+		if a := ds.AttrID("pilotSecurityStatus"); a != 0 {
+			f.setOverlay(ch, a, *req.Character.SecurityStatus)
+		}
+	}
+	// skills: every published skill exists (untrained = level 0)
+	def := uint8(0)
+	if req.Character.Skills.DefaultLevel != nil {
+		def = *req.Character.Skills.DefaultLevel
+	}
+	var extra map[uint32]uint8
+	if len(req.Character.Skills.Levels) > 0 {
+		extra = make(map[uint32]uint8, len(req.Character.Skills.Levels))
+		for k, v := range req.Character.Skills.Levels {
+			if id := u32(k); id != 0 {
+				extra[id] = v
+			} else if id, ok := ds.TypeByName(k); ok {
+				extra[id] = v
+			}
+		}
+	}
+	skillIDs := ds.PublishedSkills
+	if len(extra) > 0 {
+		set := make(map[uint32]bool, len(skillIDs)+len(extra))
+		for _, s := range skillIDs {
+			set[s] = true
+		}
+		for s := range extra {
+			if !set[s] {
+				skillIDs = append(append([]uint32(nil), skillIDs...), s)
+				set[s] = true
+			}
+		}
+		sort.Slice(skillIDs, func(i, j int) bool { return skillIDs[i] < skillIDs[j] })
+	}
+	// one backing array for all skill-level overlays (avoids 2 allocations per skill)
+	lvIDs := make([]uint32, len(skillIDs))
+	lvVals := make([]float64, len(skillIDs))
+	for k, s := range skillIDs {
+		if ds.Types[s] == nil {
+			continue
+		}
+		l, ok := extra[s]
+		if !ok {
+			l = def
+		}
+		if l > 5 {
+			l = 5
+		}
+		idx, _ := f.newItem(s, KSkill, LChar, "/character/skills")
+		lvIDs[k], lvVals[k] = attrSkillLevel, float64(l)
+		f.Items[idx].overlay = attrSet{lvIDs[k : k+1 : k+1], lvVals[k : k+1 : k+1]}
+		f.Items[idx].Owned = false
+	}
+	// tactical destroyer default mode
+	var modeID *uint32
+	if req.Ship.ModeTypeID != nil {
+		modeID = req.Ship.ModeTypeID
+	} else if st := ds.Types[req.Ship.TypeID]; st != nil {
+		sn := strings.ToLower(st.Name)
+		for _, id := range ds.TypesInGroup(1306) {
+			if strings.HasPrefix(strings.ToLower(ds.Types[id].Name), sn) {
+				m := id
+				modeID = &m
+				f.Warnings = append(f.Warnings, fmt.Sprintf("no tactical mode given; defaulted to type %d", m))
+				break
+			}
+		}
+	}
+	if modeID != nil {
+		idx, err := f.newItem(*modeID, KMode, LNowhere, "/ship/mode_type_id")
+		if err != nil {
+			return nil, err
+		}
+		f.Items[idx].Owned = false
+	}
+	for i := range req.Modules {
+		if err := f.addModule(i, &req.Modules[i], fmt.Sprintf("/modules/%d", i)); err != nil {
+			return nil, err
+		}
+	}
+	for i := range req.Drones {
+		d := &req.Drones[i]
+		idx, err := f.newItem(d.TypeID, KDrone, LSpace, fmt.Sprintf("/drones/%d", i))
+		if err != nil {
+			return nil, err
+		}
+		if d.Mutation != nil {
+			f.applyMutation(idx, d.Mutation)
+		}
+		it := &f.Items[idx]
+		it.Quantity = max(d.Quantity, 1)
+		if d.Active != nil {
+			it.ActiveCount = min(*d.Active, it.Quantity)
+		}
+		it.State = Offline
+		if it.ActiveCount > 0 {
+			it.State = Active
+		}
+		it.ReqIndex = i
+	}
+	sqAttr := ds.AttrID("fighterSquadronMaxSize")
+	for i := range req.Fighters {
+		fr := &req.Fighters[i]
+		idx, err := f.newItem(fr.TypeID, KFighter, LSpace, fmt.Sprintf("/fighters/%d", i))
+		if err != nil {
+			return nil, err
+		}
+		maxsq := uint32(1)
+		if v, ok := f.baseOK(idx, sqAttr); ok {
+			maxsq = uint32(v)
+		}
+		it := &f.Items[idx]
+		q := maxsq
+		if fr.Quantity != nil {
+			q = *fr.Quantity
+		}
+		it.Quantity = min(max(q, 1), max(maxsq, 1))
+		if fr.Quantity != nil && *fr.Quantity > maxsq {
+			f.Warnings = append(f.Warnings, fmt.Sprintf("fighters/%d: squadron size %d capped to %d", i, *fr.Quantity, maxsq))
+		}
+		if fr.Active {
+			it.ActiveCount, it.State = it.Quantity, Active
+		} else {
+			it.ActiveCount, it.State = 0, Offline
+		}
+		if fr.Abilities != nil {
+			it.Abilities = *fr.Abilities
+		} else {
+			it.Abilities = defaultFighterAbilities(ds, it.Effects)
+		}
+		it.ReqIndex = i
+	}
+	for i, imp := range req.Implants {
+		idx, err := f.newItem(imp, KImplant, LChar, fmt.Sprintf("/implants/%d", i))
+		if err != nil {
+			return nil, err
+		}
+		f.Items[idx].Owned = false
+		f.Items[idx].ReqIndex = i
+	}
+	for i := range req.Boosters {
+		b := &req.Boosters[i]
+		idx, err := f.newItem(b.TypeID, KBooster, LChar, fmt.Sprintf("/boosters/%d", i))
+		if err != nil {
+			return nil, err
+		}
+		f.Items[idx].Owned = false
+		f.Items[idx].SideEffects = b.SideEffects
+		f.Items[idx].ReqIndex = i
+	}
+	for i, e := range req.Environment.EffectTypeIDs {
+		idx, err := f.newItem(e, KBeacon, LNowhere, fmt.Sprintf("/environment/effect_type_ids/%d", i))
+		if err != nil {
+			return nil, err
+		}
+		f.Items[idx].Owned = false
+	}
+	for i := range req.Projected {
+		p := &req.Projected[i]
+		switch p.Kind {
+		case "module":
+			if p.Module != nil {
+				for k := uint32(0); k < max(p.Amount, 1); k++ {
+					idx, err := f.newItem(p.Module.TypeID, KProjected, LNowhere, fmt.Sprintf("/projected/%d", i))
+					if err != nil {
+						return nil, err
+					}
+					it := &f.Items[idx]
+					it.Owned = false
+					it.State = Active
+					if p.Module.State != nil {
+						it.State = *p.Module.State
+					}
+					it.Distance = p.DistanceM
+					it.ReqIndex = i
+				}
+			}
+		case "drone":
+			if p.Drone != nil {
+				for k := uint32(0); k < max(p.Amount, 1)*max(p.Drone.Quantity, 1); k++ {
+					idx, err := f.newItem(p.Drone.TypeID, KProjected, LNowhere, fmt.Sprintf("/projected/%d", i))
+					if err != nil {
+						return nil, err
+					}
+					it := &f.Items[idx]
+					it.Owned = false
+					it.State = Active
+					it.Distance = p.DistanceM
+				}
+			}
+		default:
+			f.Warnings = append(f.Warnings, fmt.Sprintf("projected kind '%s' not supported yet (index %d)", p.Kind, i))
+		}
+	}
+	// system security -> securityModifier (default nullsec, like Pyfa)
+	{
+		sec := "nullsec"
+		if req.Environment.SystemSecurity != nil {
+			sec = strings.ToLower(*req.Environment.SystemSecurity)
+		}
+		var src string
+		switch sec {
+		case "hisec", "highsec", "high":
+			src = "hiSecModifier"
+		case "lowsec", "low":
+			src = "lowSecModifier"
+		case "nullsec", "null", "wspace", "wormhole", "w-space":
+			src = "nullSecModifier"
+		default:
+			f.Warnings = append(f.Warnings, fmt.Sprintf("unknown system_security '%s', using nullsec", sec))
+			src = "nullSecModifier"
+		}
+		srcID, dstID := ds.AttrID(src), ds.AttrID("securityModifier")
+		for i := range f.Items {
+			if v, ok := f.baseOK(i, srcID); ok {
+				f.setOverlay(i, dstID, v)
+			}
+		}
+	}
+	for _, o := range req.Overrides {
+		for i := range f.Items {
+			if f.Items[i].TypeID == o.TypeID {
+				f.setOverlay(i, o.AttributeID, o.Value)
+			}
+		}
+	}
+	f.registerAll(req)
+	f.applyRAH(req)
+	return f, nil
+}
+
+func defaultFighterAbilities(ds *Dataset, effs []TypeEffect) []uint32 {
+	ids := make([]uint32, 0, len(effs))
+	for _, e := range effs {
+		ids = append(ids, e.ID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	on := []uint32{}
+	stdSeen := false
+	for _, e := range ids {
+		ei := ds.Effects[e]
+		if ei == nil || !strings.HasPrefix(ei.Name, "fighterAbility") {
+			continue
+		}
+		switch {
+		case ei.Name == "fighterAbilityAttackM":
+			on = append(on, e)
+			stdSeen = true
+		case !stdSeen && ei.Name != "fighterAbilityMicroWarpDrive" && ei.Name != "fighterAbilityEvasiveManeuvers" && ei.Name != "fighterAbilityMicroJumpDrive":
+			on = append(on, e)
+		}
+	}
+	return on
+}
+
+// ---------------------------------------------------------------- registration
+
+func (f *Fit) push(k bucketKind, x uint32, attr uint32, m amod, sourceCat uint32) {
+	stackable := true
+	if a := f.DS.Attrs[attr]; a != nil {
+		stackable = a.Stackable
+	}
+	m.pen = !stackable && !exemptCategory(sourceCat)
+	key := bkey{k, x, attr}
+	f.reg[key] = append(f.reg[key], m)
+}
+
+// selector maps (func, domain, extra) of a modifier declared on item src to a registry bucket.
+func (f *Fit) selector(src int, fn, dom int8, extra uint32) (bucketKind, uint32, bool) {
+	s := &f.Items[src]
+	switch dom {
+	case DomItem:
+		if fn == FuncItem {
+			return bItem, uint32(src), true
+		}
+	case DomOther:
+		if s.Charge >= 0 {
+			return bItem, uint32(s.Charge), true
+		} else if s.Parent >= 0 {
+			return bItem, uint32(s.Parent), true
+		}
+	case DomShip, DomStructure:
+		if dom == DomStructure && !f.IsStructure {
+			return 0, 0, false
+		}
+		switch fn {
+		case FuncItem:
+			return bItem, uint32(f.Ship), true
+		case FuncLocation:
+			return bShipLoc, 0, true
+		case FuncLocationGroup:
+			return bShipGroup, extra, true
+		case FuncLocationRequiredSkill:
+			return bShipSkill, extra, true
+		case FuncOwnerRequiredSkill:
+			return bOwnerSkill, extra, true
+		}
+	case DomChar:
+		switch fn {
+		case FuncItem:
+			return bItem, uint32(f.Char), true
+		case FuncLocation:
+			return bCharLoc, 0, true
+		case FuncLocationGroup:
+			return bCharGroup, extra, true
+		case FuncLocationRequiredSkill, FuncOwnerRequiredSkill:
+			return bCharSkill, extra, true
+		}
+	}
+	return 0, 0, false
+}
+
+func (f *Fit) effectiveState(i int) State {
+	it := &f.Items[i]
+	switch it.Kind {
+	case KCharge:
+		if it.Parent >= 0 {
+			return f.Items[it.Parent].State
+		}
+		return Online
+	case KShip, KChar, KSkill, KImplant, KBooster, KMode, KBeacon:
+		return Online
+	case KDrone, KFighter:
+		if it.ActiveCount > 0 {
+			return Active
+		}
+		return Offline
+	}
+	return it.State
+}
+
+func containsU32(l []uint32, v uint32) bool {
+	for _, x := range l {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *Fit) registerAll(req *FitRequest) {
+	for i := range f.Items {
+		f.registerItem(i)
+	}
+	f.registerBuffs(req)
+}
+
+// registerItem registers all modifiers sourced by item i.
+func (f *Fit) registerItem(i int) {
+	ds := f.DS
+	id := &ds.ids
+	it := &f.Items[i]
+	kind := it.Kind
+	if kind == KProjected {
+		f.registerProjected(i)
+		return
+	}
+	if f.IsStructure && (kind == KDrone || kind == KImplant || kind == KBooster) {
+		return
+	}
+	state := f.effectiveState(i)
+	srcCat := it.Category
+	for _, te := range it.Effects {
+		eid := te.ID
+		if eid == effectSkillEffect {
+			continue
+		}
+		e := ds.Effects[eid]
+		if e == nil {
+			continue
+		}
+		if f.IsStructure && kind == KSkill && !containsU32(id.structureSkillEffects[:], eid) {
+			allItem := true
+			for _, m := range e.Mods {
+				if m.Domain != DomItem {
+					allItem = false
+					break
+				}
+			}
+			if !allItem {
+				continue
+			}
+		}
+		if e.FittingChance != 0 && !containsU32(it.SideEffects, eid) {
+			continue
+		}
+		if kind == KFighter && e.Category != 0 && !containsU32(it.Abilities, eid) {
+			continue
+		}
+		if !stateOK(e.Category, state) {
+			continue
+		}
+		ship := uint32(f.Ship)
+		switch eid {
+		case id.eAB, id.eMWD:
+			f.push(bItem, ship, 4, amod{op: 2, kind: srcAttr, item: int32(i), attr: id.massAddition, from: int32(i)}, srcCat)
+			f.push(bItem, ship, id.maxVelocity, amod{op: 4, kind: srcProp, item: int32(i), ship: int32(f.Ship),
+				attr: id.speedFactor, a2: id.speedBoostFactor, a3: 4, from: int32(i)}, srcCat)
+			if eid == id.eMWD {
+				f.push(bItem, ship, id.signatureRadius, amod{op: 6, kind: srcAttr, item: int32(i), attr: id.signatureRadiusBonus, from: int32(i)}, srcCat)
+			}
+			continue
+		case id.eMJD:
+			f.push(bItem, ship, id.signatureRadius, amod{op: 6, kind: srcAttr, item: int32(i), attr: id.signatureRadiusBonusPercent, from: int32(i)}, 6)
+			continue
+		case id.eSlot:
+			for k := 0; k < 3; k++ {
+				f.push(bItem, ship, id.slotAttrs[k], amod{op: 2, kind: srcAttr, item: int32(i), attr: id.slotModAttrs[k], from: int32(i)}, srcCat)
+			}
+			continue
+		case id.eHardpoint:
+			for k := 0; k < 2; k++ {
+				f.push(bItem, ship, id.hpAttrs[k], amod{op: 2, kind: srcAttr, item: int32(i), attr: id.hpModAttrs[k], from: int32(i)}, srcCat)
+			}
+			continue
+		}
+		for _, m := range e.Mods {
+			if m.Func == FuncEffectStopper || m.Op == 9 || m.Domain == DomTargetID || m.Domain == DomTarget {
+				continue
+			}
+			extra := m.Extra
+			if extra == 0 && (m.Func == FuncLocationRequiredSkill || m.Func == FuncOwnerRequiredSkill) {
+				extra = it.TypeID // EXCT convention: skill filter 0 = the type owning the effect
+			}
+			bk, x, ok := f.selector(i, m.Func, m.Domain, extra)
+			if !ok {
+				continue
+			}
+			cat := srcCat
+			if eid == id.eBastion && (m.Modified == hullResonances[0] || m.Modified == hullResonances[1] || m.Modified == hullResonances[2] || m.Modified == hullResonances[3]) {
+				cat = 6
+			}
+			f.push(bk, x, m.Modified, amod{op: int8(m.Op), kind: srcAttr, item: int32(i), attr: m.Modifying, from: int32(i)}, cat)
+		}
+	}
+}
+
+func (f *Fit) registerProjected(i int) {
+	ds := f.DS
+	it := &f.Items[i]
+	srcCat := it.Category
+	ship := uint32(f.Ship)
+	for _, te := range it.Effects {
+		e := ds.Effects[te.ID]
+		if e == nil || (e.Category != 2 && e.Category != 3) || it.State < Active {
+			continue
+		}
+		opt, fo := 0.0, 0.0
+		if e.RangeAttr != 0 {
+			opt, _ = f.baseOK(i, e.RangeAttr)
+		}
+		if e.FalloffAttr != 0 {
+			fo, _ = f.baseOK(i, e.FalloffAttr)
+		}
+		factor := RangeFactor(opt, fo, it.Distance, true)
+		resist := e.ResistanceAttr
+		if resist == 0 {
+			if v, ok := f.baseOK(i, ds.AttrID("remoteResistanceID")); ok {
+				resist = uint32(v)
+			}
+		}
+		push := func(target, src uint32, op int8) {
+			f.push(bItem, ship, target, amod{op: op, kind: srcProj, item: int32(i), ship: int32(f.Ship), attr: src,
+				c: factor, a2: resist, mul: op == 4 || op == 0, from: int32(i)}, srcCat)
+		}
+		if len(e.Mods) > 0 {
+			for _, m := range e.Mods {
+				if (m.Domain == DomTargetID || m.Domain == DomTarget || m.Domain == DomShip) && m.Func == FuncItem {
+					push(m.Modified, m.Modifying, int8(m.Op))
+				}
+			}
+			continue
+		}
+		a := ds.AttrID
+		n := e.Name
+		switch {
+		case strings.HasPrefix(n, "remoteWebifier") || n == "structureModuleEffectStasisWebifier":
+			push(a("maxVelocity"), a("speedFactor"), 6)
+		case strings.HasPrefix(n, "remoteTargetPaint") || n == "structureModuleEffectTargetPainter":
+			push(a("signatureRadius"), a("signatureRadiusBonus"), 6)
+		case strings.HasPrefix(n, "remoteSensorDamp") || n == "structureModuleEffectRemoteSensorDampener" || strings.HasPrefix(n, "remoteSensorBoost"):
+			push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
+			push(a("scanResolution"), a("scanResolutionBonus"), 6)
+		default:
+			f.Warnings = append(f.Warnings, fmt.Sprintf("projected effect '%s' not modelled yet", n))
+		}
+	}
+}
+
+func (f *Fit) registerBuffs(req *FitRequest) {
+	ds := f.DS
+	agg := map[uint32]float64{}
+	for _, b := range req.Fleet.Buffs {
+		info := ds.Dbuffs[b.BuffID]
+		if info == nil {
+			f.Warnings = append(f.Warnings, fmt.Sprintf("unknown warfare buff %d", b.BuffID))
+			continue
+		}
+		cur, ok := agg[b.BuffID]
+		if !ok {
+			cur = b.Value
+		}
+		if info.Aggregate != nil && *info.Aggregate == "Minimum" {
+			cur = math.Min(cur, b.Value)
+		} else {
+			cur = math.Max(cur, b.Value)
+		}
+		agg[b.BuffID] = cur
+	}
+	ids := make([]uint32, 0, len(agg))
+	for k := range agg {
+		ids = append(ids, k)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		f.applyBuff(id, amod{kind: srcConst, c: agg[id], from: int32(f.Ship)})
+	}
+	explicit := make([]uint32, 0, len(req.Fleet.Buffs))
+	for _, b := range req.Fleet.Buffs {
+		explicit = append(explicit, b.BuffID)
+	}
+	w := &ds.ids
+	for i := range f.Items {
+		if f.Items[i].Kind != KModule || f.Items[i].State < Active {
+			continue
+		}
+		for k := 0; k < 4; k++ {
+			ida, vala := w.warfareID[k], w.warfareVal[k]
+			id := uint32(0)
+			if f.Has(i, ida) {
+				id = uint32(f.Get(i, ida))
+			}
+			if id == 0 || containsU32(explicit, id) {
+				continue
+			}
+			f.applyBuff(id, amod{kind: srcAttr, item: int32(i), attr: vala, from: int32(i)})
+		}
+	}
+}
+
+func (f *Fit) applyBuff(id uint32, src amod) {
+	info := f.DS.Dbuffs[id]
+	if info == nil {
+		return
+	}
+	src.op = int8(info.Op)
+	for _, a := range info.Item {
+		f.push(bItem, uint32(f.Ship), a, src, 0)
+	}
+	for _, a := range info.Location {
+		f.push(bShipLoc, 0, a, src, 0)
+	}
+	for _, p := range info.LocationGroup {
+		f.push(bShipGroup, p[1], p[0], src, 0)
+	}
+	for _, p := range info.LocationSkill {
+		f.push(bShipSkill, p[1], p[0], src, 0)
+	}
+	f.Invalidate()
+}
+
+// Invalidate drops every cached value (O(1) amortised: the map is cleared in place).
+func (f *Fit) Invalidate() {
+	clear(f.cache)
+	if f.rdeps != nil {
+		clear(f.rdeps)
+	}
+}
+
+// applyRAH simulates Reactive Armor Hardener adaptation (Pyfa/eos algorithm, LGPL).
+func (f *Fit) applyRAH(req *FitRequest) {
+	ds := f.DS
+	eid := ds.EffectID("adaptiveArmorHardener")
+	if eid == 0 {
+		return
+	}
+	names := [4]string{"armorEmDamageResonance", "armorThermalDamageResonance", "armorKineticDamageResonance", "armorExplosiveDamageResonance"}
+	var attrs [4]uint32
+	for k, n := range names {
+		attrs[k] = ds.AttrID(n)
+	}
+	shiftAttr := ds.AttrID("resistanceShiftAmount")
+	var rahs []int
+	for i := range f.Items {
+		it := &f.Items[i]
+		if it.Kind == KModule && it.State >= Active {
+			for _, e := range it.Effects {
+				if e.ID == eid {
+					rahs = append(rahs, i)
+					break
+				}
+			}
+		}
+	}
+	if len(rahs) == 0 {
+		return
+	}
+	disable := req.Options.Rah != nil && *req.Options.Rah == "disable"
+	dp := Resists{25, 25, 25, 25}
+	if req.DamagePattern != nil {
+		dp = *req.DamagePattern
+	}
+	pattern := [4]float64{dp.EM, dp.Thermal, dp.Kinetic, dp.Explosive}
+	ship := f.Ship
+	for _, m := range rahs {
+		f.Invalidate()
+		var res [4]float64
+		for k := range res {
+			res[k] = f.Get(m, attrs[k])
+		}
+		if !disable {
+			var base [4]float64
+			for k := range base {
+				base[k] = pattern[k] * f.Get(ship, attrs[k])
+			}
+			shift := f.Get(m, shiftAttr) / 100
+			var cycles [][4]float64
+			loopStart := -20
+			type tk struct {
+				k   int
+				dmg float64
+				res float64
+			}
+			for iter := 0; iter < 50; iter++ {
+				t := []tk{}
+				for _, k := range [4]int{0, 3, 2, 1} {
+					t = append(t, tk{k, base[k] * res[k], res[k]})
+				}
+				sort.SliceStable(t, func(a, b int) bool { return t[a].dmg < t[b].dmg })
+				var c0, c1, c2, c3 float64
+				if t[2].dmg == 0 {
+					c0, c1, c2 = 1-t[0].res, 1-t[1].res, 1-t[2].res
+					c3 = -(c0 + c1 + c2)
+				} else if t[1].dmg == 0 {
+					c0, c1 = 1-t[0].res, 1-t[1].res
+					c2 = -(c0 + c1) / 2
+					c3 = c2
+				} else {
+					c0, c1 = math.Min(shift, 1-t[0].res), math.Min(shift, 1-t[1].res)
+					c2 = -(c0 + c1) / 2
+					c3 = c2
+				}
+				res[t[0].k] = t[0].res + c0
+				res[t[1].k] = t[1].res + c1
+				res[t[2].k] = t[2].res + c2
+				res[t[3].k] = t[3].res + c3
+				found := -1
+				for ci, v := range cycles {
+					if math.Abs(res[0]-v[0]) <= 1e-6 && math.Abs(res[1]-v[1]) <= 1e-6 && math.Abs(res[2]-v[2]) <= 1e-6 && math.Abs(res[3]-v[3]) <= 1e-6 {
+						found = ci
+						break
+					}
+				}
+				if found >= 0 {
+					loopStart = found
+					break
+				}
+				cycles = append(cycles, res)
+			}
+			start := 0
+			if loopStart >= 0 {
+				start = loopStart
+			} else if len(cycles) > 20 {
+				start = len(cycles) - 20
+			}
+			lp := cycles[start:]
+			if len(lp) > 0 {
+				for k := 0; k < 4; k++ {
+					s := 0.0
+					for _, v := range lp {
+						s += v[k]
+					}
+					res[k] = math.Round(s/float64(len(lp))*1000) / 1000
+				}
+			}
+		}
+		cat := f.Items[m].Category
+		for k := 0; k < 4; k++ {
+			if !disable {
+				f.push(bItem, uint32(m), attrs[k], amod{op: 7, kind: srcConst, c: res[k], from: int32(m)}, cat)
+			}
+			f.push(bItem, uint32(ship), attrs[k], amod{op: 0, kind: srcConst, c: res[k], from: int32(m)}, cat)
+		}
+	}
+	f.Invalidate()
+}
+
+// ---------------------------------------------------------------- evaluation
+
+// baseOK returns the unmodified value of an attribute on an item and whether the item carries it.
+func (f *Fit) baseOK(i int, attr uint32) (float64, bool) {
+	it := &f.Items[i]
+	if len(it.overlay.ids) > 0 {
+		if v, ok := it.overlay.get(attr); ok {
+			return v, true
+		}
+	}
+	return it.T.base.get(attr)
+}
+
+func (f *Fit) baseOf(i int, attr uint32) float64 {
+	v, _ := f.baseOK(i, attr)
+	return v
+}
+
+// Base returns the unmodified value (dataset default if absent).
+func (f *Fit) Base(i int, attr uint32) float64 {
+	if v, ok := f.baseOK(i, attr); ok {
+		return v
+	}
+	return f.DS.AttrDefault(attr)
+}
+
+// gather collects the registry buckets that can modify (item, attr) into out; returns count.
+func (f *Fit) gather(i int, attr uint32, out *[24][]amod) int {
+	n := 0
+	reg := f.reg
+	add := func(k bucketKind, x uint32) {
+		if l, ok := reg[bkey{k, x, attr}]; ok && n < len(out) {
+			out[n] = l
+			n++
+		}
+	}
+	it := &f.Items[i]
+	add(bItem, uint32(i))
+	if it.Loc == LShip {
+		add(bShipLoc, 0)
+		add(bShipGroup, it.Group)
+		for _, s := range it.ReqSkills {
+			add(bShipSkill, s)
+		}
+	}
+	if it.Owned {
+		for _, s := range it.ReqSkills {
+			add(bOwnerSkill, s)
+		}
+	}
+	if it.Loc == LChar {
+		add(bCharLoc, 0)
+		add(bCharGroup, it.Group)
+	}
+	if (it.Owned || it.Loc == LChar) && it.Kind != KSkill {
+		for _, s := range it.ReqSkills {
+			add(bCharSkill, s)
+		}
+	}
+	return n
+}
+
+// Has reports whether the item carries the attribute (from its type or because a modifier targets it).
+func (f *Fit) Has(i int, attr uint32) bool {
+	if _, ok := f.baseOK(i, attr); ok {
+		return true
+	}
+	var b [24][]amod
+	return f.gather(i, attr, &b) > 0
+}
+
+// Get returns the modified value of an attribute.
+func (f *Fit) Get(i int, attr uint32) float64 {
+	key := nodeKey(i, attr)
+	if f.TrackDeps && len(f.stack) > 0 {
+		f.rdeps[key] = append(f.rdeps[key], f.stack[len(f.stack)-1])
+	}
+	if v, ok := f.cache[key]; ok {
+		return v
+	}
+	base, hasBase := f.baseOK(i, attr)
+	var buckets [24][]amod
+	nb := f.gather(i, attr, &buckets)
+	if !hasBase && nb == 0 {
+		return f.DS.AttrDefault(attr)
+	}
+	if !hasBase {
+		base = f.DS.AttrDefault(attr)
+	}
+	for _, k := range f.stack {
+		if k == key {
+			return base // cycle guard
+		}
+	}
+	f.stack = append(f.stack, key)
+	val := f.fold(attr, base, buckets[:nb])
+	info := f.DS.Attrs[attr]
+	if info != nil {
+		if info.MinAttr != 0 {
+			val = math.Max(val, f.Get(i, info.MinAttr))
+		}
+		if info.MaxAttr != 0 {
+			val = math.Min(val, f.Get(i, info.MaxAttr))
+		}
+		if info.round2 {
+			val = math.Round(val*100) / 100
+		}
+	}
+	f.stack = f.stack[:len(f.stack)-1]
+	f.cache[key] = val
+	return val
+}
+
+// GetOpt returns the value and whether the item carries the attribute.
+func (f *Fit) GetOpt(i int, attr uint32) (float64, bool) {
+	if !f.Has(i, attr) {
+		return 0, false
+	}
+	return f.Get(i, attr), true
+}
+
+func (f *Fit) srcValue(m *amod) float64 {
+	switch m.kind {
+	case srcAttr:
+		return f.Get(int(m.item), m.attr)
+	case srcConst:
+		return m.c
+	case srcProp:
+		mass := f.Get(int(m.ship), m.a3)
+		if mass == 0 {
+			return 1
+		}
+		return 1 + f.Get(int(m.item), m.attr)/100*f.Get(int(m.item), m.a2)/mass
+	case srcProj:
+		fac := m.c
+		if m.a2 != 0 {
+			fac *= f.Get(int(m.ship), m.a2)
+		}
+		v := f.Get(int(m.item), m.attr)
+		if m.mul {
+			return (v-1)*fac + 1
+		}
+		return v * fac
+	}
+	return 0
+}
+
+type penv struct {
+	op int8
+	m  float64
+}
+
+var penaltyFactors = func() [16]float64 {
+	var p [16]float64
+	for i := range p {
+		p[i] = math.Exp(-float64(i*i) / 7.1289)
+	}
+	return p
+}()
+
+func penalty(i int) float64 {
+	if i < len(penaltyFactors) {
+		return penaltyFactors[i]
+	}
+	return math.Exp(-float64(i*i) / 7.1289)
+}
+
+// fold applies all modifiers in CCP operator order with stacking penalties.
+func (f *Fit) fold(attr uint32, val float64, buckets [][]amod) float64 {
+	// per-op accumulators: index op+1 (ops -1..7)
+	var any [9]bool
+	var assign [9]float64
+	var mul [9]float64
+	var add, sub float64
+	for k := range mul {
+		mul[k] = 1
+	}
+	var pbuf [16]penv
+	pens := pbuf[:0]
+	hig := true
+	if a := f.DS.Attrs[attr]; a != nil {
+		hig = a.HighIsGood
+	}
+	for _, l := range buckets {
+		for mi := range l {
+			m := &l[mi]
+			op := m.op
+			if op < -1 || op > 7 {
+				continue
+			}
+			v := f.srcValue(m)
+			oi := op + 1
+			switch op {
+			case -1, 7:
+				if !any[oi] {
+					assign[oi] = v
+				} else if hig {
+					assign[oi] = math.Max(assign[oi], v)
+				} else {
+					assign[oi] = math.Min(assign[oi], v)
+				}
+			case 2:
+				add += v
+			case 3:
+				sub += v
+			default:
+				var x float64
+				switch op {
+				case 0, 4:
+					x = v
+				case 1, 5:
+					if v == 0 {
+						x = 1
+					} else {
+						x = 1 / v
+					}
+				case 6:
+					x = 1 + v/100
+				}
+				if m.pen {
+					if x != 1 {
+						pens = append(pens, penv{op, x})
+					}
+				} else {
+					mul[oi] *= x
+				}
+			}
+			any[oi] = true
+		}
+	}
+	for op := int8(-1); op <= 7; op++ {
+		oi := op + 1
+		if !any[oi] {
+			continue
+		}
+		switch op {
+		case -1, 7:
+			val = assign[oi]
+			continue
+		case 2:
+			val += add
+			continue
+		case 3:
+			val -= sub
+			continue
+		}
+		val *= mul[oi]
+		if len(pens) == 0 {
+			continue
+		}
+		var pos, neg [16]float64
+		np, nn := 0, 0
+		var posX, negX []float64
+		for _, p := range pens {
+			if p.op != op {
+				continue
+			}
+			if p.m > 1 {
+				if np < 16 {
+					pos[np] = p.m
+				} else {
+					posX = append(posX, p.m)
+				}
+				np++
+			} else {
+				if nn < 16 {
+					neg[nn] = p.m
+				} else {
+					negX = append(negX, p.m)
+				}
+				nn++
+			}
+		}
+		for _, lst := range [2][]float64{joinF(pos[:min(np, 16)], posX), joinF(neg[:min(nn, 16)], negX)} {
+			// strongest first
+			sort.SliceStable(lst, func(a, b int) bool { return math.Abs(lst[a]-1) > math.Abs(lst[b]-1) })
+			for k, m := range lst {
+				val *= 1 + (m-1)*penalty(k)
+			}
+		}
+	}
+	return val
+}
+
+func joinF(a, b []float64) []float64 {
+	if len(b) == 0 {
+		return a
+	}
+	return append(append([]float64(nil), a...), b...)
+}
+
+// SetBase changes an item's base attribute value and invalidates dependent cached values. With TrackDeps
+// enabled only the dependents are invalidated; otherwise the whole cache is dropped.
+func (f *Fit) SetBase(i int, attr uint32, v float64) {
+	f.setOverlay(i, attr, v)
+	if !f.TrackDeps {
+		f.Invalidate()
+		return
+	}
+	var walk func(k uint64)
+	seen := map[uint64]bool{}
+	walk = func(k uint64) {
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		delete(f.cache, k)
+		for _, d := range f.rdeps[k] {
+			walk(d)
+		}
+		delete(f.rdeps, k)
+	}
+	walk(nodeKey(i, attr))
+}
+
+// EnableDepTracking turns on reverse-dependency recording (call before evaluating).
+func (f *Fit) EnableDepTracking() {
+	f.TrackDeps = true
+	if f.rdeps == nil {
+		f.rdeps = map[uint64][]uint64{}
+	}
+	f.Invalidate()
+}
+
+// AttrIDs lists attributes an item carries (base + modified), sorted.
+func (f *Fit) AttrIDs(i int) []uint32 {
+	set := map[uint32]bool{}
+	it := &f.Items[i]
+	for _, a := range it.T.base.ids {
+		set[a] = true
+	}
+	for _, a := range it.overlay.ids {
+		set[a] = true
+	}
+	for k := range f.reg {
+		switch k.k {
+		case bItem:
+			if k.x == uint32(i) {
+				set[k.attr] = true
+			}
+		default:
+			if !set[k.attr] && f.Has(i, k.attr) {
+				set[k.attr] = true
+			}
+		}
+	}
+	out := make([]uint32, 0, len(set))
+	for a := range set {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a] < out[b] })
+	return out
+}

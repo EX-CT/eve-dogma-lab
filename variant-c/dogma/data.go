@@ -1,0 +1,474 @@
+// Package dogma is a stateless EVE Online fitting engine (EX-CT variant C, Go).
+//
+// Calc(dataset, request) is a pure function: no I/O, clocks or globals. The Dataset is immutable after
+// loading and may be shared by any number of goroutines.
+package dogma
+
+import (
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// Modifier functions (dataset codes).
+const (
+	FuncItem = iota
+	FuncLocation
+	FuncLocationGroup
+	FuncLocationRequiredSkill
+	FuncOwnerRequiredSkill
+	FuncEffectStopper
+)
+
+// Modifier domains (dataset codes).
+const (
+	DomItem = iota
+	DomShip
+	DomChar
+	DomOther
+	DomStructure
+	DomTargetID
+	DomTarget
+	DomNone = -1
+)
+
+type AttrInfo struct {
+	ID         uint32
+	Name       string
+	Default    float64
+	Stackable  bool
+	HighIsGood bool
+	MinAttr    uint32 // 0 = none
+	MaxAttr    uint32
+	Unit       uint32
+	Display    string
+	round2     bool // cpu/power values are rounded to 0.01
+}
+
+type Mod struct {
+	Func      int8
+	Domain    int8
+	Op        int32
+	Modified  uint32
+	Modifying uint32
+	Extra     uint32 // group id or skill type id
+}
+
+type EffectInfo struct {
+	ID             uint32
+	Name           string
+	Category       uint8
+	DurationAttr   uint32
+	DischargeAttr  uint32
+	RangeAttr      uint32
+	FalloffAttr    uint32
+	TrackingAttr   uint32
+	ResistanceAttr uint32
+	FittingChance  uint32
+	IsOffensive    bool
+	IsAssistance   bool
+	Mods           []Mod
+}
+
+type TypeEffect struct {
+	ID      uint32
+	Default bool
+}
+
+// attrSet is a sorted (id, value) list; lookups are binary searches. Shared, never copied per item.
+type attrSet struct {
+	ids  []uint32
+	vals []float64
+}
+
+func (s *attrSet) get(id uint32) (float64, bool) {
+	ids := s.ids
+	lo, hi := 0, len(ids)
+	for lo < hi {
+		m := int(uint(lo+hi) >> 1)
+		if ids[m] < id {
+			lo = m + 1
+		} else {
+			hi = m
+		}
+	}
+	if lo < len(ids) && ids[lo] == id {
+		return s.vals[lo], true
+	}
+	return 0, false
+}
+
+func (s *attrSet) set(id uint32, v float64) {
+	i := sort.Search(len(s.ids), func(i int) bool { return s.ids[i] >= id })
+	if i < len(s.ids) && s.ids[i] == id {
+		s.vals[i] = v
+		return
+	}
+	s.ids = append(s.ids, 0)
+	s.vals = append(s.vals, 0)
+	copy(s.ids[i+1:], s.ids[i:])
+	copy(s.vals[i+1:], s.vals[i:])
+	s.ids[i], s.vals[i] = id, v
+}
+
+type TypeInfo struct {
+	ID              uint32
+	Name            string
+	Group           uint32
+	Category        uint32
+	Published       bool
+	Mass            float64
+	Volume          float64
+	Capacity        float64
+	Radius          float64
+	MarketGroup     *uint32
+	MetaGroup       *uint32
+	MetaLevel       *int32
+	VariationParent *uint32
+	raw             attrSet // dogma attributes as shipped
+	base            attrSet // raw + authoritative mass/capacity/volume/radius
+	Effects         []TypeEffect
+	ReqSkills       []uint32 // deduplicated requiredSkill1..6
+	Slot            Slot     // SlotNone if not fittable
+}
+
+// Attr returns the raw dogma attribute value of the type.
+func (t *TypeInfo) Attr(id uint32) (float64, bool) { return t.raw.get(id) }
+
+// AttrIDs lists the raw dogma attribute ids (sorted).
+func (t *TypeInfo) AttrIDs() []uint32 { return t.raw.ids }
+
+func (t *TypeInfo) HasEffect(id uint32) bool {
+	for _, e := range t.Effects {
+		if e.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+type GroupInfo struct {
+	Name     string
+	Category uint32
+}
+
+type DbuffInfo struct {
+	Name          *string     `json:"name"`
+	Aggregate     *string     `json:"aggregate"`
+	Op            int32       `json:"op"`
+	Item          []uint32    `json:"item"`
+	Location      []uint32    `json:"location"`
+	LocationGroup [][2]uint32 `json:"location_group"`
+	LocationSkill [][2]uint32 `json:"location_skill"`
+}
+
+type MutaMapping struct {
+	Inputs []uint32 `json:"inputs"`
+	Output uint32   `json:"output"`
+}
+
+type MutaInfo struct {
+	Attrs   map[string][2]float64 `json:"attrs"`
+	Mapping []MutaMapping         `json:"mapping"`
+}
+
+type Dataset struct {
+	Build        uint64
+	ReleaseDate  *string
+	SHA256       string
+	Types        map[uint32]*TypeInfo
+	Groups       map[uint32]*GroupInfo
+	Attrs        map[uint32]*AttrInfo
+	Effects      map[uint32]*EffectInfo
+	Dbuffs       map[uint32]*DbuffInfo
+	Mutaplasmids map[uint32]*MutaInfo
+	NamesZh      map[uint32]string
+
+	attrByName   map[string]uint32
+	effectByName map[string]uint32
+	typeByName   map[string]uint32
+	// PublishedSkills is the sorted list of published skill type ids (category 16).
+	PublishedSkills []uint32
+	typesByGroup    map[uint32][]uint32
+	ids             wellKnown
+}
+
+// ---- raw JSON shapes ----
+type rawDs struct {
+	Format        string `json:"format"`
+	FormatVersion uint32 `json:"format_version"`
+	Sde           struct {
+		Build       uint64  `json:"build"`
+		ReleaseDate *string `json:"release_date"`
+	} `json:"sde"`
+	Groups map[string]struct {
+		Name     *string `json:"name"`
+		Category uint32  `json:"category"`
+	} `json:"groups"`
+	Attributes map[string]struct {
+		Name       string  `json:"name"`
+		Default    float64 `json:"default"`
+		Stackable  *bool   `json:"stackable"`
+		HighIsGood *bool   `json:"high_is_good"`
+		MinAttr    *uint32 `json:"min_attr"`
+		MaxAttr    *uint32 `json:"max_attr"`
+		Unit       *uint32 `json:"unit"`
+		Display    *string `json:"display"`
+	} `json:"attributes"`
+	Effects map[string]struct {
+		Name          string      `json:"name"`
+		Category      uint8       `json:"category"`
+		Duration      *uint32     `json:"duration_attr"`
+		Discharge     *uint32     `json:"discharge_attr"`
+		Range         *uint32     `json:"range_attr"`
+		Falloff       *uint32     `json:"falloff_attr"`
+		Tracking      *uint32     `json:"tracking_attr"`
+		Resistance    *uint32     `json:"resistance_attr"`
+		FittingChance *uint32     `json:"fitting_usage_chance_attr"`
+		IsOffensive   bool        `json:"is_offensive"`
+		IsAssistance  bool        `json:"is_assistance"`
+		Mods          [][]float64 `json:"mods"`
+	} `json:"effects"`
+	Types map[string]struct {
+		Name            *string            `json:"name"`
+		Group           uint32             `json:"group"`
+		Category        uint32             `json:"category"`
+		Published       bool               `json:"published"`
+		Mass            float64            `json:"mass"`
+		Volume          float64            `json:"volume"`
+		Capacity        float64            `json:"capacity"`
+		Radius          float64            `json:"radius"`
+		MarketGroup     *uint32            `json:"market_group"`
+		MetaGroup       *uint32            `json:"meta_group"`
+		MetaLevel       *int32             `json:"meta_level"`
+		VariationParent *uint32            `json:"variation_parent"`
+		Attrs           map[string]float64 `json:"attrs"`
+		Effects         [][2]uint32        `json:"effects"`
+	} `json:"types"`
+	Dbuffs       map[string]*DbuffInfo        `json:"dbuffs"`
+	Mutaplasmids map[string]*MutaInfo         `json:"mutaplasmids"`
+	Names        map[string]map[string]string `json:"names"`
+}
+
+func u32(s string) uint32 { v, _ := strconv.ParseUint(s, 10, 32); return uint32(v) }
+func optU(p *uint32) uint32 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// LoadPath loads a dataset file (gzip or plain JSON).
+func LoadPath(path string) (*Dataset, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return LoadBytes(b)
+}
+
+// LoadBytes parses dataset bytes (gzip or plain JSON).
+func LoadBytes(b []byte) (*Dataset, error) {
+	js := b
+	if len(b) > 2 && b[0] == 0x1f && b[1] == 0x8b {
+		zr, err := gzip.NewReader(bytes.NewReader(b))
+		if err != nil {
+			return nil, fmt.Errorf("gunzip: %w", err)
+		}
+		js, err = io.ReadAll(zr)
+		if err != nil {
+			return nil, fmt.Errorf("gunzip: %w", err)
+		}
+	}
+	sum := sha256.Sum256(js)
+	var raw rawDs
+	if err := json.Unmarshal(js, &raw); err != nil {
+		return nil, fmt.Errorf("dataset json: %w", err)
+	}
+	if raw.Format != "exct-eve-dataset" || raw.FormatVersion != 1 {
+		return nil, fmt.Errorf("unsupported dataset format %s v%d", raw.Format, raw.FormatVersion)
+	}
+	ds := &Dataset{
+		Build: raw.Sde.Build, ReleaseDate: raw.Sde.ReleaseDate, SHA256: hex.EncodeToString(sum[:]),
+		Types: make(map[uint32]*TypeInfo, len(raw.Types)), Groups: map[uint32]*GroupInfo{},
+		Attrs: make(map[uint32]*AttrInfo, len(raw.Attributes)), Effects: make(map[uint32]*EffectInfo, len(raw.Effects)),
+		Dbuffs: map[uint32]*DbuffInfo{}, Mutaplasmids: map[uint32]*MutaInfo{}, NamesZh: map[uint32]string{},
+		attrByName: map[string]uint32{}, effectByName: map[string]uint32{}, typeByName: map[string]uint32{},
+		typesByGroup: map[uint32][]uint32{},
+	}
+	for k, a := range raw.Attributes {
+		id := u32(k)
+		ai := &AttrInfo{ID: id, Name: a.Name, Default: a.Default, Stackable: true, HighIsGood: true,
+			MinAttr: optU(a.MinAttr), MaxAttr: optU(a.MaxAttr), Unit: optU(a.Unit)}
+		if a.Stackable != nil {
+			ai.Stackable = *a.Stackable
+		}
+		if a.HighIsGood != nil {
+			ai.HighIsGood = *a.HighIsGood
+		}
+		if a.Display != nil {
+			ai.Display = *a.Display
+		}
+		switch a.Name {
+		case "cpu", "power", "cpuOutput", "powerOutput":
+			ai.round2 = true
+		}
+		ds.Attrs[id] = ai
+		ds.attrByName[a.Name] = id
+	}
+	for k, e := range raw.Effects {
+		id := u32(k)
+		ei := &EffectInfo{ID: id, Name: e.Name, Category: e.Category, DurationAttr: optU(e.Duration),
+			DischargeAttr: optU(e.Discharge), RangeAttr: optU(e.Range), FalloffAttr: optU(e.Falloff),
+			TrackingAttr: optU(e.Tracking), ResistanceAttr: optU(e.Resistance), FittingChance: optU(e.FittingChance),
+			IsOffensive: e.IsOffensive, IsAssistance: e.IsAssistance}
+		for _, m := range e.Mods {
+			if len(m) < 6 {
+				continue
+			}
+			ei.Mods = append(ei.Mods, Mod{Func: int8(m[0]), Domain: int8(m[1]), Modified: uint32(m[2]),
+				Modifying: uint32(m[3]), Op: int32(m[4]), Extra: uint32(m[5])})
+		}
+		ds.Effects[id] = ei
+		ds.effectByName[e.Name] = id
+	}
+	for k, g := range raw.Groups {
+		gi := &GroupInfo{Category: g.Category}
+		if g.Name != nil {
+			gi.Name = *g.Name
+		}
+		ds.Groups[u32(k)] = gi
+	}
+	reqSkillAttrs := [6]uint32{182, 183, 184, 1285, 1289, 1290}
+	var skills []uint32
+	for k, t := range raw.Types {
+		id := u32(k)
+		ti := &TypeInfo{ID: id, Group: t.Group, Category: t.Category, Published: t.Published, Mass: t.Mass,
+			Volume: t.Volume, Capacity: t.Capacity, Radius: t.Radius, MarketGroup: t.MarketGroup,
+			MetaGroup: t.MetaGroup, MetaLevel: t.MetaLevel, VariationParent: t.VariationParent}
+		if t.Name != nil {
+			ti.Name = *t.Name
+		}
+		ids := make([]uint32, 0, len(t.Attrs))
+		for a := range t.Attrs {
+			ids = append(ids, u32(a))
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		vals := make([]float64, len(ids))
+		for i, a := range ids {
+			vals[i] = t.Attrs[strconv.FormatUint(uint64(a), 10)]
+		}
+		ti.raw = attrSet{ids, vals}
+		ti.base = attrSet{append([]uint32(nil), ids...), append([]float64(nil), vals...)}
+		for _, f := range [4]struct {
+			a uint32
+			v float64
+		}{{4, t.Mass}, {38, t.Capacity}, {161, t.Volume}, {162, t.Radius}} {
+			if _, ok := ti.base.get(f.a); f.v != 0 || !ok {
+				ti.base.set(f.a, f.v)
+			}
+		}
+		for _, e := range t.Effects {
+			ti.Effects = append(ti.Effects, TypeEffect{ID: e[0], Default: e[1] != 0})
+		}
+		for _, a := range reqSkillAttrs {
+			if v, ok := ti.raw.get(a); ok && uint32(v) != 0 {
+				ti.ReqSkills = appendUnique(ti.ReqSkills, uint32(v))
+			}
+		}
+		ti.Slot = inferSlot(ti)
+		ds.Types[id] = ti
+		lname := strings.ToLower(ti.Name)
+		if prev, ok := ds.typeByName[lname]; !ok || betterNamed(ti, ds.Types[prev]) {
+			ds.typeByName[lname] = id
+		}
+		ds.typesByGroup[t.Group] = append(ds.typesByGroup[t.Group], id)
+		if t.Category == 16 && t.Published {
+			skills = append(skills, id)
+		}
+	}
+	// types may be registered before their name competitor; recompute ambiguous winners deterministically
+	for _, l := range ds.typesByGroup {
+		sort.Slice(l, func(i, j int) bool { return l[i] < l[j] })
+	}
+	sort.Slice(skills, func(i, j int) bool { return skills[i] < skills[j] })
+	ds.PublishedSkills = skills
+	for k, v := range raw.Dbuffs {
+		ds.Dbuffs[u32(k)] = v
+	}
+	for k, v := range raw.Mutaplasmids {
+		ds.Mutaplasmids[u32(k)] = v
+	}
+	for k, v := range raw.Names["zh"] {
+		ds.NamesZh[u32(k)] = v
+	}
+	ds.ids = newWellKnown(ds)
+	return ds, nil
+}
+
+// betterNamed decides which of two same-named types wins the name lookup: published first, then lowest id.
+func betterNamed(a, b *TypeInfo) bool {
+	if a.Published != b.Published {
+		return a.Published
+	}
+	return a.ID < b.ID
+}
+
+func appendUnique(l []uint32, v uint32) []uint32 {
+	for _, x := range l {
+		if x == v {
+			return l
+		}
+	}
+	return append(l, v)
+}
+
+// AttrID returns the attribute id for a name (0 if unknown).
+func (ds *Dataset) AttrID(name string) uint32 { return ds.attrByName[name] }
+
+// EffectID returns the effect id for a name (0 if unknown).
+func (ds *Dataset) EffectID(name string) uint32 { return ds.effectByName[name] }
+
+// TypeByName finds a type by (case-insensitive) English name.
+func (ds *Dataset) TypeByName(name string) (uint32, bool) {
+	id, ok := ds.typeByName[strings.ToLower(strings.TrimSpace(name))]
+	return id, ok
+}
+
+func (ds *Dataset) AttrDefault(id uint32) float64 {
+	if a := ds.Attrs[id]; a != nil {
+		return a.Default
+	}
+	return 0
+}
+
+// TypesInGroup returns type ids of a group (sorted).
+func (ds *Dataset) TypesInGroup(g uint32) []uint32 { return ds.typesByGroup[g] }
+
+func inferSlot(t *TypeInfo) Slot {
+	for _, e := range t.Effects {
+		switch e.ID {
+		case 12:
+			return SlotHigh
+		case 13:
+			return SlotMid
+		case 11:
+			return SlotLow
+		case 2663:
+			return SlotRig
+		case 3772:
+			return SlotSubsystem
+		case 6306:
+			return SlotService
+		}
+	}
+	return SlotNone
+}
