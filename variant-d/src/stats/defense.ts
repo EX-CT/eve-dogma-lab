@@ -26,13 +26,13 @@ export function defense(c: StatsCtx, cap: CapInfo): object {
     const dur = fit.get(i, c.A.duration) / 1000;
     if (dur <= 0) continue;
     if (c.hasEffect(i, ['shieldBoosting', 'fueledShieldBoosting'])) shieldRep += c.g(i, 'shieldBonus') / dur;
-    if (c.hasEffect(i, ['armorRepair'])) armorRep += c.g(i, 'armorDamageAmount') / dur;
-    if (c.hasEffect(i, ['fueledArmorRepair'])) {
+    if (c.hasEffect1(i, 'armorRepair')) armorRep += c.g(i, 'armorDamageAmount') / dur;
+    if (c.hasEffect1(i, 'fueledArmorRepair')) {
       const ch = c.item(i).charge;
       const paste = ch >= 0 && c.ds.types.get(fit.items[ch].typeId)!.name === 'Nanite Repair Paste';
       armorRep += (c.g(i, 'armorDamageAmount') * (paste ? 3 : 1)) / dur;
     }
-    if (c.hasEffect(i, ['structureRepair'])) hullRep += c.g(i, 'structureDamageAmount') / dur;
+    if (c.hasEffect1(i, 'structureRepair')) hullRep += c.g(i, 'structureDamageAmount') / dur;
   }
   // incoming remote repairs (Pyfa __getAppliedRr diminishing-returns formula)
   const lists: [number, number][][] = [[], [], []];

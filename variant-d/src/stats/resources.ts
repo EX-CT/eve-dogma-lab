@@ -16,8 +16,8 @@ export function resources(c: StatsCtx): { json: object; used: ResourceTotals } {
   const fbay = c.fighters.reduce((s, i) => s + fit.get(i, 161) * c.item(i).quantity, 0);
   const cargo = c.req.cargo.reduce((s, x) => s + (c.ds.types.get(x.type_id)?.volume ?? 0) * (x.quantity ?? 1), 0);
   const countSlot = (s: SlotName) => c.modules.filter((i) => c.item(i).slot === s).length;
-  const turrets = c.modules.filter((i) => c.hasEffect(i, ['turretFitted'])).length;
-  const launchers = c.modules.filter((i) => c.hasEffect(i, ['launcherFitted'])).length;
+  const turrets = c.modules.filter((i) => c.hasEffect1(i, 'turretFitted')).length;
+  const launchers = c.modules.filter((i) => c.hasEffect1(i, 'launcherFitted')).length;
   const u = (used: number, total: number) => ({ used, total });
   const tot = (n: string) => c.g(ship, n);
   const fclass = (i: number) => (c.g(i, 'fighterSquadronIsHeavy') > 0 ? 'heavy' : c.g(i, 'fighterSquadronIsSupport') > 0 ? 'support' : 'light');

@@ -4,10 +4,10 @@ import { Dmg, floatUnerr, spoolup } from './util.js';
 import { pyFloatUnerr } from '../core/operators.js';
 
 function weaponKind(c: StatsCtx, i: number): string {
-  if (c.hasEffect(i, ['turretFitted'])) return 'turret';
-  if (c.hasEffect(i, ['launcherFitted'])) return 'missile';
-  if (c.hasEffect(i, ['empWave'])) return 'smartbomb';
-  if (c.hasEffect(i, ['ChainLightning'])) return 'vorton';
+  if (c.hasEffect1(i, 'turretFitted')) return 'turret';
+  if (c.hasEffect1(i, 'launcherFitted')) return 'missile';
+  if (c.hasEffect1(i, 'empWave')) return 'smartbomb';
+  if (c.hasEffect1(i, 'ChainLightning')) return 'vorton';
   return 'other';
 }
 
@@ -42,7 +42,7 @@ export function offense(c: StatsCtx): object {
     // doomsdays / lances deal their volley every doomsdayDamageCycleTime during doomsdayDamageDuration (Pyfa
     // getVolleyParameters subcycles; the Reaper slash hits once); volley = one tick
     const dd = c.g(i, 'doomsdayDamageDuration'), dsub = c.g(i, 'doomsdayDamageCycleTime');
-    const subcycles = dd !== 0 && dsub !== 0 && !c.hasEffect(i, ['doomsdaySlash']) ? Math.max(Math.floor(pyFloatUnerr(dd / dsub)), 0) : 1;
+    const subcycles = dd !== 0 && dsub !== 0 && !c.hasEffect1(i, 'doomsdaySlash') ? Math.max(Math.floor(pyFloatUnerr(dd / dsub)), 0) : 1;
     const dps = cyc > 0 ? vol.scale((subcycles * 1000) / cyc) : new Dmg();
     wVol.add(vol);
     wDps.add(dps);
@@ -139,7 +139,7 @@ function missileRange(c: StatsCtx, ch: number): number | null {
   const rangeAt = (t: number) => { const acc = Math.min(t, accelCap); return (vel / 2) * acc + vel * (t - acc); };
   const lt = Math.floor(ft), ht = Math.ceil(ft);
   let lr = rangeAt(lt), hr = rangeAt(ht);
-  if (c.hasEffect(ch, ['fofMissileLaunching'])) {
+  if (c.hasEffect1(ch, 'fofMissileLaunching')) {
     const lim = c.g(ch, 'maxFOFTargetRange');
     if (lim > 0) { lr = Math.min(lr, lim); hr = Math.min(hr, lim); }
   }

@@ -39,6 +39,11 @@ export class StatsCtx {
   active(i: number) { return this.fit.items[i].state >= State.Active; }
   typeName(i: number) { return this.ds.types.get(this.fit.items[i].typeId)!.name; }
 
+  /** has the item an effect of this name (single-name form of hasEffect, no array per call) */
+  hasEffect1(i: number, name: string): boolean {
+    return effectNames(this.ds, this.fit.items[i].effects).has(name);
+  }
+
   hasEffect(i: number, names: string[]): boolean {
     const set = effectNames(this.ds, this.fit.items[i].effects);
     for (let k = 0; k < names.length; k++) if (set.has(names[k])) return true;

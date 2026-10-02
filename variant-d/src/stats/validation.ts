@@ -23,9 +23,9 @@ export function validate(c: StatsCtx, used: ResourceTotals): object[] {
     const n = slotN[slot] ?? 0;
     if (n > g(attr)) push('SLOTS_EXCEEDED', `${SLOT_DEBUG[slot]} slots used ${n} > ${g(attr)}`, null);
   }
-  const t = c.modules.filter((i) => c.hasEffect(i, ['turretFitted'])).length;
+  const t = c.modules.filter((i) => c.hasEffect1(i, 'turretFitted')).length;
   if (t > g('turretSlotsLeft')) push('TURRET_HARDPOINTS', `turrets ${t} > hardpoints ${g('turretSlotsLeft')}`, null);
-  const l = c.modules.filter((i) => c.hasEffect(i, ['launcherFitted'])).length;
+  const l = c.modules.filter((i) => c.hasEffect1(i, 'launcherFitted')).length;
   if (l > g('launcherSlotsLeft')) push('LAUNCHER_HARDPOINTS', `launchers ${l} > hardpoints ${g('launcherSlotsLeft')}`, null);
   const shipT = ds.types.get(fit.items[ship].typeId)!;
   const fittedGroup = new Map<number, number>(), fittedType = new Map<number, number>(), activeGroup = new Map<number, number>(), onlineGroup = new Map<number, number>();

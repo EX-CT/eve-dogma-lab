@@ -21,7 +21,7 @@ export function capacitor(c: StatsCtx): CapInfo {
     const isInj = ds.groups.get(it.group)?.name === 'Capacitor Booster';
     if (isInj) capNeed = -(it.charge >= 0 ? c.g(it.charge, 'capacitorBonus') : 0);
     // local nosferatu counts as cap income (assumes the target has cap), like Pyfa
-    if (c.hasEffect(i, ['energyNosferatuFalloff']) && !req.options.nos_no_target_cap) capNeed = -c.g(i, 'powerTransferAmount');
+    if (c.hasEffect1(i, 'energyNosferatuFalloff') && !req.options.nos_no_target_cap) capNeed = -c.g(i, 'powerTransferAmount');
     const cycRaw = c.rawCycleMs(i);
     const full = cycRaw + fit.get(i, A.reactivation);
     const row: Record<string, unknown> = {
@@ -38,7 +38,7 @@ export function capacitor(c: StatsCtx): CapInfo {
       row.cap_use_gj_s = use;
       drains.push({
         duration: Math.trunc(full), capNeed, clipSize: c.numShots(i), reloadMs: fit.get(i, A.reload),
-        isInjector: isInj, disableStagger: c.hasEffect(i, ['turretFitted']),
+        isInjector: isInj, disableStagger: c.hasEffect1(i, 'turretFitted'),
       });
     }
     rows.push(row);
