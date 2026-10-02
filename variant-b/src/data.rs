@@ -261,7 +261,11 @@ impl Dataset {
     /// directory keyed by the SHA-256 of the file bytes, so later processes skip gunzip + JSON parsing.
     /// `EVE_DOGMA_NO_CACHE=1` disables it; `EVE_DOGMA_CACHE=DIR` sets the directory.
     pub fn load_path(path: &str) -> Result<Dataset, String> {
+        let tg = std::time::Instant::now();
         let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+        if std::env::var_os("VB_LOAD_TIMING").is_some() {
+            eprintln!("read gz {:?}", tg.elapsed());
+        }
         if std::env::var_os("EVE_DOGMA_NO_CACHE").is_some() {
             return Self::load_bytes(&bytes);
         }
@@ -281,7 +285,13 @@ impl Dataset {
         if timing {
             eprintln!("key {:?}", tk.elapsed());
         }
-        if let Ok(snap) = std::fs::read(&file) {
+        let tr = std::time::Instant::now();
+        // the snapshot is replaced only by rename, so a mapping always sees one complete immutable file
+        if let Some(snap) = std::fs::File::open(&file).ok().and_then(|f| unsafe { memmap2::Mmap::map(&f) }.ok()) {
+            let snap = Blob::Map(snap);
+            if timing {
+                eprintln!("read snapshot {:?}", tr.elapsed());
+            }
             let t0 = std::time::Instant::now();
             if let Some(ds) = Self::from_snapshot(snap) {
                 if timing {
@@ -310,7 +320,7 @@ impl Dataset {
     }
 
     /// Snapshot file: u64 len + bincode(Snapshot), u64 len + bincode(Names), then the lazily decoded type table.
-    fn from_snapshot(snap: Vec<u8>) -> Option<Dataset> {
+    fn from_snapshot(snap: Blob) -> Option<Dataset> {
         let rd = |at: usize| -> Option<usize> { Some(u64::from_le_bytes(snap.get(at..at + 8)?.try_into().ok()?) as usize) };
         let main_len = rd(0)?;
         let main_end = 8usize.checked_add(main_len)?;
@@ -584,6 +594,22 @@ impl<'de> Deserialize<'de> for IdKey {
 
 const SNAPSHOT_VERSION: u32 = 3;
 
+/// Snapshot bytes: memory-mapped cache file (pages faulted in on use) or an owned buffer.
+pub enum Blob {
+    Vec(Vec<u8>),
+    Map(memmap2::Mmap),
+}
+
+impl std::ops::Deref for Blob {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Blob::Vec(v) => v,
+            Blob::Map(m) => m,
+        }
+    }
+}
+
 /// Type table with the FxHashMap-like API the engine uses. Loaded from a snapshot, each TypeInfo stays
 /// bincode-encoded until first use (a calc touches a few hundred of ~10k types).
 pub struct TypeTable {
@@ -593,7 +619,7 @@ pub struct TypeTable {
     /// type id -> position + 1 (0 = absent); empty when ids are too sparse (binary search instead)
     dense: Vec<u32>,
     slots: Vec<std::sync::OnceLock<TypeInfo>>,
-    blob: Vec<u8>,
+    blob: Blob,
     /// (start, end) of each encoded TypeInfo in `blob`
     spans: Vec<(u32, u32)>,
 }
@@ -618,7 +644,7 @@ impl TypeTable {
         let groups = v.iter().map(|x| x.1.group).collect();
         let dense = Self::build_index(&ids);
         let slots = v.into_iter().map(|(_, t)| std::sync::OnceLock::from(t)).collect();
-        TypeTable { ids, groups, dense, slots, blob: Vec::new(), spans: Vec::new() }
+        TypeTable { ids, groups, dense, slots, blob: Blob::Vec(Vec::new()), spans: Vec::new() }
     }
 
     /// section: u32 n, n x (id, group, start, end) u32 LE (offsets relative to the section), then encoded types
@@ -644,7 +670,7 @@ impl TypeTable {
         Ok(out)
     }
 
-    fn decode(blob: Vec<u8>, at: usize) -> Option<TypeTable> {
+    fn decode(blob: Blob, at: usize) -> Option<TypeTable> {
         let u = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(blob.get(o..o + 4)?.try_into().ok()?)) };
         let n = u(at)? as usize;
         let mut ids = Vec::with_capacity(n);

@@ -30,3 +30,11 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
 ## 2026-10-03 ~05:30 CST — ported A@086dcb4 + A@ae4bfb0
 - sustainable tank, cap booster forced reload, ECM jam chance, projected fighters, fighter self abilities, drone/fighter application fields.
 - tests/ synced from A@ae4bfb0. Parity: 289/289 bench cases byte-identical vs A@ae4bfb0; oracle test passes.
+
+## 2026-10-03 ~05:35 CST — cold start + capsim
+- snapshot: per-type lazy decode (`TypeTable`, dense id index), lazy names (zh / type_by_name), mmap'd cache file,
+  dataset leaked at exit. Process cold calc (Rifter) ~25 ms -> ~8 ms.
+- capsim fast path: per-stream static data + events packed into u128 keys in a std BinaryHeap (same comparisons ->
+  same pops and same final heap layout, so results are bit-identical; randomised test vs the reference port),
+  lazy comparator, exp() memo. Vexor-type fits ~1.15 ms -> ~0.6 ms wall.
+- Parity: 289/289 byte-identical vs A@ae4bfb0; oracle 18 591 values.
