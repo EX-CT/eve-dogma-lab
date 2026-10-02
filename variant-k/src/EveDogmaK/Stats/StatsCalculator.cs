@@ -283,7 +283,12 @@ public sealed partial class StatsCalculator
             var spool = _f[i].Spool ?? defaultSpool;
             var (sp, _, _) = Formulas.Spoolup(G(i, _k.DamageMultiplierBonusMax), G(i, _k.DamageMultiplierBonusPerCycle), raw / 1000.0, spool);
             var vol = baseVol.Scale(1.0 + sp);
-            var dps = cyc > 0.0 ? vol.Scale(1000.0 / cyc) : Damage.Zero;
+            // doomsdays / lances deal their volley every doomsdayDamageCycleTime during doomsdayDamageDuration
+            // (Pyfa getVolleyParameters subcycles; the Reaper slash hits once); volley = one tick
+            double dd = G(i, _f.Ds.AttrIdOf("doomsdayDamageDuration")), dsub = G(i, _f.Ds.AttrIdOf("doomsdayDamageCycleTime"));
+            double subcycles = dd != 0.0 && dsub != 0.0 && !_f[i].Effects.Any(r => _f.Ds.Effect(r.Id)?.Name == "doomsdaySlash")
+                ? Math.Max(Math.Floor(Formulas.FloatUnerr7(dd / dsub)), 0.0) : 1.0;
+            var dps = cyc > 0.0 ? vol.Scale(subcycles * 1000.0 / cyc) : Damage.Zero;
             wVol += vol; // Pyfa reports spooled volley
             wDps += dps;
             var it = _f[i];

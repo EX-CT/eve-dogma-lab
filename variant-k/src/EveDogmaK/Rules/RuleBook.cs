@@ -68,6 +68,7 @@ public sealed class RuleBook
                 if (eref.Id == KnownIds.SkillEffect) continue; // the generic "skill" marker effect
                 var e = ds.Effect(eref.Id);
                 if (e == null) continue;
+                if (LocalSpecialRule.TryApply(fit, it, e, state)) continue;
                 var ctx = new EffectContext(fit, it, e, eref.IsDefault, state);
                 bool allowed = true;
                 foreach (var g in Gates) if (!g.Allows(ctx)) { allowed = false; break; }

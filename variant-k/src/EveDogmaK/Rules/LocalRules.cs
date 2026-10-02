@@ -1,3 +1,4 @@
+using EveDogmaK.Requests;
 using EveDogmaK.Data;
 using EveDogmaK.Engine;
 
@@ -115,5 +116,65 @@ public sealed class DataDrivenModifierRule : IEffectRule
             int cat = bastion && Array.IndexOf(KnownIds.HullResonances, m.Modified) >= 0 ? Fit.ShipCategory : c.SourceCategory;
             foreach (var t in _targets) fit.AddModifier(t, m.Modified, m.Op, ModSource.FromAttr(c.Source, m.Modifying), c.Source, cat);
         }
+    }
+}
+
+/// <summary>
+/// Active local modules whose SDE effect has no modifierInfo but a hand-written Pyfa handler (eos LGPL; re-expressed
+/// from the reference engine). Some of these effects are target-category in the SDE, so the rule runs before the
+/// state gate, for active (or overheated) modules only. A ship source category marks a boost Pyfa applies unpenalised.
+/// </summary>
+public static class LocalSpecialRule
+{
+    private static readonly HashSet<string> Names = new()
+    {
+        "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente", "superWeaponMinmatar", "doomsdaySlash",
+        "doomsdayBeamDOT", "doomsdayConeDOT", "doomsdayHOG", "debuffLance",
+        "emergencyHullEnergizer", "entosisLink", "microJumpPortalDrive", "microJumpPortalDriveCapital", "warpDisruptSphere",
+    };
+
+    public static bool TryApply(Fit fit, Item it, EffectInfo e, ModuleState state)
+    {
+        if (e.Modifiers.Length != 0 || it.Kind != ItemKind.Module || state < ModuleState.Active || !Names.Contains(e.Name)) return false;
+        var ds = fit.Ds;
+        int i = it.Index, ship = fit.Ship, cat = it.Category, shipCat = Fit.ShipCategory;
+        AttrId A(string n) => ds.AttrIdOf(n);
+        void On(int target, string attr, Op op, ModSource src, int category) => fit.AddModifier(target, A(attr), op, src, i, category);
+        ModSource Self(string n) => ModSource.FromAttr(i, A(n));
+        switch (e.Name)
+        {
+            case "emergencyHullEnergizer":
+                foreach (var t in new[] { "Em", "Thermal", "Kinetic", "Explosive" })
+                    On(ship, t.ToLowerInvariant() + "DamageResonance", Op.PostMul, Self($"hull{t}DamageResonance"), cat);
+                break;
+            case "entosisLink":
+                On(ship, "disallowAssistance", Op.PostAssign, Self("disallowAssistance"), shipCat);
+                foreach (var t in new[] { "Gravimetric", "Magnetometric", "Radar", "Ladar" })
+                    On(ship, $"scan{t}Strength", Op.PostPercent, Self($"scan{t}StrengthPercent"), cat);
+                break;
+            case "microJumpPortalDrive":
+            case "microJumpPortalDriveCapital":
+                On(ship, "signatureRadius", Op.PostPercent, Self("signatureRadiusBonusPercent"), cat);
+                break;
+            case "warpDisruptSphere":
+                On(ship, "disallowAssistance", Op.PostAssign, ModSource.Const(1.0), shipCat);
+                if (it.Charge < 0)
+                {
+                    fit.AddModifier(ship, KnownIds.Mass, Op.PostPercent, Self("massBonusPercentage"), i, shipCat);
+                    On(ship, "signatureRadius", Op.PostPercent, Self("signatureRadiusBonus"), shipCat);
+                    foreach (var t in fit.Items.Where(t => t.Kind == ItemKind.Module && t.Location == ItemLocation.Ship
+                                 && ds.Groups.TryGetValue(t.Group, out var g) && g.Name == "Propulsion Module").Select(t => t.Index).ToList())
+                    {
+                        On(t, "speedBoostFactor", Op.PostPercent, Self("speedBoostFactorBonus"), shipCat);
+                        On(t, "speedFactor", Op.PostPercent, Self("speedFactorBonus"), shipCat);
+                    }
+                }
+                break;
+            default: // superweapons / lances
+                On(ship, "maxVelocity", Op.PostPercent, Self("speedFactor"), cat);
+                On(ship, "warpScrambleStatus", Op.ModAdd, Self("siegeModeWarpStatus"), cat);
+                break;
+        }
+        return true;
     }
 }

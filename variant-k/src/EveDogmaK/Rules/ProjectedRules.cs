@@ -149,15 +149,25 @@ public static class WeaponDisruption
     public static bool TryApply(Fit fit, int i, string effectName, AttrId resist)
     {
         (string Skill, ItemKind Kind, (string Source, string Target)[] Pairs) spec;
-        if (effectName == "shipModuleTrackingDisruptor") spec = ("Gunnery", ItemKind.Module, Tracking);
+        // shipModuleRemoteTrackingComputer: assistance (boosts the target's turrets, blocked by disallowAssistance);
+        // npcEntityWeaponDisruptor (TD drones, Pyfa Effect6694): full strength inside maxRange, nothing beyond.
+        if (effectName == "shipModuleTrackingDisruptor" || effectName == "npcEntityWeaponDisruptor" || effectName == "shipModuleRemoteTrackingComputer")
+            spec = ("Gunnery", ItemKind.Module, Tracking);
         else if (effectName == "shipModuleGuidanceDisruptor") spec = ("Missile Launcher Operation", ItemKind.Charge, Guidance);
         else return false;
-        if (!ProjectedRegistration.OffensiveAllowed(fit)) return true;
         var ds = fit.Ds;
+        if (effectName == "shipModuleRemoteTrackingComputer")
+        {
+            var na = ds.AttrIdOf("disallowAssistance");
+            if (fit.Has(fit.Ship, na) && fit.Base(fit.Ship, na) != 0.0) return true;
+        }
+        else if (!ProjectedRegistration.OffensiveAllowed(fit)) return true;
         int skill = ds.TypeByNameLookup(spec.Skill) ?? 0;
         var it = fit[i];
         double Base(string n) { var a = ds.AttrIdOf(n); return fit.Has(i, a) ? fit.Base(i, a) : 0.0; }
-        double factor = Formulas.RangeFactor(Base("maxRange"), Base("falloffEffectiveness"), it.DistanceM, restricted: true);
+        double factor = effectName == "npcEntityWeaponDisruptor"
+            ? (Base("maxRange") < (it.DistanceM ?? 0.0) ? 0.0 : 1.0)
+            : Formulas.RangeFactor(Base("maxRange"), Base("falloffEffectiveness"), it.DistanceM, restricted: true);
         foreach (var t in fit.Items.Where(t => t.Location == ItemLocation.Ship && t.Owned && t.Kind == spec.Kind && t.RequiresSkill(skill)).Select(t => t.Index).ToList())
             foreach (var (src, tgt) in spec.Pairs)
                 fit.AddModifier(t, ds.AttrIdOf(tgt), Op.PostPercent, ModSource.Projected(i, ds.AttrIdOf(src), factor, fit.Ship, resist, false), i, it.Category);
@@ -176,7 +186,7 @@ public static class IncomingEffects
     {
         "projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack", "missileLaunchingForEntity",
         "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente",
-        "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching",
+        "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching", "ChainLightning", "salvageDroneEffect",
     };
 
     public static bool TryCreate(Fit fit, int i, string name, AttrId resist, out List<IncomingEffect> result)

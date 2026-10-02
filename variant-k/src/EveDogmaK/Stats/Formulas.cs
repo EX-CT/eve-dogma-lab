@@ -25,6 +25,20 @@ public static class Formulas
         return Math.Min(40000.0 / scanRes / (a * a), 1800.0);
     }
 
+    /// <summary>Python round(v, 2): correctly rounded decimal of the exact binary value (IEEE-exact "F2" formatting).</summary>
+    public static double PyRound2(double v) =>
+        double.IsFinite(v) ? double.Parse(v.ToString("F2", System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture) : v;
+
+    /// <summary>Pyfa eos.utils.float.floatUnerr: keep 7 significant digits (used for doomsday subcycle counts).</summary>
+    public static double FloatUnerr7(double v)
+    {
+        if (v == 0.0 || !double.IsFinite(v)) return v;
+        int rf = 7 - (int)Math.Ceiling(Math.Log10(Math.Abs(v)));
+        if (rf >= 0) return double.Parse(v.ToString("F" + rf, System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture);
+        double p = Math.Pow(10, -rf);
+        return Math.Round(v / p, MidpointRounding.ToEven) * p;
+    }
+
     /// <summary>Pyfa floatUnerr: round to 9 decimals to kill float noise before floor/ceil.</summary>
     public static double FloatUnerr(double v) => Math.Round(v * 1e9, MidpointRounding.AwayFromZero) / 1e9;
 

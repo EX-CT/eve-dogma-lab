@@ -172,7 +172,7 @@ public sealed partial class Fit
         {
             if (info.MinAttr is { } mn) val = Math.Max(val, Get(item, mn));
             if (info.MaxAttr is { } mx) val = Math.Min(val, Get(item, mx));
-            if (info.RoundToCentis) val = Math.Round(val * 100.0, MidpointRounding.AwayFromZero) / 100.0;
+            if (info.RoundToCentis) val = EveDogmaK.Stats.Formulas.PyRound2(val);
         }
         a.Busy = false;
         a.Value = val;
