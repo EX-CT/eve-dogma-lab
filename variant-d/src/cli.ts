@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /** eve-dogma-ts CLI — same stateless contract as eve-dogma-rs (docs/contract.md). */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeSync } from 'node:fs';
 import { calc, calcJson, meta, parseEft, rpc, search, typeInfo } from './index.js';
 import { datasetPath, loadDatasetFile, setPackageDir, writeCache } from './node.js';
 import { dirname, resolve } from 'node:path';
-import { realpathSync } from 'node:fs';
 
 // dist/cli.js and dist-cli/eve-dogma-ts.cjs both live one level below the package directory
 setPackageDir(resolve(dirname(realpathSync(process.argv[1])), '..'));
@@ -47,7 +46,24 @@ function readInput(f?: string): string {
   }
   return readFileSync(0, 'utf8');
 }
-const out = (s: string) => process.stdout.write(s + '\n');
+/**
+ * stdout through fs.writeSync on fd 1: no stream machinery is loaded (~6 ms of startup) and output stays ordered.
+ * EAGAIN (a non-blocking pipe that is full) waits 1 ms and retries.
+ */
+let napBuf: Int32Array | null = null;
+function writeAll(s: string): void {
+  const b = Buffer.from(s, 'utf8');
+  let o = 0;
+  while (o < b.length) {
+    try {
+      o += writeSync(1, b, o, b.length - o);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EAGAIN') throw e;
+      Atomics.wait((napBuf ??= new Int32Array(new SharedArrayBuffer(4))), 0, 0, 1);
+    }
+  }
+}
+const out = (s: string) => writeAll(s + '\n');
 
 /**
  * JSONL loop: answers every complete line of each stdin chunk, then writes the answers of that chunk in one
@@ -63,9 +79,9 @@ function lines(fn: (l: string) => string): Promise<void> {
       for (const raw of parts) {
         const l = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
         if (l.trim()) o += fn(l) + '\n';
-        if (o.length > 1 << 20) { process.stdout.write(o); o = ''; }
+        if (o.length > 1 << 20) { writeAll(o); o = ''; }
       }
-      if (o) process.stdout.write(o);
+      if (o) writeAll(o);
     };
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (c: string) => flush(rest + c, false));
