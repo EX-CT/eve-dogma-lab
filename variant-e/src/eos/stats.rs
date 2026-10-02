@@ -133,18 +133,21 @@ impl<'a> Fit<'a> {
     }
 
     fn raw_cycle_time(&self, m: It) -> f64 {
-        [
-            "speed",
-            "duration",
-            "durationHighisGood",
-            "durationSensorDampeningBurstProjector",
-            "durationTargetIlluminationBurstProjector",
-            "durationECMJammerBurstProjector",
-            "durationWeaponDisruptionBurstProjector",
-        ]
-        .iter()
-        .map(|n| self.g(m, n))
-        .fold(0.0, f64::max)
+        static IDS: std::sync::OnceLock<[u32; 7]> = std::sync::OnceLock::new();
+        let ds = self.ds;
+        let ids = IDS.get_or_init(|| {
+            [
+                "speed",
+                "duration",
+                "durationHighisGood",
+                "durationSensorDampeningBurstProjector",
+                "durationTargetIlluminationBurstProjector",
+                "durationECMJammerBurstProjector",
+                "durationWeaponDisruptionBurstProjector",
+            ]
+            .map(|n| ds.attr_id(n))
+        });
+        ids.iter().map(|&a| if a == 0 { 0.0 } else { self.attr_opt(m, a).unwrap_or(0.0) }).fold(0.0, f64::max)
     }
 
     fn num_charges(&self, m: It) -> f64 {
@@ -741,15 +744,22 @@ impl<'a> Fit<'a> {
     }
 
     fn resonances(&self, layer: &str) -> [f64; 4] {
+        const N: [[&str; 4]; 3] = [
+            ["shieldEmDamageResonance", "shieldThermalDamageResonance", "shieldKineticDamageResonance", "shieldExplosiveDamageResonance"],
+            ["armorEmDamageResonance", "armorThermalDamageResonance", "armorKineticDamageResonance", "armorExplosiveDamageResonance"],
+            ["emDamageResonance", "thermalDamageResonance", "kineticDamageResonance", "explosiveDamageResonance"],
+        ];
         let s = self.ship;
-        let n = |t: &str| {
-            if layer == "hull" {
-                format!("{}DamageResonance", t.to_lowercase())
-            } else {
-                format!("{layer}{t}DamageResonance")
+        let n = match layer {
+            "shield" => &N[0],
+            "armor" => &N[1],
+            "hull" => &N[2],
+            _ => {
+                let f = |t: &str| format!("{layer}{t}DamageResonance");
+                return [self.g(s, &f("Em")), self.g(s, &f("Thermal")), self.g(s, &f("Kinetic")), self.g(s, &f("Explosive"))];
             }
         };
-        [self.g(s, &n("Em")), self.g(s, &n("Thermal")), self.g(s, &n("Kinetic")), self.g(s, &n("Explosive"))]
+        [self.g(s, n[0]), self.g(s, n[1]), self.g(s, n[2]), self.g(s, n[3])]
     }
 
     fn cap_recharge_at(&self, pct: f64, capacity: f64, rate_s: f64) -> f64 {

@@ -191,7 +191,7 @@ pub struct Fit<'a> {
     pub effect: u32,
     pub proj_range: Option<f64>,
     pub modifier: It,
-    pub meta: &'static FxHashMap<u32, EffMeta>,
+    pub meta: &'static crate::eos::fit::MetaTable,
 }
 
 pub type Cx<'a> = Fit<'a>;

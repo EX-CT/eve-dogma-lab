@@ -26,51 +26,71 @@ fn lt(a: &Act, b: &Act) -> bool {
     false
 }
 
-// CPython heapq (_siftdown/_siftup)
-fn siftdown(h: &mut [Act], start: usize, mut pos: usize) {
-    let new = h[pos];
-    while pos > start {
-        let parent = (pos - 1) >> 1;
-        if lt(&new, &h[parent]) {
-            h[pos] = h[parent];
-            pos = parent;
-            continue;
-        }
-        break;
+// CPython heapq (_siftdown/_siftup) over a heap of indices into an entry arena: identical comparisons and
+// layout to heapq on the tuples themselves, but sifting moves 4-byte indices instead of 56-byte entries.
+struct Heap {
+    a: Vec<Act>,
+    h: Vec<u32>,
+}
+
+impl Heap {
+    #[inline]
+    fn lt(&self, x: u32, y: u32) -> bool {
+        lt(&self.a[x as usize], &self.a[y as usize])
     }
-    h[pos] = new;
-}
-fn siftup(h: &mut [Act], mut pos: usize) {
-    let end = h.len();
-    let start = pos;
-    let new = h[pos];
-    let mut child = 2 * pos + 1;
-    while child < end {
-        let right = child + 1;
-        if right < end && !lt(&h[child], &h[right]) {
-            child = right;
+    fn siftdown(&mut self, start: usize, mut pos: usize) {
+        let new = self.h[pos];
+        while pos > start {
+            let parent = (pos - 1) >> 1;
+            if self.lt(new, self.h[parent]) {
+                self.h[pos] = self.h[parent];
+                pos = parent;
+                continue;
+            }
+            break;
         }
-        h[pos] = h[child];
-        pos = child;
-        child = 2 * pos + 1;
+        self.h[pos] = new;
     }
-    h[pos] = new;
-    siftdown(h, start, pos);
-}
-fn push(h: &mut Vec<Act>, a: Act) {
-    h.push(a);
-    let n = h.len() - 1;
-    siftdown(h, 0, n);
-}
-fn pop(h: &mut Vec<Act>) -> Option<Act> {
-    let last = h.pop()?;
-    if !h.is_empty() {
-        let ret = h[0];
-        h[0] = last;
-        siftup(h, 0);
-        Some(ret)
-    } else {
-        Some(last)
+    fn siftup(&mut self, mut pos: usize) {
+        let end = self.h.len();
+        let start = pos;
+        let new = self.h[pos];
+        let mut child = 2 * pos + 1;
+        while child < end {
+            let right = child + 1;
+            if right < end && !self.lt(self.h[child], self.h[right]) {
+                child = right;
+            }
+            self.h[pos] = self.h[child];
+            pos = child;
+            child = 2 * pos + 1;
+        }
+        self.h[pos] = new;
+        self.siftdown(start, pos);
+    }
+    /// heappush of a new entry
+    fn push(&mut self, act: Act) {
+        self.a.push(act);
+        let i = (self.a.len() - 1) as u32;
+        self.push_idx(i);
+    }
+    /// heappush of an entry already in the arena (popped earlier)
+    fn push_idx(&mut self, i: u32) {
+        self.h.push(i);
+        let n = self.h.len() - 1;
+        self.siftdown(0, n);
+    }
+    /// heappop -> arena index
+    fn pop(&mut self) -> Option<u32> {
+        let last = self.h.pop()?;
+        if !self.h.is_empty() {
+            let ret = self.h[0];
+            self.h[0] = last;
+            self.siftup(0);
+            Some(ret)
+        } else {
+            Some(last)
+        }
     }
 }
 
@@ -109,7 +129,7 @@ pub struct SimResult {
 
 pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max: f64, reload: bool, stagger: bool) -> SimResult {
     // reset()
-    let mut state: Vec<Act> = Vec::new();
+    let mut state = Heap { a: Vec::with_capacity(16), h: Vec::with_capacity(16) };
     let mut mods: Vec<([f64; 6], u32)> = Vec::new();
     let mut period = 1.0f64;
     let mut disable_period = false;
@@ -133,7 +153,7 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
         }
         if inj != 0.0 {
             for _ in 0..amount {
-                push(&mut state, Act([0.0, duration, cap_need, 0.0, clip, rt, inj]));
+                state.push(Act([0.0, duration, cap_need, 0.0, clip, rt, inj]));
             }
             continue;
         }
@@ -143,21 +163,21 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
             } else {
                 let sa = (duration * clip + rt) / (amount as f64 * clip);
                 for i in 1..amount {
-                    push(&mut state, Act([i as f64 * sa, duration, cap_need, 0.0, clip, rt, inj]));
+                    state.push(Act([i as f64 * sa, duration, cap_need, 0.0, clip, rt, inj]));
                 }
             }
         } else {
             cap_need *= amount as f64;
         }
         period = lcm(period, duration);
-        push(&mut state, Act([0.0, duration, cap_need, 0.0, clip, rt, inj]));
+        state.push(Act([0.0, duration, cap_need, 0.0, clip, rt, inj]));
     }
     let period = if disable_period { t_max } else { period };
 
     // run()
     let mut awaiting: Vec<[f64; 6]> = Vec::new();
     let mut awaiting_wrap: Vec<[f64; 6]> = Vec::new();
-    let mut activation: Option<Act> = None;
+    let mut activation: Option<u32> = None;
     let mut iterations = 0u64;
     let cap_cap = capacity;
     let tau = recharge / 5.0;
@@ -178,7 +198,7 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
         y.sort_by(cmp);
         x == y
     };
-    let inject = |cap: &mut f64, state: &mut Vec<Act>, t_now: f64, inj: [f64; 6]| {
+    let inject = |cap: &mut f64, state: &mut Heap, t_now: f64, inj: [f64; 6]| {
         let [d, need, mut shot, clip, rt, isinj] = inj;
         *cap -= need;
         if *cap > cap_cap {
@@ -190,11 +210,12 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
             shot = 0.0;
             t += rt;
         }
-        push(state, Act([t, d, need, shot, clip, rt, isinj]));
+        state.push(Act([t, d, need, shot, clip, rt, isinj]));
     };
     loop {
-        let Some(mut act) = pop(&mut state) else { break };
-        activation = Some(act);
+        let Some(ai) = state.pop() else { break };
+        let mut act = state.a[ai as usize];
+        activation = Some(ai);
         let [t_now0, duration, cap_need, mut shot, clip, rt, isinj] = act.0;
         let mut t_now = t_now0;
         if t_now >= t_max {
@@ -281,14 +302,15 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
             }
             act.0[0] = t_now;
             act.0[3] = shot;
-            activation = Some(act);
-            push(&mut state, act);
+            state.a[ai as usize] = act;
+            state.push_idx(ai);
         }
     }
     if let Some(a) = activation {
-        push(&mut state, a);
+        // Pyfa re-pushes the last popped activation (the list object, possibly already re-pushed and mutated)
+        state.push_idx(a);
     }
-    let avg: f64 = state.iter().map(|x| x.0[2] / x.0[1]).sum();
+    let avg: f64 = state.h.iter().map(|&i| state.a[i as usize].0[2] / state.a[i as usize].0[1]).sum();
     let inner = -(2.0 * avg * tau - cap_cap) / cap_cap;
     let eve = if inner < 0.0 { 0.0 } else { 0.25 * (1.0 + inner.sqrt()).powi(2) };
     let (lo, hi) = if cap > 0.0 { (cap_lowest, cap_lowest_pre) } else { (0.0, 0.0) };

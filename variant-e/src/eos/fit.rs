@@ -16,9 +16,29 @@ pub struct BuildError {
     pub path: String,
 }
 
-pub fn meta() -> &'static FxHashMap<u32, EffMeta> {
-    static M: OnceLock<FxHashMap<u32, EffMeta>> = OnceLock::new();
-    M.get_or_init(|| effects::META.iter().map(|m| (m.id, *m)).collect())
+/// effect metadata indexed directly by effect id (dense table instead of a hash map)
+pub struct MetaTable(Vec<u16>);
+
+impl MetaTable {
+    #[inline]
+    pub fn get(&self, e: &u32) -> Option<&'static EffMeta> {
+        match self.0.get(*e as usize) {
+            Some(&i) if i != u16::MAX => Some(&effects::META[i as usize]),
+            _ => None,
+        }
+    }
+}
+
+pub fn meta() -> &'static MetaTable {
+    static M: OnceLock<MetaTable> = OnceLock::new();
+    M.get_or_init(|| {
+        let n = effects::META.iter().map(|m| m.id as usize + 1).max().unwrap_or(0);
+        let mut v = vec![u16::MAX; n];
+        for (i, m) in effects::META.iter().enumerate() {
+            v[m.id as usize] = i as u16;
+        }
+        MetaTable(v)
+    })
 }
 
 pub fn extra_attr(name: &str) -> u32 {
