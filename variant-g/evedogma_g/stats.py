@@ -85,6 +85,23 @@ def _cycle_attrs(ds):
     return c
 
 
+def _sort_desc_partial(items, key):
+    """Rust `sort_by(|a, b| key(b).partial_cmp(&key(a)).unwrap_or(Equal))`: stable, descending, NaN compares equal"""
+    import functools
+    keys = [key(x) for x in items]
+
+    def cmp(a, b):
+        ka, kb = keys[a], keys[b]
+        if kb < ka:
+            return -1
+        if kb > ka:
+            return 1
+        return 0
+
+    order = sorted(range(len(items)), key=functools.cmp_to_key(cmp))
+    return [items[k] for k in order]
+
+
 class FitStats:
     def __init__(self, batch, fit, vals):
         self.b, self.fit, self.v, self.ds = batch, fit, vals, batch.ds
@@ -141,6 +158,97 @@ class FitStats:
         if not factor_reload or shots == 0 or inactive >= reload:
             return active + inactive
         return ((active + inactive) * (shots - 1.0) + (active + reload)) / shots
+
+    def _charged_mult(self, i):
+        m = self.g(i, "chargedArmorDamageMultiplier")
+        return 1.0 if m == 0.0 else m
+
+    def _sustained(self, sus, mods, cap_used, cap_added, peak, factor_reload):
+        """Pyfa Fit.sustainableTank"""
+        ds, meta, g = self.ds, self.meta, self.g
+        spec = {"Shield Booster": (0, "shieldBonus"), "Ancillary Shield Booster": (0, "shieldBonus"),
+                "Armor Repair Unit": (1, "armorDamageAmount"), "Ancillary Armor Repairer": (1, "armorDamageAmount"),
+                "Hull Repair Unit": (2, "structureDamageAmount")}
+        adj = [0.0, 0.0, 0.0]
+        used = cap_used
+        reps = []
+        for layer in range(3):
+            for i in mods:
+                if meta[i]["state"] < ACTIVE:
+                    continue
+                gname = ds.group_name.get(meta[i]["group"]) or ""
+                sp = spec.get(gname)
+                if sp is None or sp[0] != layer:
+                    continue
+                l, attr = sp
+                cap_need = self.v.get(i, ds.a("capacitorNeed"))
+                avg = self.avg_cycle_ms(i, factor_reload)
+                cap_use = cap_need / (avg / 1000.0) if cap_need != 0.0 and avg > 0.0 else 0.0
+                cyc = self.raw_cycle_ms(i)
+                if cyc <= 0.0:
+                    continue
+                amount = g(i, attr)
+                c = meta[i]["charge"]
+                paste = c is not None and ds.t_name[meta[c]["ti"]] == "Nanite Repair Paste"
+                if cap_use != 0.0:
+                    used -= cap_use
+                    mult = self._charged_mult(i) if paste else 1.0
+                    adj[l] -= amount * mult / (cyc / 1000.0)
+                    reps.append((i, l, attr, cap_use))
+                elif gname == "Ancillary Shield Booster":
+                    reload = g(i, "reloadTime") if factor_reload and c is not None else 0.0
+                    shots = float(max(self.num_shots(i), 1))
+                    off = reload / (shots * cyc + reload)
+                    adj[l] -= amount * off / (cyc / 1000.0)
+        cn = ds.a("capacitorNeed")
+        eff = lambda r: g(r[0], r[2]) * self._charged_mult(r[0]) / self.v.get(r[0], cn)  # noqa: E731
+        reps = _sort_desc_partial(reps, eff)
+        total_peak = peak + cap_added
+        for i, l, attr, cap_use in reps:
+            if used > total_peak:
+                break
+            c = meta[i]["charge"]
+            reload = g(i, "reloadTime") if factor_reload and c is not None else 0.0
+            cyc = self.raw_cycle_ms(i)
+            sustain = min((total_peak - used) / cap_use, 1.0)
+            amount = g(i, attr)
+            if c is None:
+                adj[l] += sustain * amount / (cyc / 1000.0)
+            else:
+                paste = ds.t_name[meta[c]["ti"]] == "Nanite Repair Paste"
+                mult = self._charged_mult(i) if paste else 1.0
+                shots = float(max(self.num_shots(i), 1))
+                on = shots * cyc / (shots * cyc + reload)
+                adj[l] += sustain * amount * on * mult / (cyc / 1000.0)
+            used += cap_use
+        return [sus[k] + adj[k] for k in range(3)]
+
+    def _jam_chance(self):
+        """Pyfa Fit.jamChance: ECM strengths vs the strongest sensor type (ties -> multispectral -> 0)"""
+        g, v, ship = self.g, self.v, self.fit.ship
+        max_s, ty = -1.0, None
+        for t in ("Magnetometric", "Ladar", "Radar", "Gravimetric"):
+            x = g(ship, f"scan{t}Strength")
+            if x > max_s:
+                max_s, ty = x, t
+            elif x == max_s:
+                ty = None
+        retain, any_ = 1.0, False
+        for ps in self.fit.proj_special:
+            if ps[0] != "ecm":
+                continue
+            _, item, fighter, factor, resist = ps
+            any_ = True
+            if ty is None:
+                continue
+            st = g(item, f"fighterAbilityECMStrength{ty}" if fighter else f"scan{ty}StrengthBonus") * factor
+            if resist:
+                r = v.get(ship, resist)
+                if r != 0.0:
+                    st *= r
+            if max_s > 0.0:
+                retain *= 1.0 - min(st / max_s, 1.0)
+        return (1.0 - retain) * 100.0 if any_ else None
 
     def module_volley(self, i):
         if self.has_eff(i, ("turretFitted",)):
@@ -294,7 +402,9 @@ class FitStats:
             d_vol = [a + b for a, b in zip(d_vol, vv)]
             d_dps = [a + b for a, b in zip(d_dps, dps)]
             drone_out.append({"drone_index": meta[i]["req_index"], "type_id": meta[i]["type_id"], "name": name(i),
-                              "count": n, "volley": djson(vv), "dps": djson(dps)})
+                              "count": n, "volley": djson(vv), "dps": djson(dps),
+                              "optimal_m": g(i, "maxRange"), "falloff_m": g(i, "falloff"), "tracking": g(i, "trackingSpeed"),
+                              "max_velocity": g(i, "maxVelocity"), "signature_radius": g(i, "signatureRadius")})
         f_vol, f_dps, fighter_out = dmg(), dmg(), []
         for i in fighters:
             n = float(meta[i]["active_count"])
@@ -321,7 +431,8 @@ class FitStats:
                 f_vol = [a + b for a, b in zip(f_vol, fv)]
                 f_dps = [a + b for a, b in zip(f_dps, fd)]
                 fighter_out.append({"fighter_index": meta[i]["req_index"], "type_id": meta[i]["type_id"], "name": name(i),
-                                    "squadron_size": n, "volley": djson(fv), "dps": djson(fd)})
+                                    "squadron_size": n, "volley": djson(fv), "dps": djson(fd),
+                                    "max_velocity": g(i, "maxVelocity"), "signature_radius": g(i, "signatureRadius")})
         t_vol = [a + b + c for a, b, c in zip(w_vol, d_vol, f_vol)]
         t_dps = [a + b + c for a, b, c in zip(w_dps, d_dps, f_dps)]
         vsr = lambda d: sum(x * (1.0 - r) for x, r in zip(d, tp_res))  # noqa: E731
@@ -422,7 +533,8 @@ class FitStats:
             if cyc_raw > 0.0:
                 row["cycle_time_ms"] = cyc_raw
             if st(i) >= ACTIVE and cap_need != 0.0 and full > 0.0:
-                avg = self.avg_cycle_ms(i, factor_reload)
+                # Pyfa forces reload into capacitor boosters' average cycle (module.forceReload)
+                avg = self.avg_cycle_ms(i, factor_reload or is_inj)
                 use = cap_need / (avg / 1000.0) if avg > 0.0 else 0.0
                 if use > 0.0:
                     cap_used += use
@@ -445,6 +557,10 @@ class FitStats:
                     need *= min(sig_now / sres, 1.0)
                 dur = v.get(item, duration)
                 if need != 0.0 and dur > 0.0:
+                    if need > 0.0:
+                        cap_used += need / (math.trunc(dur) / 1000.0)
+                    else:
+                        cap_added -= need / (math.trunc(dur) / 1000.0)
                     drains.append((float(math.trunc(dur)), need, 0, 0.0, False, False))
         capj = {"capacity": cap, "recharge_time_s": rr / 1000.0, "peak_recharge_gj_s": peak, "use_gj_s": cap_used,
                 "injected_gj_s": cap_added, "delta_gj_s": peak + cap_added - cap_used}
@@ -463,6 +579,17 @@ class FitStats:
                 capj["depletes_in_s"] = r["t_s"]
             capj["eve_stable_percent"] = r["eve_stable"] * 100.0
             capj["sim_iterations"] = r["iterations"]
+
+        # ---------------- sustainable tank (Pyfa Fit.sustainableTank, eos LGPL): when the capacitor is not stable
+        # (or reload is factored), local cap-using repairers only run as far as peak recharge allows
+        sus = [shield_rep, armor_rep, hull_rep]
+        if not capj["stable"] or factor_reload:
+            sus = self._sustained(sus, mods, cap_used, cap_added, peak, factor_reload)
+        defense["tank"]["sustained"] = {"passive_shield": passive, "shield_repair": sus[0], "armor_repair": sus[1],
+                                        "hull_repair": sus[2]}
+        defense["tank"]["sustained_effective"] = {
+            "passive_shield": effectivify(passive, rs), "shield_repair": effectivify(sus[0], rs),
+            "armor_repair": effectivify(sus[1], ra), "hull_repair": effectivify(sus[2], rh)}
 
         # ---------------- navigation
         maxv = g(ship, "maxVelocity")
@@ -486,11 +613,12 @@ class FitStats:
             x = g(ship, at)
             if x > best[1]:
                 best = (n, x)
+        jam = self._jam_chance()
         scan_res = g(ship, "scanResolution")
         lt = lambda s: lock_time(scan_res, s)  # noqa: E731
         targeting = {"max_targets": min(g(ship, "maxLockedTargets"), max(g(ch, "maxLockedTargets"), 0.0)),
                      "max_range_m": g(ship, "maxTargetRange"), "scan_resolution": scan_res,
-                     "sensor_strength": best[1], "sensor_type": best[0],
+                     "sensor_strength": best[1], "sensor_type": best[0], "jam_chance_percent": jam if jam is not None else 0.0,
                      "probe_size": max(sig / best[1], 1.08) if best[1] > 0.0 else None,
                      "lock_time_s": {"sig_25m": lt(25.0), "sig_40m": lt(40.0), "sig_125m": lt(125.0), "sig_400m": lt(400.0),
                                      "sig_target_profile": lt(tp["signature_radius"]) if tp.get("signature_radius") is not None else None}}

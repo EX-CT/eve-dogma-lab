@@ -13,12 +13,14 @@ import pickle
 
 import numpy as np
 
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 ATTR_BITS = 14  # attribute ids < 16384 (max in SDE 3569502: 6465)
 ATTR_MASK = (1 << ATTR_BITS) - 1
 
 # effect ids handled by hand-written code ("specials": no modifierInfo in the SDE)
 SPECIAL_NONE, SPECIAL_AB, SPECIAL_MWD, SPECIAL_MJD, SPECIAL_SLOT, SPECIAL_HARDPOINT = 0, 1, 2, 3, 4, 5
+# fighter self abilities without modifierInfo (Pyfa hand-written handlers); only act on fighters
+SPECIAL_F_MWD, SPECIAL_F_AB, SPECIAL_F_EVASIVE = 6, 7, 8
 EFFECT_SKILL_EFFECT = 132
 
 
@@ -229,6 +231,10 @@ def _build(path):
                      ("microJumpDrive", SPECIAL_MJD), ("slotModifier", SPECIAL_SLOT),
                      ("hardPointModifierEffect", SPECIAL_HARDPOINT)):
         if nm in effect_by_name:
+            special[effect_by_name[nm]] = code
+    for nm, code in (("fighterAbilityMicroWarpDrive", SPECIAL_F_MWD), ("fighterAbilityAfterburner", SPECIAL_F_AB),
+                     ("fighterAbilityEvasiveManeuvers", SPECIAL_F_EVASIVE)):
+        if nm in effect_by_name and not effects[effect_by_name[nm]].get("mods"):
             special[effect_by_name[nm]] = code
     eff_info = {}
     for i, e in effects.items():

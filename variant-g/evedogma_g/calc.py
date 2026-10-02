@@ -43,10 +43,13 @@ def _batch(ds, parsed):
                 lst = []
                 for i in f.items:
                     m = sbatch.meta[i]
-                    copies = 1 if (m["kind"] == engine.MODULE and m["state"] >= engine.ACTIVE) else \
-                        (m["active_count"] if m["kind"] == engine.DRONE else 0)
+                    if m["kind"] in (engine.MODULE, engine.FIGHTER):
+                        copies = 1 if m["state"] >= engine.ACTIVE else 0
+                    else:
+                        copies = m["active_count"] if m["kind"] == engine.DRONE else 0
                     if copies:
-                        lst.append((m["type_id"], copies, svals.item_dict(i)))
+                        lst.append((m["type_id"], copies, svals.item_dict(i), m["kind"], m["quantity"],
+                                    m["fighter_abilities"]))
                 frozen.setdefault(k, {})[j] = lst
                 continue
             if isinstance(f, RequestError):

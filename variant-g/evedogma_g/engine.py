@@ -20,7 +20,8 @@ import math
 
 import numpy as np
 
-from .dataset import ATTR_BITS, SPECIAL_AB, SPECIAL_HARDPOINT, SPECIAL_MJD, SPECIAL_MWD, SPECIAL_SLOT
+from .dataset import (ATTR_BITS, SPECIAL_AB, SPECIAL_F_AB, SPECIAL_F_EVASIVE, SPECIAL_F_MWD, SPECIAL_HARDPOINT,
+                      SPECIAL_MJD, SPECIAL_MWD, SPECIAL_SLOT)
 from .request import RequestError
 
 # item kinds / locations
@@ -115,6 +116,36 @@ def _sec_hits(ds, src, tis):
             c.clear()
         h = c[k] = np.isin(tis, ds.sec_types[src])
     return h
+
+
+def _default_fighter_abilities(ds, effects):
+    """Pyfa default: standard attack on; other abilities (except MWD/evasive/MJD) on only if they come before the
+    standard attack in effect order"""
+    on, std_seen = [], False
+    for e in sorted(e for e, _ in effects):
+        nm = ds.effect_name.get(e)
+        if nm is None or not nm.startswith("fighterAbility"):
+            continue
+        if nm == "fighterAbilityAttackM":
+            on.append(e)
+            std_seen = True
+        elif not std_seen and nm not in ("fighterAbilityMicroWarpDrive", "fighterAbilityEvasiveManeuvers",
+                                         "fighterAbilityMicroJumpDrive"):
+            on.append(e)
+    return on
+
+
+FIGHTER_SELF = {
+    SPECIAL_F_MWD: (("maxVelocity", "fighterAbilityMicroWarpDriveSpeedBonus", 6),
+                    ("signatureRadius", "fighterAbilityMicroWarpDriveSignatureRadiusBonus", 6)),
+    SPECIAL_F_AB: (("maxVelocity", "fighterAbilityAfterburnerSpeedBonus", 6),),
+    SPECIAL_F_EVASIVE: (("maxVelocity", "fighterAbilityEvasiveManeuversSpeedBonus", 6),
+                        ("signatureRadius", "fighterAbilityEvasiveManeuversSignatureRadiusBonus", 6),
+                        ("shieldEmDamageResonance", "fighterAbilityEvasiveManeuversEmResonance", 4),
+                        ("shieldThermalDamageResonance", "fighterAbilityEvasiveManeuversThermResonance", 4),
+                        ("shieldKineticDamageResonance", "fighterAbilityEvasiveManeuversKinResonance", 4),
+                        ("shieldExplosiveDamageResonance", "fighterAbilityEvasiveManeuversExpResonance", 4)),
+}
 
 
 class BaseOverrides(dict):
@@ -362,21 +393,8 @@ class Batch:
                 fit.warnings.append(f"fighters/{i}: squadron size {q} capped to {maxsq}")
             it["active_count"] = it["quantity"] if f["active"] else 0
             self._set_state(idx, ACTIVE if f["active"] else OFFLINE)
-            if f["abilities"] is not None:
-                it["fighter_abilities"] = list(f["abilities"])
-            else:
-                on, std_seen = [], False
-                for e in sorted(e for e, _ in it["effects"]):
-                    nm = ds.effect_name.get(e)
-                    if nm is None or not nm.startswith("fighterAbility"):
-                        continue
-                    if nm == "fighterAbilityAttackM":
-                        on.append(e)
-                        std_seen = True
-                    elif not std_seen and nm not in ("fighterAbilityMicroWarpDrive", "fighterAbilityEvasiveManeuvers",
-                                                     "fighterAbilityMicroJumpDrive"):
-                        on.append(e)
-                it["fighter_abilities"] = on
+            it["fighter_abilities"] = list(f["abilities"]) if f["abilities"] is not None else \
+                _default_fighter_abilities(ds, it["effects"])
             it["req_index"] = i
             fit.fighters.append(idx)
         for i, imp in enumerate(req["implants"]):
@@ -413,14 +431,35 @@ class Batch:
                 if isinstance(frozen, str):
                     fit.warnings.append(f"projected[{i}] fit: {frozen}")
                     continue
-                for type_id, copies, vals in frozen:
+                for type_id, copies, vals, src_kind, qty, abil in frozen:
                     for _ in range(copies * max(p["amount"], 1)):
                         idx = self._new_item(fit, type_id, PROJECTED, L_NOWHERE, f"/projected/{i}", owned=False)
                         self._set_state(idx, ACTIVE)
                         self.meta[idx]["distance"] = p["distance_m"]
                         self.meta[idx]["req_index"] = i
+                        if src_kind == FIGHTER:
+                            self.meta[idx]["quantity"] = qty
+                            self.meta[idx]["active_count"] = qty
+                            self.meta[idx]["fighter_abilities"] = None if abil is None else list(abil)
                         for at, v in vals.items():
                             self.overrides[(idx, at)] = v
+            elif p["kind"] == "fighter":
+                if p["fighter"]:
+                    f = p["fighter"]
+                    sq = ds.a("fighterSquadronMaxSize")
+                    for _ in range(max(p["amount"], 1)):
+                        idx = self._new_item(fit, f["type_id"], PROJECTED, L_NOWHERE, f"/projected/{i}", owned=False)
+                        it = self.meta[idx]
+                        b = ds.type_attr(it["ti"], sq)
+                        maxsq = max(int(b) if b is not None and b > 0 else (0 if b is not None else 1), 1)
+                        self._set_state(idx, ACTIVE if f["active"] else OFFLINE)
+                        q = f["quantity"] if f["quantity"] is not None else maxsq
+                        it["quantity"] = min(max(q, 1), maxsq)
+                        it["active_count"] = it["quantity"]
+                        it["distance"] = p["distance_m"]
+                        it["req_index"] = i
+                        it["fighter_abilities"] = list(f["abilities"]) if f["abilities"] is not None else \
+                            _default_fighter_abilities(ds, it["effects"])
             elif p["kind"] == "drone":
                 if p["drone"]:
                     d = p["drone"]
@@ -658,6 +697,10 @@ class Batch:
             elif sp == SPECIAL_SLOT:
                 for t, s in (("hiSlots", "hiSlotModifier"), ("medSlots", "medSlotModifier"), ("lowSlots", "lowSlotModifier")):
                     self.push(ship, a(t), 2, SRC_ATTR, K(i, a(s)), src_item=i, src_cat=cat, order=o)
+            elif sp in FIGHTER_SELF:
+                if self.meta[i]["kind"] == FIGHTER:
+                    for t, s_, op in FIGHTER_SELF[sp]:
+                        self.push(i, a(t), op, SRC_ATTR, K(i, a(s_)), src_item=i, src_cat=cat, order=o)
             elif sp == SPECIAL_HARDPOINT:
                 for t, s in (("turretSlotsLeft", "turretHardPointModifier"), ("launcherSlotsLeft", "launcherHardPointModifier")):
                     self.push(ship, a(t), 2, SRC_ATTR, K(i, a(s)), src_item=i, src_cat=cat, order=o)
@@ -688,16 +731,34 @@ class Batch:
             return
         base = ds.type_attrs(it["ti"])
         base.update(self.overrides.of_item(i))
+        abil = it["fighter_abilities"]
+        qty = float(max(it["quantity"], 1))
+        a = ds.a
+
+        def look(n):
+            aid = a(n)
+            return int(base[aid]) if aid in base else 0  # `as u32` of the base value
+
         for en, (eid, _) in enumerate(it["effects"]):
             e = ds.eff_info.get(eid)
-            if e is None or e["category"] not in (2, 3):
+            if e is None or (e["category"] not in (2, 3) and e["name"] != "ECMBurstJammer"):
+                continue
+            if abil is not None and e["name"].startswith("fighterAbility") and eid not in abil:
                 continue
             opt = base.get(e["range_attr"], 0.0) if e["range_attr"] is not None else 0.0
             fo = base.get(e["falloff_attr"], 0.0) if e["falloff_attr"] is not None else 0.0
             factor = range_factor(opt, fo, it["distance"], True)
             resist = e["resistance_attr"]
             if resist is None:
-                resist = int(base.get(ds.a("remoteResistanceID"), 0.0)) if ds.a("remoteResistanceID") in base else 0
+                if e["name"].startswith("fighterAbility"):
+                    resist = look(e["name"] + "ResistanceID") or look(e["name"] + "RemoteResistanceID")
+                else:
+                    resist = look("remoteResistanceID")
+            doff = a("disallowOffensiveModifiers")
+            sv = self.overrides.get((ship, doff))
+            if sv is None:
+                sv = ds.type_attr(self.meta[ship]["ti"], doff)
+            target_offense_ok = sv is None or sv == 0.0
 
             def push(tattr, sattr, op):
                 self.push(ship, tattr, op, SRC_PROJ, K(i, sattr), -1, K(ship, resist) if resist else -1,
@@ -709,7 +770,21 @@ class Batch:
                         push(mod_, mding, op)
                 continue
             nm = e["name"]
-            a = ds.a
+            pb = lambda n: base.get(a(n), 0.0)  # noqa: E731
+            if nm == "fighterAbilityStasisWebifier":
+                if target_offense_ok:
+                    f = range_factor(pb("fighterAbilityStasisWebifierOptimalRange"), pb("fighterAbilityStasisWebifierFalloffRange"),
+                                     it["distance"], True) * qty
+                    self.push(ship, a("maxVelocity"), 6, SRC_PROJ, K(i, a("fighterAbilityStasisWebifierSpeedPenalty")), -1,
+                              K(ship, resist) if resist else -1, factor=f, mul=False, src_item=i, src_cat=it["category"],
+                              order=(i, en))
+                continue
+            if nm == "fighterAbilityWarpDisruption":
+                if target_offense_ok and pb("fighterAbilityWarpDisruptionRange") >= (it["distance"] or 0.0):
+                    self.push(ship, a("warpScrambleStatus"), 2, SRC_PROJ, K(i, a("fighterAbilityWarpDisruptionPointStrength")),
+                              -1, K(ship, resist) if resist else -1, factor=qty, mul=False, src_item=i,
+                              src_cat=it["category"], order=(i, en))
+                continue
             if nm.startswith("remoteWebifier") or nm == "structureModuleEffectStasisWebifier":
                 push(a("maxVelocity"), a("speedFactor"), 6)
             elif nm.startswith("remoteTargetPaint") or nm == "structureModuleEffectTargetPainter":
@@ -748,6 +823,25 @@ class Batch:
         drain = lambda amt, dur, factor, sign: [("drain", i, a(amt), a(dur), factor, resist, sign)]  # noqa: E731
         c = it["charge"]
         paste = c is not None and ds.t_name[self.meta[c]["ti"]] == "Nanite Repair Paste"
+        doff = a("disallowOffensiveModifiers")
+        so = self.overrides.get((ship, doff))
+        if so is None:
+            so = ds.type_attr(self.meta[ship]["ti"], doff)
+        no_offense = so is not None and so != 0.0
+        ecm = lambda fighter, factor: [] if no_offense else [("ecm", i, fighter, factor, resist)]  # noqa: E731
+        q = float(max(it["quantity"], 1))
+        if nm == "fighterAbilityEnergyNeutralizer":
+            f = range_factor(b("fighterAbilityEnergyNeutralizerOptimalRange"), b("fighterAbilityEnergyNeutralizerFalloffRange"), dist, True)
+            return drain("fighterAbilityEnergyNeutralizerAmount", "fighterAbilityEnergyNeutralizerDuration", f * q, 1.0)
+        if nm in ("remoteECMFalloff", "structureModuleEffectECM"):
+            return ecm(False, falloff())
+        if nm == "entityECMFalloff":
+            return ecm(False, gate(b("ECMRangeOptimal")))
+        if nm == "ECMBurstJammer":
+            return ecm(False, gate(b("ecmBurstRange")))
+        if nm == "fighterAbilityECM":
+            f = range_factor(b("fighterAbilityECMRangeOptimal"), b("fighterAbilityECMRangeFalloff"), dist, True)
+            return ecm(True, f * q)
         if nm in ("shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster"):
             return rep(0, "shieldBonus", 1.0, falloff())
         if nm in ("shipModuleRemoteArmorRepairer", "ShipModuleRemoteArmorMutadaptiveRepairer"):
