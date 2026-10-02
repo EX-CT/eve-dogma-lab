@@ -11,16 +11,58 @@ use std::sync::OnceLock;
 pub type TypeTable = LazyTable<TypeInfo>;
 
 pub struct LazyTable<T> {
-    ids: Vec<u32>,
-    /// record i = blob[offs[i]..offs[i + 1]]
-    offs: Vec<u32>,
-    blob: Blob,
-    cells: Vec<OnceLock<T>>,
-    /// dense id -> index + 1 (0 = absent), for ids below DENSE_MAX
-    dense: Vec<u32>,
+    /// ascending ids (u32 LE)
+    ids: Raw,
+    /// record i = blob[offs[i]..offs[i + 1]] (u32 LE)
+    offs: Raw,
+    blob: Raw,
+    /// dense id -> index + 1 (0 = absent), for ids below DENSE_MAX (u32 LE); stored in the cache, so loading
+    /// a table copies nothing: ids, offsets, index and records are all read from the mapping on demand
+    dense: Raw,
+    /// decoded records in chunks of CHUNK, a chunk allocated on first touch (load does not initialise a cell
+    /// per record)
+    chunks: Box<[OnceLock<Box<[OnceLock<T>]>>]>,
 }
 
 const DENSE_MAX: u32 = 1 << 22;
+const CHUNK: usize = 64;
+
+/// Immutable bytes (owned or a slice of the mapped cache) with a cached raw view.
+struct Raw {
+    _own: Blob,
+    ptr: *const u8,
+    len: usize,
+}
+// SAFETY: Raw is immutable after construction and `_own` keeps the pointed-to bytes alive and unmoved
+// (a Vec's heap buffer or an Arc'd mapping).
+unsafe impl Send for Raw {}
+unsafe impl Sync for Raw {}
+impl Raw {
+    fn new(b: Blob) -> Raw {
+        let (ptr, len) = {
+            let s = b.bytes();
+            (s.as_ptr(), s.len())
+        };
+        Raw { _own: b, ptr, len }
+    }
+    fn from_u32s(v: &[u32]) -> Raw {
+        Raw::new(Blob::Owned(v.iter().flat_map(|x| x.to_le_bytes()).collect()))
+    }
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: see the Send/Sync note above
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+    #[inline]
+    fn n32(&self) -> usize {
+        self.len / 4
+    }
+    #[inline]
+    fn u32_at(&self, i: usize) -> Option<u32> {
+        let b = self.bytes().get(i * 4..i * 4 + 4)?;
+        Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+}
 
 fn dense_of(ids: &[u32]) -> Vec<u32> {
     let n = ids.iter().copied().filter(|&i| i < DENSE_MAX).max().map(|m| m as usize + 1).unwrap_or(0);
@@ -33,36 +75,60 @@ fn dense_of(ids: &[u32]) -> Vec<u32> {
     d
 }
 
+fn chunks_for<T>(n: usize) -> Box<[OnceLock<Box<[OnceLock<T>]>>]> {
+    (0..n.div_ceil(CHUNK)).map(|_| OnceLock::new()).collect()
+}
+
 impl<T: Serialize + serde::de::DeserializeOwned> LazyTable<T> {
     pub fn from_map(m: FxHashMap<u32, T>) -> LazyTable<T> {
         let mut v: Vec<(u32, T)> = m.into_iter().collect();
         v.sort_by_key(|x| x.0);
-        let (mut ids, mut offs, mut blob, mut cells) = (Vec::new(), vec![0u32], Vec::new(), Vec::new());
-        for (id, t) in v {
-            ids.push(id);
-            blob.extend_from_slice(&bincode::serialize(&t).expect("type record"));
+        let (mut ids, mut offs, mut blob) = (Vec::new(), vec![0u32], Vec::new());
+        for (id, t) in &v {
+            ids.push(*id);
+            blob.extend_from_slice(&bincode::serialize(t).expect("type record"));
             offs.push(blob.len() as u32);
-            let c = OnceLock::new();
-            let _ = c.set(t);
-            cells.push(c);
         }
         let dense = dense_of(&ids);
-        LazyTable { ids, offs, blob: Blob::Owned(blob), cells, dense }
+        let t = LazyTable { ids: Raw::from_u32s(&ids), offs: Raw::from_u32s(&offs), blob: Raw::new(Blob::Owned(blob)), dense: Raw::from_u32s(&dense), chunks: chunks_for(ids.len()) };
+        // fresh parse: keep the already-built values instead of re-decoding them
+        let mut v = v.into_iter().map(|x| x.1);
+        for c in t.chunks.iter() {
+            let part: Box<[OnceLock<T>]> = v.by_ref().take(CHUNK).map(OnceLock::from).collect();
+            let _ = c.set(part);
+        }
+        t
     }
     #[inline]
     fn idx(&self, id: u32) -> Option<usize> {
         if id < DENSE_MAX {
-            match self.dense.get(id as usize) {
-                Some(&x) if x != 0 => Some(x as usize - 1),
+            match self.dense.u32_at(id as usize) {
+                Some(x) if x != 0 => Some(x as usize - 1),
                 _ => None,
             }
         } else {
-            self.ids.binary_search(&id).ok()
+            // ids above DENSE_MAX are rare: binary search the sorted id column
+            let (mut lo, mut hi) = (0usize, self.ids.n32());
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                let x = self.ids.u32_at(mid).unwrap();
+                match x.cmp(&id) {
+                    std::cmp::Ordering::Less => lo = mid + 1,
+                    std::cmp::Ordering::Greater => hi = mid,
+                    std::cmp::Ordering::Equal => return Some(mid),
+                }
+            }
+            None
         }
     }
     #[inline]
     fn at(&self, i: usize) -> &T {
-        self.cells[i].get_or_init(|| bincode::deserialize(&self.blob.bytes()[self.offs[i] as usize..self.offs[i + 1] as usize]).expect("type record"))
+        let n = self.ids.n32();
+        let chunk = self.chunks[i / CHUNK].get_or_init(|| (0..CHUNK.min(n - i / CHUNK * CHUNK)).map(|_| OnceLock::new()).collect());
+        chunk[i % CHUNK].get_or_init(|| {
+            let (a, b) = (self.offs.u32_at(i).unwrap() as usize, self.offs.u32_at(i + 1).unwrap() as usize);
+            bincode::deserialize(&self.blob.bytes()[a..b]).expect("type record")
+        })
     }
     #[inline]
     pub fn get(&self, id: &u32) -> Option<&T> {
@@ -72,18 +138,18 @@ impl<T: Serialize + serde::de::DeserializeOwned> LazyTable<T> {
         self.idx(*id).is_some()
     }
     pub fn len(&self) -> usize {
-        self.ids.len()
+        self.ids.n32()
     }
     pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
+        self.ids.n32() == 0
     }
     /// all types in ascending id order (decodes every record)
     pub fn values(&self) -> impl Iterator<Item = &T> {
-        (0..self.ids.len()).map(|i| self.at(i))
+        (0..self.len()).map(|i| self.at(i))
     }
     /// (id, value) in ascending id order (decodes every record)
     pub fn iter(&self) -> impl Iterator<Item = (u32, &T)> {
-        (0..self.ids.len()).map(|i| (self.ids[i], self.at(i)))
+        (0..self.len()).map(|i| (self.ids.u32_at(i).unwrap(), self.at(i)))
     }
 }
 
@@ -94,12 +160,6 @@ impl<T: Serialize + serde::de::DeserializeOwned> std::ops::Index<&u32> for LazyT
     }
 }
 
-fn u32s_to_bytes(v: &[u32]) -> Vec<u8> {
-    v.iter().flat_map(|x| x.to_le_bytes()).collect()
-}
-fn bytes_to_u32s(b: &[u8]) -> Vec<u32> {
-    b.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
-}
 
 /// Record bytes: owned (fresh parse) or borrowed from the memory-mapped derived cache.
 enum Blob {
@@ -157,16 +217,16 @@ impl<'de> Deserialize<'de> for Bytes {
 
 impl<T> Serialize for LazyTable<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        (Bytes(Blob::Owned(u32s_to_bytes(&self.ids))), Bytes(Blob::Owned(u32s_to_bytes(&self.offs))), Bytes(Blob::Owned(self.blob.bytes().to_vec()))).serialize(s)
+        let b = |r: &Raw| Bytes(Blob::Owned(r.bytes().to_vec()));
+        (b(&self.ids), b(&self.offs), b(&self.blob), b(&self.dense)).serialize(s)
     }
 }
 impl<'de, T> Deserialize<'de> for LazyTable<T> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let (ids, offs, blob) = <(Bytes, Bytes, Bytes)>::deserialize(d)?;
-        let ids = bytes_to_u32s(ids.0.bytes());
-        let cells = (0..ids.len()).map(|_| OnceLock::new()).collect();
-        let dense = dense_of(&ids);
-        Ok(LazyTable { ids, offs: bytes_to_u32s(offs.0.bytes()), blob: blob.0, cells, dense })
+        let (ids, offs, blob, dense) = <(Bytes, Bytes, Bytes, Bytes)>::deserialize(d)?;
+        let ids = Raw::new(ids.0);
+        let chunks = chunks_for(ids.n32());
+        Ok(LazyTable { ids, offs: Raw::new(offs.0), blob: Raw::new(blob.0), dense: Raw::new(dense.0), chunks })
     }
 }
 
@@ -642,7 +702,7 @@ impl Dataset {
 /// running executable (size + mtime), so a rebuilt engine or another dataset never reads a stale cache.
 /// Location: `$EVE_DOGMA_H_CACHE_DIR`, else the executable's directory. Purely an optimisation: if it is
 /// missing, unreadable or unwritable the dataset is parsed normally and results are identical.
-const CACHE_MAGIC: &[u8; 8] = b"EXCTHC01";
+const CACHE_MAGIC: &[u8; 8] = b"EXCTHC02";
 
 fn cache_key(dataset_bytes: &[u8]) -> u64 {
     let mut k = xxhash_rust::xxh3::xxh3_64(dataset_bytes) ^ (dataset_bytes.len() as u64).rotate_left(17);
