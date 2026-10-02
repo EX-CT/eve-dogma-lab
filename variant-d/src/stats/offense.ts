@@ -1,6 +1,7 @@
 import { Resists, Spool } from '../core/request.js';
 import { StatsCtx } from './ctx.js';
 import { Dmg, floatUnerr, spoolup } from './util.js';
+import { pyFloatUnerr } from '../core/operators.js';
 
 function weaponKind(c: StatsCtx, i: number): string {
   if (c.hasEffect(i, ['turretFitted'])) return 'turret';
@@ -38,7 +39,11 @@ export function offense(c: StatsCtx): object {
     const spool = c.item(i).spool ?? defaultSpool;
     const [sp] = spoolup(c.g(i, 'damageMultiplierBonusMax'), c.g(i, 'damageMultiplierBonusPerCycle'), raw / 1000, spool);
     const vol = base.scale(1 + sp);
-    const dps = cyc > 0 ? vol.scale(1000 / cyc) : new Dmg();
+    // doomsdays / lances deal their volley every doomsdayDamageCycleTime during doomsdayDamageDuration (Pyfa
+    // getVolleyParameters subcycles; the Reaper slash hits once); volley = one tick
+    const dd = c.g(i, 'doomsdayDamageDuration'), dsub = c.g(i, 'doomsdayDamageCycleTime');
+    const subcycles = dd !== 0 && dsub !== 0 && !c.hasEffect(i, ['doomsdaySlash']) ? Math.max(Math.floor(pyFloatUnerr(dd / dsub)), 0) : 1;
+    const dps = cyc > 0 ? vol.scale((subcycles * 1000) / cyc) : new Dmg();
     wVol.add(vol);
     wDps.add(dps);
     const it = c.item(i);

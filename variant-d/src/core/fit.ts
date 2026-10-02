@@ -4,7 +4,7 @@ import { TargetIndex, resolveTargets } from './domains.js';
 import { AttrGraph, Item, Kind, Loc, Mod, SrcK } from './graph.js';
 import { EXEMPT_CATEGORIES, roundHalfAway } from './operators.js';
 import { FitRequest, ModuleReq, Mutation, normalize, NormRequest, SlotName, State, STATE_NAMES } from './request.js';
-import { SpecialHandler, localSpecial, projectedSpecial, ProjSpecial, projectedFeed, PROJECTED_DAMAGE_EFFECTS } from './specials.js';
+import { SpecialHandler, activeSpecial, localSpecial, projectedSpecial, ProjSpecial, projectedFeed, PROJECTED_DAMAGE_EFFECTS } from './specials.js';
 import { rangeFactor } from '../stats/util.js';
 
 export const ATTR_SKILL_LEVEL = 280;
@@ -391,6 +391,11 @@ export class Fit extends AttrGraph {
           const used = it.fighterAbilities !== null ? it.fighterAbilities.includes(eid) : pe.isDefault;
           if (!used) continue;
         }
+        // Pyfa 'active' handlers for module effects without modifiers (some are target-category in the SDE)
+        if (pe.active !== null && kind === Kind.Module && state >= State.Active) {
+          pe.active({ fit: this, item: i, cat });
+          continue;
+        }
         if (!stateOk(e.category, state)) continue;
         if (pe.special !== null) {
           pe.special({ fit: this, item: i, cat });
@@ -481,7 +486,7 @@ export class Fit extends AttrGraph {
         }
         continue;
       }
-      if (e.name === 'shipModuleTrackingDisruptor' || e.name === 'shipModuleGuidanceDisruptor' || e.name === 'shipModuleRemoteTrackingComputer') {
+      if (e.name === 'shipModuleTrackingDisruptor' || e.name === 'shipModuleGuidanceDisruptor' || e.name === 'shipModuleRemoteTrackingComputer' || e.name === 'npcEntityWeaponDisruptor') {
         // Pyfa Effect6424 / Effect6423 / Effect6428: the target's gunnery modules (TD, remote tracking computer) /
         // missile charges (GD); the RTC is assistance (blocked by disallowAssistance), the disruptors are offensive
         const rtc = e.name === 'shipModuleRemoteTrackingComputer';
@@ -493,7 +498,10 @@ export class Fit extends AttrGraph {
           const pairs = td
             ? [['trackingSpeedBonus', 'trackingSpeed'], ['maxRangeBonus', 'maxRange'], ['falloffBonus', 'falloff']]
             : [['aoeCloudSizeBonus', 'aoeCloudSize'], ['aoeVelocityBonus', 'aoeVelocity'], ['missileVelocityBonus', 'maxVelocity'], ['explosionDelayBonus', 'explosionDelay']];
-          const tf = rangeFactor(pbase('maxRange'), pbase('falloffEffectiveness'), it.distance, true);
+          // TD drones (Pyfa Effect6694): full strength inside maxRange, nothing beyond
+          const tf = e.name === 'npcEntityWeaponDisruptor'
+            ? (pbase('maxRange') < (it.distance ?? 0) ? 0 : 1)
+            : rangeFactor(pbase('maxRange'), pbase('falloffEffectiveness'), it.distance, true);
           const n = this.items.length;
           for (let t = 0; t < n; t++) {
             const ti = this.items[t];
@@ -653,7 +661,7 @@ function applyRah(fit: Fit, req: NormRequest): void {
 
 // ------------------------------------------------------------------ compiled per-type registration plans
 interface PlanMod { func: Func; domain: Domain; modified: number; modifying: number; op: number; extra: number; bastion: boolean; nonStack: boolean }
-interface PlanEffect { eid: number; e: import('./dataset.js').EffectInfo; isDefault: boolean; special: SpecialHandler | null; mods: PlanMod[] }
+interface PlanEffect { eid: number; e: import('./dataset.js').EffectInfo; isDefault: boolean; special: SpecialHandler | null; active: SpecialHandler | null; mods: PlanMod[] }
 interface Plan { effects: PlanEffect[]; outgoing: PlanMod[]; hasSpecial: boolean }
 /** memo keyed by the (immutable) effects array of a type, or of a mutated item */
 const PLANS = new WeakMap<[number, number][], Plan>();
@@ -689,7 +697,8 @@ function planFor(ds: Dataset, typeId: number, effects: [number, number][], eBast
       mods.push(pm);
       if (m.domain !== Domain.Item) p.outgoing.push(pm);
     }
-    p.effects.push({ eid, e, isDefault: d !== 0, special, mods });
+    const active = e.mods.length === 0 ? activeSpecial(e.name) ?? null : null;
+    p.effects.push({ eid, e, isDefault: d !== 0, special, active, mods });
   }
   PLANS.set(effects, p);
   return p;

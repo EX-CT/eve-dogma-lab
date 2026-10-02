@@ -6,7 +6,7 @@
  * - Cache validity is an epoch number: invalidate() is O(1).
  */
 import { Dataset } from './dataset.js';
-import { OPERATORS, N_OPS, OP_SLOT, PENALTY } from './operators.js';
+import { OPERATORS, N_OPS, OP_SLOT, PENALTY, pyRound } from './operators.js';
 import { SlotName, Spool, State } from './request.js';
 
 export const enum Kind { Ship, Char, Skill, Module, Charge, Drone, Fighter, Implant, Booster, Mode, Beacon, Projected }
@@ -176,7 +176,7 @@ export class AttrGraph {
   private finish(i: number, val: number, p: AttrPost): number {
     if (p.min !== null) val = Math.max(val, this.get(i, p.min));
     if (p.max !== null) val = Math.min(val, this.get(i, p.max));
-    if (p.round2) val = Math.round(val * 100) / 100;
+    if (p.round2) val = pyRound(val, 2); // Python round(v, 2)
     return val;
   }
 

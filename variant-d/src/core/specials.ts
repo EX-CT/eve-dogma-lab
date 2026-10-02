@@ -3,7 +3,7 @@
  * Everything else is driven by the SDE modifierInfo (+ eve-sde-pipeline data patches).
  */
 import type { Fit } from './fit.js';
-import { SrcK } from './graph.js';
+import { Kind, Loc, SrcK } from './graph.js';
 import { rangeFactor } from '../stats/util.js';
 
 export interface SpecialCtx {
@@ -23,6 +23,50 @@ export function special(name: string, h: SpecialHandler): void {
 export function localSpecial(name: string): SpecialHandler | undefined {
   return LOCAL.get(name);
 }
+
+/**
+ * Pyfa 'active' handlers for module effects without modifierInfo (some are target-category in the SDE, so they run
+ * for any active module regardless of the effect category). Category 6 as the source category = not penalised.
+ */
+const ACTIVE = new Map<string, SpecialHandler>();
+export function activeSpecial(name: string): SpecialHandler | undefined {
+  return ACTIVE.get(name);
+}
+const superweapon: SpecialHandler = ({ fit, item, cat }) => {
+  const a = (n: string) => fit.ds.attrId(n);
+  fit.pushAttr(fit.ship, a('maxVelocity'), 6, item, a('speedFactor'), cat);
+  fit.pushAttr(fit.ship, a('warpScrambleStatus'), 2, item, a('siegeModeWarpStatus'), cat);
+};
+for (const n of ['superWeaponAmarr', 'superWeaponCaldari', 'superWeaponGallente', 'superWeaponMinmatar', 'doomsdaySlash',
+  'doomsdayBeamDOT', 'doomsdayConeDOT', 'doomsdayHOG', 'debuffLance']) ACTIVE.set(n, superweapon);
+ACTIVE.set('emergencyHullEnergizer', ({ fit, item, cat }) => {
+  for (const t of ['Em', 'Thermal', 'Kinetic', 'Explosive']) {
+    fit.pushAttr(fit.ship, fit.ds.attrId(`${t.toLowerCase()}DamageResonance`), 4, item, fit.ds.attrId(`hull${t}DamageResonance`), cat);
+  }
+});
+ACTIVE.set('entosisLink', ({ fit, item, cat }) => {
+  const a = (n: string) => fit.ds.attrId(n);
+  fit.pushAttr(fit.ship, a('disallowAssistance'), 7, item, a('disallowAssistance'), 6);
+  for (const t of ['Gravimetric', 'Magnetometric', 'Radar', 'Ladar']) fit.pushAttr(fit.ship, a(`scan${t}Strength`), 6, item, a(`scan${t}StrengthPercent`), cat);
+});
+const portal: SpecialHandler = ({ fit, item, cat }) => {
+  fit.pushAttr(fit.ship, fit.ds.attrId('signatureRadius'), 6, item, fit.ds.attrId('signatureRadiusBonusPercent'), cat);
+};
+ACTIVE.set('microJumpPortalDrive', portal);
+ACTIVE.set('microJumpPortalDriveCapital', portal);
+ACTIVE.set('warpDisruptSphere', ({ fit, item }) => {
+  const a = (n: string) => fit.ds.attrId(n);
+  const ship = fit.ship;
+  fit.push(ship, a('disallowAssistance'), 7, { k: SrcK.Const, v: 1 }, item, 6);
+  if (fit.items[item].charge >= 0) return;
+  fit.pushAttr(ship, 4, 6, item, a('massBonusPercentage'), 6);
+  fit.pushAttr(ship, a('signatureRadius'), 6, item, a('signatureRadiusBonus'), 6);
+  for (const t of fit.items) {
+    if (t.kind !== Kind.Module || t.loc !== Loc.Ship || fit.ds.groups.get(t.group)?.name !== 'Propulsion Module') continue;
+    fit.pushAttr(t.idx, a('speedBoostFactor'), 6, item, a('speedBoostFactorBonus'), 6);
+    fit.pushAttr(t.idx, a('speedFactor'), 6, item, a('speedFactorBonus'), 6);
+  }
+});
 
 // --- propulsion: AB / MWD -------------------------------------------------------------
 const propulsion = (mwd: boolean): SpecialHandler => ({ fit, item, cat }) => {
@@ -104,7 +148,7 @@ export type ProjSpecial =
 export const PROJECTED_DAMAGE_EFFECTS = new Set([
   'projectileFired', 'targetAttack', 'useMissiles', 'barrage', 'targetDisintegratorAttack', 'missileLaunchingForEntity',
   'fighterAbilityAttackM', 'fighterAbilityMissiles', 'superWeaponAmarr', 'superWeaponCaldari', 'superWeaponGallente',
-  'superWeaponMinmatar', 'mining', 'miningLaser', 'miningClouds', 'dotMissileLaunching',
+  'superWeaponMinmatar', 'mining', 'miningLaser', 'miningClouds', 'dotMissileLaunching', 'ChainLightning', 'salvageDroneEffect',
 ]);
 
 type FeedFn = (h: FeedHelpers) => ProjSpecial[];

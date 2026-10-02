@@ -33,3 +33,27 @@ export const EXEMPT_CATEGORIES = new Set([6, 8, 16, 20, 32, 65]);
 
 /** Rust-compatible rounding (half away from zero). */
 export const roundHalfAway = (x: number): number => (x < 0 ? -Math.round(-x) : Math.round(x));
+
+/**
+ * Python round(x, n) for n >= 0: correctly rounded on the exact binary value, ties to even. A tie needs
+ * x * 2^(n+1) to be an integer; toFixed (exact, ties away from zero) does the rest.
+ */
+export function pyRound(x: number, n: number): number {
+  if (!Number.isFinite(x)) return x;
+  if (n < 0) { const p = Math.pow(10, -n); return roundHalfAway(x / p) * p; }
+  if (n > 99) return x;
+  // an exact tie has at most n + 1 binary fraction digits (x * 2^(n+1) integral, exact), so toFixed(n + 1) is exact
+  const t = Number.isInteger(x * Math.pow(2, n + 1)) ? x.toFixed(n + 1) : '';
+  if (t.endsWith('5')) {
+    const toZero = t.slice(0, -1);
+    const last = toZero.charCodeAt(toZero.length - 1) === 46 ? toZero.charCodeAt(toZero.length - 2) : toZero.charCodeAt(toZero.length - 1);
+    if ((last - 48) % 2 === 0) return Number(toZero);
+  }
+  return Number(x.toFixed(n));
+}
+
+/** Pyfa eos.utils.float.floatUnerr: round(value, 7 - ceil(log10(|value|))) */
+export function pyFloatUnerr(v: number): number {
+  if (v === 0 || v === Infinity) return v;
+  return pyRound(v, Math.trunc(7 - Math.ceil(Math.log10(Math.abs(v)))));
+}
