@@ -97,3 +97,12 @@ func BenchmarkAllCasesJSON(b *testing.B) {
 	}
 	b.ReportMetric(float64(b.Elapsed().Microseconds())/float64(b.N*len(raws)), "us/fit")
 }
+
+// BenchmarkCase: one named request, e.g. CASE=projfit_svipul_on_vexor go test -bench Case ./dogma
+func BenchmarkCase(b *testing.B) {
+	name := os.Getenv("CASE")
+	if name == "" {
+		b.Skip("set CASE=<request name>")
+	}
+	benchOne(b, name)
+}

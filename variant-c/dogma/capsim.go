@@ -23,10 +23,10 @@ type CapResult struct {
 
 type capEv struct {
 	t, duration, capNeed float64
-	shot, clip           uint32
 	reload               float64
+	shot, clip           uint32
+	seq                  uint32 // < 5M + #drains (iteration cap), so 32 bits suffice
 	inj                  bool
-	seq                  uint64
 }
 
 func evLess(a, b *capEv) bool {
@@ -73,10 +73,10 @@ func (h *evHeap) push(e capEv) {
 	a[i] = e
 }
 
-func (h *evHeap) pop() capEv {
+func (h *evHeap) pop(top *capEv) {
 	a := *h
 	n := len(a) - 1
-	top := a[0]
+	*top = a[0]
 	last := a[n]
 	a = a[:n]
 	i := 0
@@ -99,7 +99,6 @@ func (h *evHeap) pop() capEv {
 		a[i] = last
 	}
 	*h = a
-	return top
 }
 
 func gcd(a, b uint64) uint64 {
@@ -114,7 +113,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 	tau := rechargeMs / 5
 	hh := make(evHeap, 0, 2*len(drains)+4)
 	h := &hh
-	var seq uint64
+	var seq uint32
 	period := uint64(1)
 	disablePeriod := false
 	type grp struct {
@@ -149,7 +148,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		}
 		if d.IsInjector {
 			for k := uint32(0); k < n; k++ {
-				h.push(capEv{0, d.Duration, d.CapNeed, 0, d.ClipSize, d.ReloadMs, true, seq})
+				h.push(capEv{0, d.Duration, d.CapNeed, d.ReloadMs, 0, d.ClipSize, seq, true})
 				seq++
 			}
 			continue
@@ -160,7 +159,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 			} else {
 				st := (d.Duration*float64(d.ClipSize) + d.ReloadMs) / (float64(n) * float64(d.ClipSize))
 				for k := uint32(1); k < n; k++ {
-					h.push(capEv{float64(k) * st, d.Duration, d.CapNeed, 0, d.ClipSize, d.ReloadMs, false, seq})
+					h.push(capEv{float64(k) * st, d.Duration, d.CapNeed, d.ReloadMs, 0, d.ClipSize, seq, false})
 					seq++
 				}
 			}
@@ -169,7 +168,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		}
 		dur := uint64(math.Max(math.Round(d.Duration), 1))
 		period = period / gcd(period, dur) * dur
-		h.push(capEv{0, d.Duration, d.CapNeed, 0, d.ClipSize, d.ReloadMs, false, seq})
+		h.push(capEv{0, d.Duration, d.CapNeed, d.ReloadMs, 0, d.ClipSize, seq, false})
 		seq++
 	}
 	periodF := float64(period)
@@ -222,8 +221,22 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		seq++
 		h.push(inj)
 	}
+	// exp((tLast-tNow)/tau) memo: event spacings repeat (periodic modules), exp is pure, so results are identical
+	var expK [256]uint64
+	var expV [256]float64
+	expOf := func(dt float64) float64 {
+		bits := math.Float64bits(dt)
+		slot := (bits * 0x9E3779B97F4A7C15) >> 56
+		if expK[slot] == bits && bits != 0 {
+			return expV[slot]
+		}
+		v := math.Exp(dt / tau)
+		expK[slot], expV[slot] = bits, v
+		return v
+	}
+	var ev capEv
 	for len(*h) > 0 {
-		ev := h.pop()
+		h.pop(&ev)
 		tNow := ev.t
 		if tNow >= tMaxMs {
 			lastEv, haveLast = ev, true
@@ -231,7 +244,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		}
 		if tNow > tLast && capMax > 0 && tau > 0 {
 			x := math.Sqrt(math.Max(cap/capMax, 0))
-			y := 1 + (x-1)*math.Exp((tLast-tNow)/tau)
+			y := 1 + (x-1)*expOf(tLast-tNow)
 			cap = y * y * capMax
 		}
 		if tNow != tLast {
