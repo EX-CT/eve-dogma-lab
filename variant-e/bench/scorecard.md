@@ -1,6 +1,6 @@
-# Scorecard: e-dev
+# Scorecard: E
 
-- command: `/workspace/exct-eve/lab-e/variant-e/target/release/eve-dogma-e calc --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`, batch: `/workspace/exct-eve/lab-e/variant-e/target/release/eve-dogma-e batch --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`
+- command: `./target/release/eve-dogma-e calc --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`, batch: `./target/release/eve-dogma-e batch --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`
 - cases fully correct: **249/249**
 - values correct: **13812/13812** (100.00 %)
 - engine errors: 0
@@ -18,8 +18,8 @@
 
 | perf | value |
 |---|---|
-| one process per case, median ms (cold start + calc) | 149.7 |
-| batch throughput (corpus x1) fits/s | 989 |
-| latency one fit (exct_rifter) ms/calc | -8.453 |
-| startup + one calc ms | 166.1 |
+| one process per case, median ms (cold start + calc) | 160.2 |
+| batch throughput (corpus x1) fits/s | 1015 |
+| latency one fit (exct_rifter) ms/calc | 0.569 |
+| startup + one calc ms | 197.5 |
 | deterministic | True |
