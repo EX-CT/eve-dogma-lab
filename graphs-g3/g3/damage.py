@@ -940,12 +940,23 @@ def _apply(maps, apps, tgt, settings, n):
 
 
 class _Entries:
-    """time-cache column of one dealer prepared for array evaluation: entry list (Dmg), unerr'd change times,
-    resisted 4-vectors per resist profile and breacher tick matrices (built once per time cache)"""
-    __slots__ = ("ents", "times", "_res", "_ticks")
+    """time-cache column of one dealer prepared for array evaluation: entry 4-vectors, unerr'd change times,
+    resisted vectors per resist profile and breacher tick matrices (built once per time cache).
+    cum=True: entry e is the running sum of increments 0..e (same float operations as chaining Dmg.plus)."""
+    __slots__ = ("vs", "bs", "cum", "n", "times", "_res", "_ticks")
 
-    def __init__(self, times, ents):
-        self.ents = ents
+    def __init__(self, times, dmgs, cum=False):
+        self.cum = cum
+        if cum:
+            vs, acc = [], (0.0, 0.0, 0.0, 0.0)
+            for m in dmgs:
+                acc = tuple(x + y for x, y in zip(acc, m.v))
+                vs.append(acc)
+            self.vs = vs
+        else:
+            self.vs = [m.v for m in dmgs]
+        self.bs = [m.b for m in dmgs]
+        self.n = len(dmgs)
         self.times = unerr(np.asarray(times, float)) if len(times) else None
         self._res = {}
         self._ticks = None
@@ -958,36 +969,65 @@ class _Entries:
     def resisted(self, res):
         R = self._res.get(res)
         if R is None:
-            R = self._res[res] = np.array([[x * (1 - r) for x, r in zip(m.v, res)] for m in self.ents],
-                                          float).reshape(len(self.ents), 4)
+            R = self._res[res] = np.array([[x * (1 - r) for x, r in zip(v, res)] for v in self.vs],
+                                          float).reshape(self.n, 4)
         return R
 
     def ticks(self):
         """(has_b per entry, ordered tick keys per entry, tick key list, AB, RL, present) or None"""
         if self._ticks is None:
-            hasb = np.array([bool(m.b) for m in self.ents], bool)
-            if not hasb.any():
-                self._ticks = False
-            else:
-                keys, pos = [], {}
-                lmax = 1
-                for m in self.ents:
-                    for t, L in m.b.items():
-                        if t not in pos:
-                            pos[t] = len(keys)
-                            keys.append(t)
-                        lmax = max(lmax, len(L))
-                E, T = len(self.ents), len(keys)
-                AB, RL = np.zeros((E, T, lmax)), np.zeros((E, T, lmax))
-                PR = np.zeros((E, T, lmax), bool)
-                for e, m in enumerate(self.ents):
-                    for t, L in m.b.items():
-                        ti = pos[t]
-                        for l, (ab, rl) in enumerate(L):
-                            AB[e, ti, l], RL[e, ti, l], PR[e, ti, l] = ab, rl, True
-                ekeys = [[pos[t] for t in m.b] for m in self.ents]
-                self._ticks = (hasb, ekeys, keys, AB, RL, PR)
+            self._ticks = (self._cum_ticks() if self.cum else self._plain_ticks()) or False
         return self._ticks or None
+
+    def _plain_ticks(self):
+        hasb = np.array([bool(b) for b in self.bs], bool)
+        if not hasb.any():
+            return None
+        keys, pos = [], {}
+        lmax = 1
+        for b in self.bs:
+            for t, L in b.items():
+                if t not in pos:
+                    pos[t] = len(keys)
+                    keys.append(t)
+                lmax = max(lmax, len(L))
+        E, T = self.n, len(keys)
+        AB, RL = np.zeros((E, T, lmax)), np.zeros((E, T, lmax))
+        PR = np.zeros((E, T, lmax), bool)
+        for e, b in enumerate(self.bs):
+            for t, L in b.items():
+                ti = pos[t]
+                for l, (ab, rl) in enumerate(L):
+                    AB[e, ti, l], RL[e, ti, l], PR[e, ti, l] = ab, rl, True
+        ekeys = [[pos[t] for t in b] for b in self.bs]
+        return hasb, ekeys, keys, AB, RL, PR
+
+    def _cum_ticks(self):
+        # running sum e holds every tick key seen in increments 0..e (first-appearance order) with the
+        # concatenated (absolute, relative) lists: build it incrementally instead of materialising every sum
+        keys, pos, cnt, items, nk = [], {}, [], [], []
+        for e, b in enumerate(self.bs):
+            for t, L in b.items():
+                if t not in pos:
+                    pos[t] = len(keys)
+                    keys.append(t)
+                    cnt.append(0)
+                ti = pos[t]
+                for ab, rl in L:
+                    items.append((e, ti, cnt[ti], ab, rl))
+                    cnt[ti] += 1
+            nk.append(len(keys))
+        if not keys:
+            return None
+        E, T = self.n, len(keys)
+        lmax = max([1] + cnt)
+        AB, RL = np.zeros((E, T, lmax)), np.zeros((E, T, lmax))
+        PR = np.zeros((E, T, lmax), bool)
+        for e, ti, l, ab, rl in items:
+            AB[e:, ti, l], RL[e:, ti, l], PR[e:, ti, l] = ab, rl, True
+        hasb = np.array([k > 0 for k in nk], bool)
+        ekeys = [list(range(k)) for k in nk]
+        return hasb, ekeys, keys, AB, RL, PR
 
 
 class _PP:
@@ -1020,12 +1060,7 @@ def _per_point_maps(c, tq, n, what):
                 col = 1 if what == "dps" else 2
                 E = _Entries([p[0] for p in pts], [p[col] for p in pts])
             else:
-                cum = []
-                acc = Dmg()
-                for m in dmgs:
-                    acc = acc.plus(m)
-                    cum.append(acc)
-                E = _Entries(dts, cum)
+                E = _Entries(dts, dmgs, cum=True)
             prep[(key, mode)] = E
         if tqu is None:
             tqu = unerr(tq)
@@ -1071,7 +1106,7 @@ def _pp_apply(dm, a, res, hp, n, tot, gpos, gcols):
     E, k = dm.E, dm.k
     valid = k >= 0
     kk = np.where(valid, k, 0)
-    if len(E.ents):
+    if E.n:
         R = E.resisted(res)
         vec = np.where(valid[:, None], R[kk], 0.0)
     else:
