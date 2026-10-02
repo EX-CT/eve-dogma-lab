@@ -130,6 +130,8 @@ pub struct Dataset {
     pub sha256: String,
     pub types: TypeTable,
     pub groups: FxHashMap<u32, GroupInfo>,
+    /// category id -> English name
+    pub categories: FxHashMap<u32, String>,
     pub attrs: FxHashMap<u32, AttrInfo>,
     pub effects: LazyTable<EffectInfo>,
     pub dbuffs: LazyTable<DbuffInfo>,
@@ -154,6 +156,8 @@ struct RawDs {
     format_version: u32,
     sde: RawSde,
     groups: IdVec<RawGroup>,
+    #[serde(default)]
+    categories: IdVec<RawCategory>,
     attributes: IdVec<RawAttr>,
     effects: IdVec<RawEffect>,
     types: IdVec<RawType>,
@@ -168,6 +172,11 @@ struct RawDs {
 struct RawSde {
     build: u64,
     release_date: Option<String>,
+}
+#[derive(Deserialize)]
+struct RawCategory {
+    #[serde(default)]
+    name: Option<String>,
 }
 #[derive(Deserialize)]
 struct RawGroup {
@@ -344,6 +353,7 @@ impl Dataset {
             sha256: main.sha256,
             types: LazyTable::decode(&blob, secs[2].0, secs[2].1)?,
             groups: main.groups,
+            categories: main.categories,
             attrs: main.attrs,
             effects: LazyTable::decode(&blob, secs[3].0, secs[3].1)?,
             dbuffs: LazyTable::decode(&blob, secs[4].0, secs[4].1)?,
@@ -364,6 +374,7 @@ impl Dataset {
             release_date: self.release_date.clone(),
             sha256: self.sha256.clone(),
             groups: self.groups.clone(),
+            categories: self.categories.clone(),
             attrs: self.attrs.clone(),
             skills: self.skills.clone(),
             skills_foldable: self.skills_foldable,
@@ -473,6 +484,7 @@ impl Dataset {
         for (k, g) in raw.groups.0 {
             groups.insert(k, GroupInfo { name: g.name.unwrap_or_default(), category: g.category });
         }
+        let categories = raw.categories.0.into_iter().map(|(k, c)| (k, c.name.unwrap_or_default())).collect();
         let mut types = FxHashMap::default();
         let mut type_by_name = FxHashMap::default();
         let mut skills = Vec::new();
@@ -529,6 +541,7 @@ impl Dataset {
             sha256,
             types: TypeTable::from_map(types, |t| t.group),
             groups,
+            categories,
             attrs,
             effects: LazyTable::from_map(effects, |_| 0),
             dbuffs: LazyTable::from_map(dbuffs, |_| 0),
@@ -659,7 +672,7 @@ impl<'de> Deserialize<'de> for IdKey {
     }
 }
 
-const SNAPSHOT_VERSION: u32 = 4;
+const SNAPSHOT_VERSION: u32 = 5;
 
 /// Snapshot bytes: memory-mapped cache file (pages faulted in on use) or an owned buffer.
 pub enum Blob {
@@ -947,6 +960,7 @@ struct Snapshot {
     release_date: Option<String>,
     sha256: String,
     groups: FxHashMap<u32, GroupInfo>,
+    categories: FxHashMap<u32, String>,
     attrs: FxHashMap<u32, AttrInfo>,
     skills: Vec<u32>,
     skills_foldable: bool,

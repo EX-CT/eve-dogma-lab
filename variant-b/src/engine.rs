@@ -1043,6 +1043,32 @@ impl<'a> Fit<'a> {
                         push(self, ds.attr_id(&format!("scan{t}Strength")), ds.attr_id(&format!("scan{t}StrengthPercent")), 6);
                     }
                 }
+            } else if name == "shipModuleTrackingDisruptor" || name == "shipModuleGuidanceDisruptor" {
+                // Pyfa Effect6424 / Effect6423: boost the target's gunnery modules / missile charges
+                if target_offense_ok {
+                    let (skill, charges, pairs): (&str, bool, &[(&str, &str)]) = if name == "shipModuleTrackingDisruptor" {
+                        ("Gunnery", false, &[("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"), ("falloffBonus", "falloff")])
+                    } else {
+                        ("Missile Launcher Operation", true, &[("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"), ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay")])
+                    };
+                    let sk = ds.type_by_name(skill).unwrap_or(0);
+                    let tf = {
+                        let it = &self.items[i];
+                        crate::stats::range_factor(it.base_opt(ds.attr_id("maxRange")).unwrap_or(0.0), it.base_opt(ds.attr_id("falloffEffectiveness")).unwrap_or(0.0), it.distance, true)
+                    };
+                    let targets: Vec<usize> = (0..self.items.len())
+                        .filter(|&t| {
+                            let it = &self.items[t];
+                            it.loc == Loc::Ship && it.owned && if charges { it.kind == Kind::Charge } else { it.kind == Kind::Module } && it.req_skills.contains(&sk)
+                        })
+                        .collect();
+                    for t in targets {
+                        for (src_a, tgt_a) in pairs {
+                            let src = Src::Projected { item: i as u32, attr: ds.attr_id(src_a), factor: tf, target: ship as u32, resist, mul: false };
+                            self.push_mod(t, ds.attr_id(tgt_a), 6, src, src_cat);
+                        }
+                    }
+                }
             } else if let Some(ps) = self.proj_special_for(i, name, resist) {
                 self.proj_special.extend(ps);
             } else if DAMAGE_EFFECTS.contains(&name) {

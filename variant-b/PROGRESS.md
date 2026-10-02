@@ -38,3 +38,11 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   same pops and same final heap layout, so results are bit-identical; randomised test vs the reference port),
   lazy comparator, exp() memo. Vexor-type fits ~1.15 ms -> ~0.6 ms wall.
 - Parity: 289/289 byte-identical vs A@ae4bfb0; oracle 18 591 values.
+
+## 2026-10-03 ~05:50 CST — contract 1.4.1/1.4.2 (A@e552cb9), cold start
+- Ported: exit-2 error JSON, options default validate=true, interim search spec, Pyfa-exact EFT export (eft.rs/request.rs
+  synced), dataset categories, projected tracking/guidance disruptors; mimalloc global allocator (as A).
+- Lazy effects / dbuffs / mutaplasmids tables, zero-copy name indexes (FNV open addressing in the snapshot),
+  precomputed skills_foldable: cold calc ~8 ms -> ~6.5 ms.
+- bench.yaml: rpc_cmd (eft export column). Parity: 295/295 byte-identical vs A@e552cb9, eft_export 295/295,
+  search outputs identical; oracle + eft_export_parity tests pass.
