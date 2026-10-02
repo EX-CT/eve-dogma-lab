@@ -58,7 +58,6 @@ export class Dataset {
   effects = new Map<number, EffectInfo>();
   dbuffs = new Map<number, DbuffInfo>();
   mutaplasmids = new Map<number, MutaInfo>();
-  namesZh = new Map<number, string>();
   /** all skill type ids (category 16), sorted */
   skills: number[] = [];
   /** published skills, sorted */
@@ -88,6 +87,18 @@ export class Dataset {
     }
     const ds = new Dataset();
     ds.sha256 = sha256;
+    ds.initCommon(raw);
+    const ids = Object.keys(raw.types).map(Number).sort((a, b) => a - b);
+    for (const id of ids) ds.addType(id, raw.types[id]);
+    ds.finishTypes();
+    const zh = raw.names?.zh ?? {};
+    ds.zhSource = () => zh;
+    return ds;
+  }
+
+  /** attributes, effects, groups, dbuffs, mutaplasmids, sde info (shared by JSON and cache loaders) */
+  initCommon(raw: any): void {
+    const ds = this;
     ds.build = raw.sde.build;
     ds.releaseDate = raw.sde.release_date ?? null;
     for (const k in raw.attributes) {
@@ -120,32 +131,48 @@ export class Dataset {
       ei.itemOnly = ei.mods.every((m) => m.domain === Domain.Item);
     }
     for (const k in raw.groups) ds.groups.set(+k, { name: raw.groups[k].name ?? '', category: raw.groups[k].category });
-    const ids = Object.keys(raw.types).map(Number).sort((a, b) => a - b);
-    for (const id of ids) {
-      const t = raw.types[id];
-      const name: string = t.name ?? '';
-      const key = name.toLowerCase();
-      const prev = ds.typeByNameMap.get(key);
-      // prefer published types; among equals keep the lowest id (deterministic)
-      if (prev === undefined || (t.published && !ds.types.get(prev)!.published)) ds.typeByNameMap.set(key, id);
-      if (t.category === 16) ds.skills.push(id);
-      // reuse the parsed raw object in place (no per-type allocation)
-      t.id = id;
-      t.name = name;
-      t.published = !!t.published;
-      t.mass ??= 0; t.volume ??= 0; t.capacity ??= 0; t.radius ??= 0;
-      t.marketGroup = t.market_group ?? null; t.metaGroup = t.meta_group ?? null; t.metaLevel = t.meta_level ?? null;
-      t.variationParent = t.variation_parent ?? null;
-      t.rawAttrs = t.attrs ?? {};
-      t.effects ??= [];
-      ds.types.set(id, t as TypeInfo);
-    }
-    ds.publishedSkills = ds.skills.filter((s) => ds.types.get(s)!.published);
     for (const k in raw.dbuffs ?? {}) ds.dbuffs.set(+k, raw.dbuffs[k]);
     for (const k in raw.mutaplasmids ?? {}) ds.mutaplasmids.set(+k, raw.mutaplasmids[k]);
-    const zh = raw.names?.zh ?? {};
-    for (const k in zh) ds.namesZh.set(+k, zh[k]);
-    return ds;
+  }
+
+  /** register one type (raw dataset shape, or a cache record exposing the same fields); ids ascending */
+  addType(id: number, t: any): void {
+    const name: string = t.name ?? '';
+    const key = name.toLowerCase();
+    const prev = this.typeByNameMap.get(key);
+    // prefer published types; among equals keep the lowest id (deterministic)
+    if (prev === undefined || (t.published && !this.types.get(prev)!.published)) this.typeByNameMap.set(key, id);
+    if (t.category === 16) this.skills.push(id);
+    if (t instanceof Object && 'rawAttrs' in t) {
+      this.types.set(id, t as TypeInfo);
+      return;
+    }
+    // reuse the parsed raw object in place (no per-type allocation)
+    t.id = id;
+    t.name = name;
+    t.published = !!t.published;
+    t.mass ??= 0; t.volume ??= 0; t.capacity ??= 0; t.radius ??= 0;
+    t.marketGroup = t.market_group ?? null; t.metaGroup = t.meta_group ?? null; t.metaLevel = t.meta_level ?? null;
+    t.variationParent = t.variation_parent ?? null;
+    t.rawAttrs = t.attrs ?? {};
+    t.effects ??= [];
+    this.types.set(id, t as TypeInfo);
+  }
+
+  finishTypes(): void {
+    this.publishedSkills = this.skills.filter((s) => this.types.get(s)!.published);
+  }
+
+  /** zh names, materialised on first use */
+  zhSource: () => Record<string, string> = () => ({});
+  private zhMap: Map<number, string> | null = null;
+  get namesZh(): Map<number, string> {
+    if (this.zhMap === null) {
+      const zh = this.zhSource();
+      this.zhMap = new Map();
+      for (const k in zh) this.zhMap.set(+k, zh[k]);
+    }
+    return this.zhMap;
   }
 
   attrId(name: string): number { return this.attrByName.get(name) ?? 0; }

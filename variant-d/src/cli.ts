@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { calc, calcJson, meta, parseEft, rpc, search, typeInfo } from './index.js';
-import { datasetPath, loadDatasetFile } from './node.js';
+import { datasetPath, loadDatasetFile, writeCache } from './node.js';
 
 const USAGE = `eve-dogma-ts <command> [--dataset PATH] [args]
 
@@ -16,6 +16,7 @@ Commands:
   type ID|NAME           show type with base attributes
   meta                   dataset info
   bench [FILE] [-n N]    time N calculations of a request
+  cache                  build the fast cold-start cache for the dataset (.cache/)
 
 Dataset: --dataset PATH, or $EVE_DOGMA_DATASET, or ./dataset.json.gz`;
 
@@ -83,6 +84,11 @@ async function main() {
         process.stderr.write(`error: ${(e as Error).message}\n`);
         process.exit(2);
       }
+      break;
+    }
+    case 'cache': {
+      // precompute the fast-start cache for the dataset (pure re-layout of the same data)
+      out(writeCache(datasetPath(datasetArg)));
       break;
     }
     case 'search': out(JSON.stringify(search(load(), args.slice(1).join(' '), 25), null, 2)); break;

@@ -1,3 +1,5 @@
-build: npm ci --silent && npm run build --silent
+# eve-dogma-bench manifest for Variant D (TypeScript engine)
+# build also precomputes the fast-start cache (.cache/, a pure re-layout of the dataset; CLI falls back to the dataset if absent)
+build: npm ci --silent && npm run build --silent && node dist/cli.js cache --dataset {dataset}
 cmd: node dist/cli.js calc --dataset {dataset}
 batch_cmd: node dist/cli.js batch --dataset {dataset}
