@@ -86,12 +86,18 @@ class LazyType implements TypeInfo {
 
 class TypeTable implements TypeStore {
   private objs: (LazyType | undefined)[];
-  private rowOf = new Map<number, number>();
+  rowOf = new Map<number, number>();
   private names: string[] | null = null;
   private dec = new TextDecoder();
   constructor(readonly c: Cols, public bytes: Uint8Array | null, private body: number, private namesAt: [number, number]) {
     this.objs = new Array(c.id.length);
-    for (let r = 0; r < c.id.length; r++) this.rowOf.set(c.id[r], r);
+    this.indexRows();
+  }
+  /** id -> row map (rebuilt after a snapshot instead of being stored in it) */
+  indexRows(): void {
+    const id = this.c.id, m = new Map<number, number>();
+    for (let r = 0; r < id.length; r++) m.set(id[r], r);
+    this.rowOf = m;
   }
   slice(off: number, len: number): string { return this.dec.decode(this.bytes!.subarray(this.body + off, this.body + off + len)); }
   name(row: number): string {
@@ -184,6 +190,7 @@ export function detachCacheBytes(ds: Dataset): { size: number; head: number[] } 
   if (!(tab instanceof TypeTable) || tab.bytes === null) return null;
   const b = tab.bytes;
   tab.bytes = null;
+  tab.rowOf = new Map();
   // numeric columns without nulls as typed arrays: same values, fewer bytes in the snapshot
   const c = tab.c as unknown as Record<string, ArrayLike<number | null>>;
   for (const k of Object.keys(c)) {
@@ -198,5 +205,6 @@ export function attachCacheBytes(ds: Dataset, bytes: Uint8Array, sig: { size: nu
   if (!(tab instanceof TypeTable) || bytes.length !== sig.size) return false;
   for (let i = 0; i < sig.head.length; i++) if (bytes[i] !== sig.head[i]) return false;
   tab.bytes = bytes;
+  tab.indexRows();
   return true;
 }
