@@ -251,12 +251,25 @@ impl<'a> Fit<'a> {
         }
         let mut lv: Vec<(u32, u8)> = levels.into_iter().filter(|(s, _)| ds.types.contains_key(s)).collect();
         lv.sort();
-        for (s, l) in lv {
-            let l = l.min(5);
-            let mut slots = FxHashMap::with_capacity_and_hasher(2, Default::default());
-            slots.insert(ds.a.skill_level, AttrSlot::new(l as f64));
-            let e = fit.spawn_item_slots(s, Kind::Skill, Loc::Char, State::Online, "/character/skills", slots)?;
-            fit.skills.push((e, s, l));
+        // one batch spawn into the skill archetype (all skill types exist: filtered above)
+        let sl = ds.a.skill_level;
+        let batch: Vec<_> = lv
+            .iter()
+            .map(|&(s, l)| {
+                let t = &ds.types[&s];
+                let mut slots = FxHashMap::with_capacity_and_hasher(2, Default::default());
+                slots.insert(sl, AttrSlot::new(l.min(5) as f64));
+                (
+                    Item { type_id: s, group: t.group, category: t.category, kind: Kind::Skill, loc: Loc::Char, owned: false },
+                    Power(State::Online),
+                    Attrs { type_id: s, slots },
+                )
+            })
+            .collect();
+        let ents: Vec<Entity> = fit.world.spawn_batch(batch).collect();
+        for (e, &(s, l)) in ents.into_iter().zip(lv.iter()) {
+            fit.order.push(e);
+            fit.skills.push((e, s, l.min(5)));
         }
         // tactical destroyers: default to the first mode like the client / Pyfa
         let mode_id = req.ship.mode_type_id.or_else(|| {
