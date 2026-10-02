@@ -202,6 +202,7 @@ impl<'a> Fit<'a> {
             extra_drains: Vec::new(),
             rr: Vec::new(),
             gang_sink: None,
+            explicit_buff_ids: Vec::new(),
             ecm: Vec::new(),
             rep_afflictions: Vec::new(),
             warnings: Vec::new(),
@@ -511,8 +512,25 @@ impl<'a> Fit<'a> {
                 self.calc_module(md, rt, true);
             }
             if rt == RT_NORMAL {
+                // contract v1.4.2: explicit fleet.buffs override (aggregated per id by the buff's aggregate
+                // mode); booster-fit values and the fit's own bursts for those ids are dropped
+                let mut agg: Vec<(u32, f64)> = Vec::new();
                 for &(id, v) in explicit_buffs {
-                    self.add_command_bonus(id as f64, v, NONE, RT_NORMAL);
+                    let maxm = self.ds.dbuffs.get(&id).map(|b| b.aggregate_max).unwrap_or(true);
+                    match agg.iter_mut().find(|x| x.0 == id) {
+                        Some(x) => x.1 = if maxm { x.1.max(v) } else { x.1.min(v) },
+                        None => agg.push((id, v)),
+                    }
+                }
+                for (id, v) in agg {
+                    if !self.explicit_buff_ids.contains(&id) {
+                        self.explicit_buff_ids.push(id);
+                    }
+                    let b = CommandBonus { id, run_time: RT_NORMAL, value: v, thing: NONE, effect: 0 };
+                    match self.command_bonuses.iter_mut().find(|x| x.id == id) {
+                        Some(x) => *x = b,
+                        None => self.command_bonuses.push(b),
+                    }
                 }
             }
             if gang.is_none() {

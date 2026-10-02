@@ -74,6 +74,16 @@ fn pop(h: &mut Vec<Act>) -> Option<Act> {
     }
 }
 
+/// `a % b == 0.0` (C fmod), using integer arithmetic when both are small integers (fmod is exact, so identical)
+#[inline]
+fn mod_zero(a: f64, b: f64) -> bool {
+    if a >= 0.0 && b >= 1.0 && a < 2147483648.0 && b < 2147483648.0 && a.fract() == 0.0 && b.fract() == 0.0 {
+        (a as u64) % (b as u64) == 0
+    } else {
+        a % b == 0.0
+    }
+}
+
 fn lcm(a: f64, b: f64) -> f64 {
     let n = a * b;
     let (mut a, mut b) = (a, b);
@@ -86,7 +96,7 @@ fn lcm(a: f64, b: f64) -> f64 {
 }
 
 fn py_round1(v: f64) -> f64 {
-    format!("{:.1}", v).parse().unwrap_or(v)
+    super::stats::py_round_digits(v, 1)
 }
 
 pub struct SimResult {
@@ -176,7 +186,7 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
         }
         let mut t = t_now + d;
         shot += 1.0;
-        if clip != 0.0 && shot % clip == 0.0 {
+        if clip != 0.0 && mod_zero(shot, clip) {
             shot = 0.0;
             t += rt;
         }
@@ -265,7 +275,7 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
             }
             t_now += duration;
             shot += 1.0;
-            if clip != 0.0 && shot % clip == 0.0 {
+            if clip != 0.0 && mod_zero(shot, clip) {
                 shot = 0.0;
                 t_now += rt;
             }

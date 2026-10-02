@@ -24,7 +24,7 @@ fn meta(ds: &Dataset) -> Value {
            "sde_build": ds.build, "dataset_sha256": ds.sha256, "types": ds.types.len()})
 }
 
-fn out(v: &Value) {
+fn out<T: serde::Serialize>(v: &T) {
     let mut buf = serde_json::to_vec(v).unwrap_or_default();
     buf.push(b'\n');
     let _ = std::io::stdout().lock().write_all(&buf);
@@ -110,7 +110,7 @@ fn main() {
                 let params = r.get("params").cloned().unwrap_or(Value::Null);
                 let res = match r.get("method").and_then(|m| m.as_str()) {
                     Some("calc") => api::calc_value(&ds, params),
-                    Some("meta") => meta(&ds),
+                    Some("meta") => eve_dogma_e::jv::Value::from(meta(&ds)),
                     m => api::err("UNKNOWN_METHOD", &format!("{m:?}"), "/method"),
                 };
                 if let Some(e) = res.get("error") {

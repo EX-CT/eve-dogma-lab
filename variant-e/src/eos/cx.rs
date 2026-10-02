@@ -179,6 +179,8 @@ pub struct Fit<'a> {
     pub rr: Vec<(usize, f64, f64)>,
     /// set while running gang effects of a command fit: bonuses go here instead of the fit
     pub gang_sink: Option<Vec<CommandBonus>>,
+    /// buff ids given explicitly in `fleet.buffs`: they override booster fits and the fit's own bursts
+    pub explicit_buff_ids: Vec<u32>,
     /// Fit.__ecmProjectedList
     pub ecm: Vec<f64>,
     /// afflictions of the local repair extras (tank kind 0 shield / 1 armor / 2 hull, afflictor), in order
@@ -474,6 +476,9 @@ impl<'a> Fit<'a> {
     }
     pub fn add_command_bonus(&mut self, id: f64, value: f64, thing: It, rt: u8) {
         let id = id as u32;
+        if self.gang_sink.is_none() && self.explicit_buff_ids.contains(&id) {
+            return;
+        }
         let effect = self.effect;
         let list = match self.gang_sink.as_mut() {
             Some(l) => l,

@@ -35,8 +35,7 @@ const ROUND2: [u32; 4] = [50, 30, 48, 11]; // cpu, power, cpuOutput, powerOutput
 
 pub fn py_round2(v: f64) -> f64 {
     // Python round(x, 2): correctly rounded, ties to even on the exact binary value
-    let s = format!("{:.2}", v);
-    s.parse().unwrap_or(v)
+    crate::eos::stats::py_round_digits(v, 2)
 }
 
 impl<'a> Mad<'a> {

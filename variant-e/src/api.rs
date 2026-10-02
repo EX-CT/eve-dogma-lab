@@ -3,10 +3,11 @@ use crate::data::Dataset;
 use crate::eos::cx::{CommandBonus, Fit, NONE, RT_EARLY, RT_LATE, RT_NORMAL};
 use crate::eos::fit::BuildError;
 use crate::request::FitRequest;
-use serde_json::{Value, json};
+use crate::jv::Value;
+use serde_json::json;
 
 pub fn err(code: &str, message: &str, path: &str) -> Value {
-    json!({"error": {"code": code, "message": message, "path": path}})
+    Value::from(json!({"error": {"code": code, "message": message, "path": path}}))
 }
 
 fn be(e: BuildError) -> Value {
@@ -20,14 +21,14 @@ pub fn calc_str(ds: &Dataset, text: &str) -> Value {
             Ok(v) => v,
             Err(e) => be(e),
         },
-        Err(e) => match serde_json::from_str::<Value>(text) {
+        Err(e) => match serde_json::from_str::<serde_json::Value>(text) {
             Ok(_) => err("BAD_REQUEST", &e.to_string(), ""),
             Err(e) => err("BAD_JSON", &e.to_string(), ""),
         },
     }
 }
 
-pub fn calc_value(ds: &Dataset, v: Value) -> Value {
+pub fn calc_value(ds: &Dataset, v: serde_json::Value) -> Value {
     let req: FitRequest = match serde_json::from_value(v) {
         Ok(r) => r,
         Err(e) => return err("BAD_REQUEST", &e.to_string(), ""),
@@ -81,7 +82,7 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Result<Value, BuildError> {
         let mut mirror = Vec::new();
         for rt in [RT_EARLY, RT_NORMAL, RT_LATE] {
             sf.calc_rt(rt, &[], None);
-            fit.project_from(&sf, rt, p.amount, p.distance_m, &mut mirror);
+            fit.project_from(&sf, rt, p.amount.max(1), p.distance_m, &mut mirror);
         }
     }
     let t2 = std::time::Instant::now();

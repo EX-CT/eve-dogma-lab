@@ -6,7 +6,7 @@ use super::capsim::{self, Drain};
 use super::cx::*;
 use super::fit::{extra_attr, meta};
 use crate::request::{FitRequest, SlotReq, Spool, SpoolType};
-use serde_json::{Map, Value};
+use crate::jv::{obj, Map, Value};
 
 const INF: f64 = f64::INFINITY;
 
@@ -48,12 +48,27 @@ pub fn float_unerr(v: f64) -> f64 {
     py_round_digits(v, f)
 }
 
+const POW10: [f64; 23] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22];
+
 /// Python round(v, n)
 pub fn py_round_digits(v: f64, n: i32) -> f64 {
     if !v.is_finite() {
         return v;
     }
     if n >= 0 {
+        // fast path: with p = 10^n exact (n <= 22) and |v*p| < 2^52, z = round(v*p) is the correctly
+        // rounded decimal unless v*p is within its rounding error of a .5 tie; z/p is then the correctly
+        // rounded double of that decimal (Clinger fast path), i.e. what format+parse yields.
+        if n <= 22 {
+            let p = POW10[n as usize];
+            let y = v * p;
+            if y.abs() < 4.0e15 {
+                let d = (y - y.floor() - 0.5).abs();
+                if d > y.abs() * 1e-15 + 1e-300 {
+                    return y.round() / p;
+                }
+            }
+        }
         format!("{:.*}", n as usize, v).parse().unwrap_or(v)
     } else {
         let p = 10f64.powi(-n);
@@ -972,20 +987,20 @@ impl<'a> Fit<'a> {
 
         let st = self.items[ship].t;
         let mut out = Map::new();
-        out.insert("meta".into(), obj(vec![("schema_version", Value::from(1)), ("engine", Value::from(concat!("eve-dogma-e ", env!("CARGO_PKG_VERSION"), " (pyfa port)"))), ("sde_build", Value::from(ds.build)), ("dataset_sha256", Value::from(ds.sha256.clone()))]));
-        out.insert("ship".into(), obj(vec![("type_id", Value::from(st.id)), ("name", Value::from(st.name.clone())), ("group", Value::from(ds.group_name(st.group)))]));
-        out.insert("resources".into(), resources);
-        out.insert("modules".into(), Value::Array(mrows));
-        out.insert("offense".into(), offense);
-        out.insert("defense".into(), defense);
-        out.insert("capacitor".into(), capj);
-        out.insert("navigation".into(), navigation);
-        out.insert("targeting".into(), targeting);
-        out.insert("drones".into(), drones_j);
-        out.insert("violations".into(), Value::Array(if req.options.validate { self.violations(cpu_used, pg_used, calib, bw) } else { vec![] }));
-        out.insert("warnings".into(), Value::from(self.warnings.clone()));
+        out.insert("meta", obj(vec![("schema_version", Value::from(1)), ("engine", Value::from(concat!("eve-dogma-e ", env!("CARGO_PKG_VERSION"), " (pyfa port)"))), ("sde_build", Value::from(ds.build)), ("dataset_sha256", Value::from(ds.sha256.clone()))]));
+        out.insert("ship", obj(vec![("type_id", Value::from(st.id)), ("name", Value::from(st.name.to_string())), ("group", Value::from(ds.group_name(st.group).to_string()))]));
+        out.insert("resources", resources);
+        out.insert("modules", Value::Array(mrows));
+        out.insert("offense", offense);
+        out.insert("defense", defense);
+        out.insert("capacitor", capj);
+        out.insert("navigation", navigation);
+        out.insert("targeting", targeting);
+        out.insert("drones", drones_j);
+        out.insert("violations", Value::Array(if req.options.validate { self.violations(cpu_used, pg_used, calib, bw) } else { vec![] }));
+        out.insert("warnings", Value::from(self.warnings.clone()));
         if let Some(inc) = &req.options.include_attributes {
-            out.insert("attributes".into(), self.dump_attributes(inc));
+            out.insert("attributes", self.dump_attributes(inc));
         }
         Value::Object(out)
     }
@@ -1008,7 +1023,7 @@ impl<'a> Fit<'a> {
         let mut v = Vec::new();
         let ship = self.ship;
         let s = |n: &str| self.g(ship, n);
-        let mut push = |code: &str, msg: String, idx: Option<usize>| v.push(obj(vec![("code", Value::from(code)), ("message", Value::from(msg)), ("module_index", Value::from(idx))]));
+        let mut push = |code: &'static str, msg: String, idx: Option<usize>| v.push(obj(vec![("code", Value::from(code)), ("message", Value::from(msg)), ("module_index", Value::from(idx))]));
         if cpu > s("cpuOutput") + 1e-9 {
             push("CPU_OVERLOAD", format!("CPU {cpu} > {}", s("cpuOutput")), None);
         }
@@ -1102,11 +1117,30 @@ pub fn slot_name(s: SlotReq) -> &'static str {
 #[allow(dead_code)]
 fn unused(_: &Ids) {}
 
-/// build a JSON object without re-serialising nested values (json! would deep-copy interpolated Values)
-pub fn obj(items: Vec<(&str, Value)>) -> Value {
-    let mut m = Map::new();
-    for (k, v) in items {
-        m.insert(k.to_string(), v);
+
+#[cfg(test)]
+mod round_tests {
+    #[test]
+    fn fast_round_matches_format() {
+        let mut x: u64 = 0x9E3779B97F4A7C15;
+        for i in 0..2_000_000u64 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let mant = (x >> 11) as f64 / (1u64 << 53) as f64;
+            let e = ((x & 0xff) as i32 % 24) - 12;
+            let mut v = mant * 10f64.powi(e);
+            if i % 3 == 0 {
+                v = -v;
+            }
+            if i % 7 == 0 {
+                v = (v * 1000.0).round() / 1000.0 + 0.0005;
+            }
+            for n in 0..16 {
+                let want: f64 = format!("{:.*}", n as usize, v).parse().unwrap();
+                let got = super::py_round_digits(v, n);
+                assert_eq!(got.to_bits(), want.to_bits(), "v={v:e} n={n}");
+            }
+        }
     }
-    Value::Object(m)
 }
