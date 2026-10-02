@@ -1,0 +1,19 @@
+{
+  "name": "@exct/eve-dogma-ts",
+  "version": "0.1.0",
+  "description": "EXCT dogma lab - Variant D: stateless EVE Online fitting engine in TypeScript (Node + browser, zero runtime deps)",
+  "license": "LGPL-3.0-or-later",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": { "eve-dogma-ts": "dist/cli.js" },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "npm run build && node dist/test/parity.js",
+    "bench": "npm run build && node dist/bench/bench.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^20.0.0"
+  }
+}
