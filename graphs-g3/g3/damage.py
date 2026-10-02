@@ -903,8 +903,12 @@ def _apply(maps, apps, tgt, settings, n):
                             gcols)
     for v in ticks.values():
         tot = tot + v
-    for v in gcols:
-        tot = tot + v
+    if gcols:
+        G = np.zeros((n, len(gpos)))
+        for dm, a, vis, used, gi in gcols:
+            _pp_ticks(dm, a, vis, used, gi, tgt.hp, G)
+        # tot + col_0 + col_1 + ... in first-visit order (sequential accumulate == the scalar loop)
+        tot = np.add.accumulate(np.concatenate([tot[:, None], G], axis=1), axis=1)[:, -1]
     return tot
 
 
@@ -999,6 +1003,37 @@ def _per_point_maps(c, tq, n, what):
     return out
 
 
+def _sel(idx, size):
+    """slice for a contiguous ascending index list (fast path), else the index array"""
+    if idx and idx[-1] - idx[0] == len(idx) - 1 and (len(idx) == 1 or idx == list(range(idx[0], idx[-1] + 1))):
+        return slice(idx[0], idx[-1] + 1)
+    return np.asarray(idx)
+
+
+def _pp_ticks(dm, a, vis, used, gi, hp, G):
+    """running max of max_L min(ab*a, rl*a*hp) into the global tick columns gi (Python min/max semantics)"""
+    _, _, _, AB, RL, PR = dm.E.ticks()
+    kk = np.where(vis, dm.k, 0)
+    T = AB.shape[1]
+    us = _sel(used, T)
+    ab, pr = AB[kk][:, us], PR[kk][:, us]
+    pr &= vis[:, None, None]
+    a3 = a[:, None, None]
+    x = ab * a3
+    if hp == INF:
+        v = x  # rl*a*inf is inf or nan: never < x, Python min keeps x
+    else:
+        y = RL[kk][:, us] * a3 * hp
+        v = np.where(y < x, y, x)  # Python min(x, y)
+    best, present = v[:, :, 0], pr[:, :, 0]
+    for l in range(1, v.shape[2]):
+        best = np.where(pr[:, :, l] & (v[:, :, l] > best), v[:, :, l], best)
+        present = present | pr[:, :, l]
+    gs = _sel(gi, G.shape[1])
+    col = G[:, gs]
+    G[:, gs] = np.where(present & (best > col), best, col)
+
+
 def _pp_apply(dm, a, res, hp, n, tot, gpos, gcols):
     """vectorised per-point accumulation; same operations and tick order as the scalar definition:
     tick arrays are created in first-visit order (dealer order, then point order, then tick order) and each holds
@@ -1031,20 +1066,8 @@ def _pp_apply(dm, a, res, hp, n, tot, gpos, gcols):
                 used.append(ti)
                 g = (keys[ti], "pp")
                 if g not in gpos:
-                    gpos[g] = len(gcols)
-                    gcols.append(np.zeros(n))
-    a2 = a[:, None]
-    for ti in used:
-        ab, rl, pr = AB[kk, ti, :], RL[kk, ti, :], PR[kk, ti, :] & vis[:, None]
-        x, y = ab * a2, rl * a2 * hp
-        v = np.where(y < x, y, x)  # Python min(x, y)
-        best = v[:, 0]
-        present = pr[:, 0]
-        for l in range(1, v.shape[1]):
-            best = np.where(pr[:, l] & (v[:, l] > best), v[:, l], best)
-            present = present | pr[:, l]
-        col = gcols[gpos[(keys[ti], "pp")]]
-        gcols[gpos[(keys[ti], "pp")]] = np.where(present & (best > col), best, col)
+                    gpos[g] = len(gpos)
+    gcols.append((dm, a, vis, used, [gpos[(keys[ti], "pp")] for ti in used]))
     return tot
 
 

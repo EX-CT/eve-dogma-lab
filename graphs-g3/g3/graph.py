@@ -30,6 +30,16 @@ def _num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
+def _all_num(vals):
+    """all(_num(v)) with a vectorised fast path for plain int/float lists"""
+    if set(map(type, vals)) <= {int, float}:
+        try:
+            return bool(np.isfinite(np.array(vals, dtype=float)).all())
+        except OverflowError:
+            pass
+    return all(_num(v) for v in vals)
+
+
 class Engine:
     def __init__(self, ds, cache=True, dataset_path=None):
         self.ds = ds
@@ -60,7 +70,7 @@ class Engine:
         if axis not in AXES[gname]:
             raise GraphError("BAD_AXIS", f"x axis {axis!r} not valid for graph {gname}", "/x/axis")
         vals = x.get("values")
-        if not isinstance(vals, list) or not all(_num(v) for v in vals):
+        if not isinstance(vals, list) or not _all_num(vals):
             raise GraphError("BAD_REQUEST", "x.values must be a list of finite numbers", "/x/values")
         ys = req.get("y")
         if isinstance(ys, str):
