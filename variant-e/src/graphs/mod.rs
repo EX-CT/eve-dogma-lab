@@ -2,6 +2,7 @@
 //! One GraphRequest in -> one GraphResult out; every sample point is evaluated exactly (Pyfa `getPoint`).
 //! GPL-3.0-or-later.
 pub mod common;
+pub mod cycles;
 pub mod simple;
 pub mod ewar;
 pub mod rr;
