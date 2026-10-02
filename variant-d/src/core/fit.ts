@@ -629,7 +629,7 @@ export class Fit extends AttrGraph {
     }
     // Pyfa keeps, per buff id, the single strongest (by |value|) source among the fit's own bursts and the
     // fleet booster fits; explicit fleet.buffs override both.
-    const pairs: [number, number][] = [1, 2, 3, 4].map((k) => [ds.attrId(`warfareBuff${k}ID`), ds.attrId(`warfareBuff${k}Value`)]);
+    const pairs: [number, number][] = WARFARE_BUFF_ATTRS.map(([i, v]) => [ds.attrId(i), ds.attrId(v)]);
     const best = new Map<number, { v: number; s: SrcSpec; target: number }>();
     const offer = (id: number, v: number, s: SrcSpec, target: number) => {
       const old = best.get(id);
@@ -696,6 +696,9 @@ export class Fit extends AttrGraph {
   }
 }
 
+const WARFARE_BUFF_ATTRS: readonly [string, string][] = [
+  ['warfareBuff1ID', 'warfareBuff1Value'], ['warfareBuff2ID', 'warfareBuff2Value'], ['warfareBuff3ID', 'warfareBuff3Value'], ['warfareBuff4ID', 'warfareBuff4Value'],
+];
 const WEATHER_UNPENALISED = new Set([90, 93, 94, 95, 96, 98, 99]);
 const BUFF_DRONE_ATTRS: Record<number, string[]> = {
   79: ['signatureRadius'],

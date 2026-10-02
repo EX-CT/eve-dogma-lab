@@ -52,13 +52,17 @@ export function drones(c: StatsCtx): object {
 }
 
 /** ECM jam chance (Pyfa Fit.jamChance): strengths vs the strongest sensor type (ties -> multispectral -> 0) */
+const SENSOR_TYPES = ['Magnetometric', 'Ladar', 'Radar', 'Gravimetric'] as const;
+const SENSOR_ATTRS = ['scanMagnetometricStrength', 'scanLadarStrength', 'scanRadarStrength', 'scanGravimetricStrength'] as const;
+
 function jamChance(c: StatsCtx): number {
   const { fit } = c;
   const ship = fit.ship;
   let maxS = -1;
   let ty: string | null = null;
-  for (const t of ['Magnetometric', 'Ladar', 'Radar', 'Gravimetric']) {
-    const v = c.g(ship, `scan${t}Strength`);
+  for (let k = 0; k < SENSOR_TYPES.length; k++) {
+    const t = SENSOR_TYPES[k];
+    const v = c.g(ship, SENSOR_ATTRS[k]);
     if (v > maxS) { maxS = v; ty = t; } else if (v === maxS) ty = null;
   }
   let retain = 1;

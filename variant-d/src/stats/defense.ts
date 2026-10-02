@@ -1,19 +1,22 @@
 import type { CapInfo } from './capacitor.js';
 import { StatsCtx } from './ctx.js';
 
+/** resonance attribute names per layer (static strings: no per-calc string building) */
+const RES_SHIELD = ['shieldEmDamageResonance', 'shieldThermalDamageResonance', 'shieldKineticDamageResonance', 'shieldExplosiveDamageResonance'] as const;
+const RES_ARMOR = ['armorEmDamageResonance', 'armorThermalDamageResonance', 'armorKineticDamageResonance', 'armorExplosiveDamageResonance'] as const;
+const RES_HULL = ['emDamageResonance', 'thermalDamageResonance', 'kineticDamageResonance', 'explosiveDamageResonance'] as const;
+
 export function defense(c: StatsCtx, cap: CapInfo): object {
   const { fit, req } = c;
   const ship = fit.ship;
   const dp = req.damage_pattern ?? { em: 25, thermal: 25, kinetic: 25, explosive: 25 };
   const dpTot = Math.max(dp.em + dp.thermal + dp.kinetic + dp.explosive, 1e-12);
-  const layer = (prefix: string): number[] =>
-    (prefix === '' ? ['emDamageResonance', 'thermalDamageResonance', 'kineticDamageResonance', 'explosiveDamageResonance']
-      : ['Em', 'Thermal', 'Kinetic', 'Explosive'].map((d) => `${prefix}${d}DamageResonance`)).map((n) => c.g(ship, n));
+  const layer = (names: readonly string[]): number[] => names.map((n) => c.g(ship, n));
   const effectivify = (amount: number, r: number[]) => {
     const div = (dp.em * r[0] + dp.thermal * r[1] + dp.kinetic * r[2] + dp.explosive * r[3]) / dpTot;
     return div === 0 ? amount : amount / div;
   };
-  const rs = layer('shield'), ra = layer('armor'), rh = layer('');
+  const rs = layer(RES_SHIELD), ra = layer(RES_ARMOR), rh = layer(RES_HULL);
   const hpS = c.g(ship, 'shieldCapacity'), hpA = c.g(ship, 'armorHP'), hpH = fit.get(ship, 9);
   const eS = effectivify(hpS, rs), eA = effectivify(hpA, ra), eH = effectivify(hpH, rh);
   const resJson = (r: number[]) => ({ em: r[0], thermal: r[1], kinetic: r[2], explosive: r[3] });
