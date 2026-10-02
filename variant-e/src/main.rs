@@ -77,6 +77,8 @@ fn main() {
             }
             let v = api::calc_str(&ds, &s);
             out(&v);
+            // one-shot process: skip freeing the dataset
+            std::mem::forget(ds);
             if v.get("error").is_some() {
                 // contract 1.4.1: calc/input error -> exit 2 (error JSON already on stdout)
                 std::process::exit(2);

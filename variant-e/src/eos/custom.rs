@@ -8,7 +8,7 @@ pub fn run(cx: &mut Cx, eid: u32, me: It) -> bool {
         101 => use_missiles(cx, me),
         1615 => {
             // shipAdvancedSpaceshipCommandAgilityBonus
-            let skill = cx.ds.type_by_name.get("Advanced Spaceship Command").copied().unwrap_or(0);
+            let skill = cx.ds.types.by_name("Advanced Spaceship Command").unwrap_or(0);
             let sk = cx.skill_by_type.get(&skill).copied().unwrap_or(NONE);
             let v = cx.attr(sk, cx.ds.attr_id("agilityBonus"));
             let s = cx.ship;

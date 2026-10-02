@@ -268,7 +268,7 @@ impl<'a> Fit<'a> {
         // character: every skill at the default level, then explicit levels
         let mut levels: FxHashMap<u32, u8> = FxHashMap::default();
         for (k, v) in &req.character.skills.levels {
-            let id = k.parse::<u32>().ok().or_else(|| ds.type_by_name.get(k).copied());
+            let id = k.parse::<u32>().ok().or_else(|| ds.types.by_name(k));
             if let Some(id) = id {
                 levels.insert(id, (*v).min(5));
             }
@@ -286,7 +286,7 @@ impl<'a> Fit<'a> {
                 return None;
             }
             let lname = st.name.to_lowercase();
-            let mut ids: Vec<u32> = ds.types.values().filter(|t| t.group == 1306 && t.name.to_lowercase().starts_with(&lname)).map(|t| t.id).collect();
+            let mut ids: Vec<u32> = ds.types.in_group(1306).filter(|t| t.name.to_lowercase().starts_with(&lname)).map(|t| t.id).collect();
             ids.sort();
             ids.first().copied()
         });

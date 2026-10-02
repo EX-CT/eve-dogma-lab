@@ -76,8 +76,9 @@ pub struct Dataset {
     pub attr_by_name: FxHashMap<String, u32>,
     pub effects: FxHashMap<u32, EffectInfo>,
     pub effect_by_name: FxHashMap<String, u32>,
-    pub types: FxHashMap<u32, TypeInfo>,
-    pub type_by_name: FxHashMap<String, u32>,
+    /// lazily decoded types (cache: per-type bincode records, decoded on first access)
+    #[serde(skip)]
+    pub types: Types,
     pub group_names: FxHashMap<u32, String>,
     pub group_category: FxHashMap<u32, u32>,
     pub category_names: FxHashMap<u32, String>,
@@ -208,7 +209,7 @@ impl Dataset {
             use std::hash::Hasher;
             let mut h = rustc_hash::FxHasher::default();
             h.write(&bytes);
-            h.write(concat!(env!("CARGO_PKG_VERSION"), "-cache-v2").as_bytes());
+            h.write(concat!(env!("CARGO_PKG_VERSION"), "-cache-v3").as_bytes());
             format!("{:016x}-{}", h.finish(), bytes.len())
         };
         let dir = std::env::var_os("EVE_DOGMA_E_CACHE")
@@ -219,14 +220,14 @@ impl Dataset {
         let cpath = dir.join(format!("dataset-{key}.bin"));
         if std::env::var_os("EVE_DOGMA_E_NO_CACHE").is_none() {
             if let Ok(c) = std::fs::read(&cpath) {
-                if let Ok(ds) = bincode::deserialize::<Dataset>(&c) {
+                if let Some(ds) = Self::from_cache(c) {
                     return Ok(ds);
                 }
             }
         }
         let ds = Self::from_bytes(bytes)?;
         if std::env::var_os("EVE_DOGMA_E_NO_CACHE").is_none() {
-            if let Ok(enc) = bincode::serialize(&ds) {
+            if let Some(enc) = ds.to_cache() {
                 let _ = std::fs::create_dir_all(&dir);
                 let tmp = dir.join(format!(".tmp-{}-{key}", std::process::id()));
                 if std::fs::write(&tmp, enc).is_ok() {
@@ -235,6 +236,34 @@ impl Dataset {
             }
         }
         Ok(ds)
+    }
+
+    /// cache layout: u64 len A, bincode(Dataset) [A bytes], u64 len B, bincode(TypesIndex) [B bytes], raw type records
+    fn to_cache(&self) -> Option<Vec<u8>> {
+        let a = bincode::serialize(self).ok()?;
+        let b = bincode::serialize(&TypesIndex { ids: self.types.ids.clone(), groups: self.types.groups.clone(), offs: self.types.offs.clone() }).ok()?;
+        let mut out = Vec::with_capacity(16 + a.len() + b.len() + self.types.blob.len());
+        out.extend((a.len() as u64).to_le_bytes());
+        out.extend(a);
+        out.extend((b.len() as u64).to_le_bytes());
+        out.extend(b);
+        out.extend(&self.types.blob[self.types.base..]);
+        Some(out)
+    }
+
+    fn from_cache(c: Vec<u8>) -> Option<Dataset> {
+        let rd = |p: usize| -> Option<usize> { Some(u64::from_le_bytes(c.get(p..p + 8)?.try_into().ok()?) as usize) };
+        let la = rd(0)?;
+        let mut ds: Dataset = bincode::deserialize(c.get(8..8 + la)?).ok()?;
+        let lb = rd(8 + la)?;
+        let ix: TypesIndex = bincode::deserialize(c.get(16 + la..16 + la + lb)?).ok()?;
+        let base = 16 + la + lb;
+        if ix.offs.len() != ix.ids.len() + 1 || base + *ix.offs.last()? as usize != c.len() {
+            return None;
+        }
+        let n = ix.ids.len();
+        ds.types = Types { ids: ix.ids, groups: ix.groups, offs: ix.offs, blob: c, base, cells: (0..n).map(|_| std::sync::OnceLock::new()).collect(), by_name: std::sync::OnceLock::new() };
+        Some(ds)
     }
 
     fn from_bytes(bytes: Vec<u8>) -> Result<Dataset, String> {
@@ -286,7 +315,6 @@ impl Dataset {
             );
         }
         let mut types = FxHashMap::default();
-        let mut type_by_name: FxHashMap<String, u32> = FxHashMap::default();
         let mut skills = Vec::new();
         for (k, t) in raw.types {
             let id: u32 = k.parse().unwrap_or(0);
@@ -314,10 +342,6 @@ impl Dataset {
             }
             if t.category == 16 && t.published.unwrap_or(false) {
                 skills.push(id);
-            }
-            let e = type_by_name.entry(t.name.clone()).or_insert(id);
-            if id < *e {
-                *e = id;
             }
             types.insert(
                 id,
@@ -372,8 +396,7 @@ impl Dataset {
             attr_by_name,
             effects,
             effect_by_name,
-            types,
-            type_by_name,
+            types: Types::from_map(types),
             group_names,
             group_category,
             category_names,
@@ -394,5 +417,79 @@ impl Dataset {
     }
     pub fn group_name(&self, g: u32) -> &str {
         self.group_names.get(&g).map(|s| s.as_str()).unwrap_or("")
+    }
+}
+
+/// Type table with lazy decoding: ids sorted, each type stored as its own bincode record in `blob`.
+#[derive(Default)]
+pub struct Types {
+    ids: Vec<u32>,
+    groups: Vec<u32>,
+    offs: Vec<u32>,
+    blob: Vec<u8>,
+    /// start of the type records inside `blob` (the cache file is kept whole, no copy)
+    base: usize,
+    cells: Vec<std::sync::OnceLock<TypeInfo>>,
+    by_name: std::sync::OnceLock<FxHashMap<String, u32>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TypesIndex {
+    ids: Vec<u32>,
+    groups: Vec<u32>,
+    offs: Vec<u32>,
+}
+
+impl Types {
+    fn from_map(m: FxHashMap<u32, TypeInfo>) -> Types {
+        let mut v: Vec<TypeInfo> = m.into_values().collect();
+        v.sort_by_key(|t| t.id);
+        let mut t = Types::default();
+        for ti in v {
+            t.ids.push(ti.id);
+            t.groups.push(ti.group);
+            t.offs.push(t.blob.len() as u32);
+            t.blob.extend(bincode::serialize(&ti).unwrap_or_default());
+            t.cells.push(std::sync::OnceLock::from(ti));
+        }
+        t.offs.push(t.blob.len() as u32);
+        t
+    }
+    #[inline]
+    fn at(&self, i: usize) -> &TypeInfo {
+        self.cells[i].get_or_init(|| {
+            let (a, b) = (self.base + self.offs[i] as usize, self.base + self.offs[i + 1] as usize);
+            bincode::deserialize(&self.blob[a..b]).expect("corrupt dataset cache record")
+        })
+    }
+    pub fn get(&self, id: &u32) -> Option<&TypeInfo> {
+        self.ids.binary_search(id).ok().map(|i| self.at(i))
+    }
+    pub fn contains_key(&self, id: &u32) -> bool {
+        self.ids.binary_search(id).is_ok()
+    }
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+    /// types of one group (ascending id)
+    pub fn in_group(&self, g: u32) -> impl Iterator<Item = &TypeInfo> {
+        (0..self.ids.len()).filter(move |&i| self.groups[i] == g).map(move |i| self.at(i))
+    }
+    /// name -> lowest type id with that name (built on first use)
+    pub fn by_name(&self, name: &str) -> Option<u32> {
+        self.by_name
+            .get_or_init(|| {
+                let mut m: FxHashMap<String, u32> = FxHashMap::default();
+                for i in 0..self.ids.len() {
+                    let t = self.at(i);
+                    m.entry(t.name.clone()).or_insert(t.id); // ids ascending: first is lowest
+                }
+                m
+            })
+            .get(name)
+            .copied()
     }
 }
