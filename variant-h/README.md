@@ -26,3 +26,11 @@ Other commands:
 - `search QUERY [--limit N]`, `type ID|NAME`, `meta`, `bench FILE -n N`.
 
 See [DESIGN.md](DESIGN.md) for the architecture and [RESULTS.md](RESULTS.md) for scores.
+
+## License
+
+LGPL-3.0-or-later (`LICENSE`, plus `LICENSE.GPL-3.0`, which it incorporates), following the EX-CT engine policy in
+`eve-fit-docs/LICENSING.md`. Variant H is a clean-room implementation from CCP data and public formulas; Pyfa was
+used only as a black-box test oracle, and no Pyfa code is included. EVE data is © CCP Games and used under the CCP
+developer license; this project is not affiliated with CCP.
+
