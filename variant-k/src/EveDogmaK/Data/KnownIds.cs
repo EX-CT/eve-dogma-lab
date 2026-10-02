@@ -38,7 +38,7 @@ public sealed class KnownIds
     public readonly AttrId[] CanFitShipGroups, CanFitShipTypes, ChargeGroups;
     public readonly AttrId[] RequiredSkill, RequiredSkillLevel;
     public readonly (AttrId, AttrId, Op)[] SensorStrengthBonuses; // scan{T}Strength += scan{T}StrengthPercent
-    public readonly AttrId ShipRadius, MaxFofTargetRange, EnergyNeutralizerSignatureResolution;
+    public readonly AttrId ChargedArmorDamageMultiplier, ShipRadius, MaxFofTargetRange, EnergyNeutralizerSignatureResolution;
     public readonly EffectId FofMissileLaunching;
 
     public readonly EffectId Afterburner, Microwarpdrive, SlotModifier, HardPointModifier, MicroJumpDrive, Bastion,
@@ -105,7 +105,7 @@ public sealed class KnownIds
 
         SensorStrengthBonuses = new[] { "Gravimetric", "Ladar", "Magnetometric", "Radar" }
             .Select(t => (A($"scan{t}Strength"), A($"scan{t}StrengthPercent"), Op.PostPercent)).ToArray();
-        ShipRadius = A("radius"); MaxFofTargetRange = A("maxFOFTargetRange");
+        ChargedArmorDamageMultiplier = A("chargedArmorDamageMultiplier"); ShipRadius = A("radius"); MaxFofTargetRange = A("maxFOFTargetRange");
         EnergyNeutralizerSignatureResolution = A("energyNeutralizerSignatureResolution");
         FofMissileLaunching = E("fofMissileLaunching");
         Afterburner = E("moduleBonusAfterburner"); Microwarpdrive = E("moduleBonusMicrowarpdrive"); SlotModifier = E("slotModifier");

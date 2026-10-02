@@ -155,6 +155,11 @@ public sealed partial class StatsCalculator
     public JObj Compute()
     {
         var res = Resources(out double cpu, out double pg, out double calib, out double bw);
+        var offense = Offense();
+        var defense = Defense();
+        var capacitor = Capacitor(out var moduleRows);
+        var tank = (JObj)defense["tank"];
+        (tank["sustained"], tank["sustained_effective"]) = SustainableTank();
         var ship = _f.Ship;
         var st = _f[ship].Type;
         var outp = new JObj
@@ -162,9 +167,9 @@ public sealed partial class StatsCalculator
             { "meta", new JObj { { "schema_version", 1 }, { "engine", EngineName }, { "sde_build", _ds.Build }, { "dataset_sha256", _ds.Sha256 } } },
             { "ship", new JObj { { "type_id", st.Id }, { "name", st.Name }, { "group", _ds.Groups.TryGetValue(st.Group, out var g) ? g.Name : null } } },
             { "resources", res },
-            { "offense", Offense() },
-            { "defense", Defense() },
-            { "capacitor", Capacitor(out var moduleRows) },
+            { "offense", offense },
+            { "defense", defense },
+            { "capacitor", capacitor },
             { "navigation", Navigation() },
             { "targeting", Targeting() },
             { "drones", new JObj
@@ -394,6 +399,7 @@ public sealed partial class StatsCalculator
         var rr = AppliedRemoteRepairs();
         shieldRep += rr[0]; armorRep += rr[1]; hullRep += rr[2];
         double passive = Formulas.PeakRecharge(hpS, G(ship, _k.ShieldRechargeRate));
+        _tank = new TankState(new[] { shieldRep, armorRep, hullRep }, passive, rs, ra, rh, Effective);
         return new JObj
         {
             { "hp", new JObj { { "shield", hpS }, { "armor", hpA }, { "hull", hpH }, { "total", hpS + hpA + hpH } } },
@@ -410,6 +416,94 @@ public sealed partial class StatsCalculator
                         } },
                 } },
         };
+    }
+
+    private sealed record TankState(double[] Reps, double Passive, double[] Rs, double[] Ra, double[] Rh, Func<double, double[], double> Effective);
+    private sealed record CapState(bool Stable, double Peak, double Used, double Added);
+    private TankState? _tank;
+    private CapState? _cap;
+
+    /// <summary>
+    /// Sustainable tank (Pyfa Fit.sustainableTank, eos LGPL; re-implemented from the reference engine): when the capacitor
+    /// is not stable (or reload is factored), local cap-using repairers only run as far as peak recharge allows, most
+    /// cap-efficient first; ancillary shield boosters lose their reload downtime.
+    /// </summary>
+    private (JObj Raw, JObj Effective) SustainableTank()
+    {
+        var t = _tank!; var c = _cap!;
+        bool factorReload = _req.Options.FactorReload;
+        var sus = (double[])t.Reps.Clone();
+        if (!c.Stable || factorReload)
+        {
+            (int Layer, AttrId Amount)? Spec(string g) => g switch
+            {
+                "Shield Booster" or "Ancillary Shield Booster" => (0, _k.ShieldBonus),
+                "Armor Repair Unit" or "Ancillary Armor Repairer" => (1, _k.ArmorDamageAmount),
+                "Hull Repair Unit" => (2, _k.StructureDamageAmount),
+                _ => null,
+            };
+            string GroupName(int i) => _ds.Groups.TryGetValue(_f[i].Group, out var g) ? g.Name : "";
+            var chargedMult = _k.ChargedArmorDamageMultiplier;
+            bool Paste(int i) => _f[i].Charge >= 0 && _f[_f[i].Charge].Type.Name == "Nanite Repair Paste";
+            double MultOr1(int i) { double m = G(i, chargedMult); return m == 0.0 ? 1.0 : m; }
+            var adj = new double[3];
+            double used = c.Used;
+            var reps = new List<(int I, int Layer, AttrId Amount, double CapUse)>();
+            for (int layer = 0; layer < 3; layer++)
+                foreach (var i in _modules)
+                {
+                    if (!Active(i)) continue;
+                    var gname = GroupName(i);
+                    if (Spec(gname) is not var (l, amountAttr) || l != layer) continue;
+                    double capNeed = G(i, _k.CapacitorNeed);
+                    double avg = AvgCycleMs(i, factorReload);
+                    double capUse = capNeed != 0.0 && avg > 0.0 ? capNeed / (avg / 1000.0) : 0.0;
+                    double cyc = RawCycleMs(i);
+                    if (cyc <= 0.0) continue;
+                    double amount = G(i, amountAttr);
+                    if (capUse != 0.0)
+                    {
+                        used -= capUse;
+                        adj[l] -= amount * (Paste(i) ? MultOr1(i) : 1.0) / (cyc / 1000.0);
+                        reps.Add((i, l, amountAttr, capUse));
+                    }
+                    else if (gname == "Ancillary Shield Booster")
+                    {
+                        double reload = factorReload && _f[i].Charge >= 0 ? G(i, _k.ReloadTime) : 0.0;
+                        double shots = Math.Max(NumShots(i), 1);
+                        double off = reload / (shots * cyc + reload);
+                        adj[l] -= amount * off / (cyc / 1000.0);
+                    }
+                }
+            double Eff((int I, int Layer, AttrId Amount, double CapUse) r) => G(r.I, r.Amount) * MultOr1(r.I) / G(r.I, _k.CapacitorNeed);
+            reps = reps.OrderByDescending(Eff).ToList(); // stable, like the reference's sort_by
+            double totalPeak = c.Peak + c.Added;
+            foreach (var (i, l, amountAttr, capUse) in reps)
+            {
+                if (used > totalPeak) break;
+                double reload = factorReload && _f[i].Charge >= 0 ? G(i, _k.ReloadTime) : 0.0;
+                double cyc = RawCycleMs(i);
+                double sustain = Math.Min((totalPeak - used) / capUse, 1.0);
+                double amount = G(i, amountAttr);
+                if (_f[i].Charge < 0) adj[l] += sustain * amount / (cyc / 1000.0);
+                else
+                {
+                    double mult = Paste(i) ? MultOr1(i) : 1.0;
+                    double shots = Math.Max(NumShots(i), 1);
+                    double on = shots * cyc / (shots * cyc + reload);
+                    adj[l] += sustain * amount * on * mult / (cyc / 1000.0);
+                }
+                used += capUse;
+            }
+            for (int l = 0; l < 3; l++) sus[l] += adj[l];
+        }
+        var raw = new JObj { { "passive_shield", t.Passive }, { "shield_repair", sus[0] }, { "armor_repair", sus[1] }, { "hull_repair", sus[2] } };
+        var eff = new JObj
+        {
+            { "passive_shield", t.Effective(t.Passive, t.Rs) }, { "shield_repair", t.Effective(sus[0], t.Rs) },
+            { "armor_repair", t.Effective(sus[1], t.Ra) }, { "hull_repair", t.Effective(sus[2], t.Rh) },
+        };
+        return (raw, eff);
     }
 
     // ---------------------------------------------------------------- capacitor
@@ -442,7 +536,8 @@ public sealed partial class StatsCalculator
             if (cycRaw > 0.0) row["cycle_time_ms"] = cycRaw;
             if (Active(i) && capNeed != 0.0 && full > 0.0)
             {
-                double avg = AvgCycleMs(i, factorReload);
+                // Pyfa forces reload into capacitor boosters' average cycle (module.forceReload)
+                double avg = AvgCycleMs(i, factorReload || isInjector);
                 double use = avg > 0.0 ? capNeed / (avg / 1000.0) : 0.0;
                 if (use > 0.0) used += use; else added -= use;
                 row["cap_use_gj_s"] = use;
@@ -460,7 +555,12 @@ public sealed partial class StatsCalculator
                 double sres = G(d.Item, _k.EnergyNeutralizerSignatureResolution);
                 if (sres != 0.0) need *= Math.Min(sigNow / sres, 1.0);
                 double dur = G(d.Item, d.Duration);
-                if (need != 0.0 && dur > 0.0) drains.Add(new CapDrain(Math.Truncate(dur), need, 0, 0.0, false, false));
+                if (need != 0.0 && dur > 0.0)
+                {
+                    double perS = need / (Math.Truncate(dur) / 1000.0);
+                    if (need > 0.0) used += perS; else added -= perS;
+                    drains.Add(new CapDrain(Math.Truncate(dur), need, 0, 0.0, false, false));
+                }
             }
         var o = new JObj
         {
@@ -484,6 +584,7 @@ public sealed partial class StatsCalculator
             o["eve_stable_percent"] = r.EveStable * 100.0;
             o["sim_iterations"] = r.Iterations;
         }
+        _cap = new CapState(((JBool)o["stable"]).V, peak, used, added);
         return o;
     }
 
