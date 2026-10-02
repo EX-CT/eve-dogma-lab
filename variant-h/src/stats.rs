@@ -145,6 +145,9 @@ impl<'f, 'a> Ctx<'f, 'a> {
         0
     }
     fn avg_cycle_ms(&self, e: Entity, factor_reload: bool) -> f64 {
+        self.avg_cycle_ms_with(e, factor_reload, self.g(e, self.fit.ds.a.reload))
+    }
+    fn avg_cycle_ms_with(&self, e: Entity, factor_reload: bool, reload: f64) -> f64 {
         let a = &self.fit.ds.a;
         let active = self.raw_cycle_ms(e);
         if active == 0.0 {
@@ -152,7 +155,6 @@ impl<'f, 'a> Ctx<'f, 'a> {
         }
         let inactive = self.g(e, a.reactivation);
         let shots = self.num_shots(e);
-        let reload = self.g(e, a.reload);
         if !factor_reload || shots == 0 || inactive >= reload {
             return active + inactive;
         }
@@ -456,7 +458,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     }
     let srr = g(ship, a.shield_recharge) / 1000.0;
     let passive = if srr > 0.0 { 10.0 / srr * 0.5 * 0.5 * hp_s } else { 0.0 };
-    let defense = json!({
+    let mut defense = json!({
         "hp": {"shield": hp_s, "armor": hp_a, "hull": hp_h, "total": hp_s + hp_a + hp_h},
         "resonance": {"shield": res_json(rs), "armor": res_json(ra), "hull": res_json(rh)},
         "ehp": {"shield": e_s, "armor": e_a, "hull": e_h, "total": e_s + e_a + e_h},
@@ -475,6 +477,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     let mut drains = Vec::new();
     let (mut cap_used, mut cap_added) = (0.0, 0.0);
     let mut module_rows = Vec::new();
+    let mut cap_use_of: Vec<(Entity, f64)> = Vec::new();
     for &m in modules {
         let f = v.fitted(m);
         let mut cap_need = g(m, a.cap_need);
@@ -493,7 +496,8 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             row["cycle_time_ms"] = json!(cyc_raw);
         }
         if state(m) >= State::Active && cap_need != 0.0 && full > 0.0 {
-            let avg = x.avg_cycle_ms(m, factor_reload);
+            // capacitor boosters always have their 10 s reload factored into the rate (Pyfa forces it)
+            let avg = if is_inj { x.avg_cycle_ms_with(m, true, 10_000.0) } else { x.avg_cycle_ms(m, factor_reload) };
             let use_ = if avg > 0.0 { cap_need / (avg / 1000.0) } else { 0.0 };
             if use_ > 0.0 {
                 cap_used += use_
@@ -501,6 +505,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
                 cap_added -= use_
             }
             row["cap_use_gj_s"] = json!(use_);
+            cap_use_of.push((m, use_));
             drains.push(Drain {
                 duration: full.trunc(),
                 cap_need,
@@ -526,6 +531,13 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             }
             let dur = g(e, d.duration_attr);
             if need != 0.0 && dur > 0.0 {
+                // like Pyfa's capUsed / capRecharge, incoming drains and transfers count in the rates
+                let rate = need / (dur.trunc() / 1000.0);
+                if rate > 0.0 {
+                    cap_used += rate
+                } else {
+                    cap_added -= rate
+                }
                 drains.push(Drain { duration: dur.trunc(), cap_need: need, clip_size: 0, reload_ms: 0.0, is_injector: false, disable_stagger: false });
             }
         }
@@ -548,6 +560,85 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         }
         capj["eve_stable_percent"] = json!(r.eve_stable * 100.0);
         capj["sim_iterations"] = json!(r.iterations);
+    }
+
+    // ---------------- sustainable tank: when the capacitor is not stable (or reload is factored), cap-using local
+    // repairers only run to the extent the peak recharge (plus injection) can pay for them, best rep/GJ first.
+    {
+        let cap_stable = capj["stable"].as_bool().unwrap_or(true);
+        let mut sus = [shield_rep, armor_rep, hull_rep];
+        if !cap_stable || factor_reload {
+            let gname = |m: Entity| ds.group_names.get(&v.item(m).group).map(|n| n.as_str()).unwrap_or("");
+            let layer_attr = |g: &str| match g {
+                "Shield Booster" | "Ancillary Shield Booster" => Some((0usize, a.shield_bonus)),
+                "Armor Repair Unit" | "Ancillary Armor Repairer" => Some((1, a.armor_dmg_amount)),
+                "Hull Repair Unit" => Some((2, a.structure_dmg_amount)),
+                _ => None,
+            };
+            let paste_mult = |m: Entity| {
+                let paste = x.charge(m).map(|c| x.type_name(c) == "Nanite Repair Paste").unwrap_or(false);
+                let k = g(m, a.charged_armor_mult);
+                if paste && k != 0.0 { k } else { 1.0 }
+            };
+            let mut adj = [0.0f64; 3];
+            let mut used = cap_used;
+            // (module, layer, amount attr, cap/s, efficiency)
+            let mut reps: Vec<(Entity, usize, u32, f64, f64)> = Vec::new();
+            for l in 0..3 {
+                for &m in modules {
+                    if state(m) < State::Active {
+                        continue;
+                    }
+                    let gn = gname(m);
+                    let Some((ml, attr)) = layer_attr(gn) else { continue };
+                    if ml != l {
+                        continue;
+                    }
+                    let cyc = x.raw_cycle_ms(m) / 1000.0;
+                    if cyc <= 0.0 {
+                        continue;
+                    }
+                    let amount = g(m, attr);
+                    let use_ = cap_use_of.iter().find(|(e, _)| *e == m).map(|p| p.1).unwrap_or(0.0);
+                    if use_ != 0.0 {
+                        used -= use_;
+                        adj[l] -= amount * paste_mult(m) / cyc;
+                        let k = g(m, a.charged_armor_mult);
+                        let eff = amount * if k != 0.0 { k } else { 1.0 } / g(m, a.cap_need);
+                        reps.push((m, l, attr, use_, eff));
+                    } else if gn == "Ancillary Shield Booster" {
+                        let reload = if factor_reload && x.charge(m).is_some() { g(m, a.reload) } else { 0.0 };
+                        let shots = x.num_shots(m).max(1) as f64;
+                        let off = reload / (shots * cyc * 1000.0 + reload);
+                        adj[l] -= amount * off / cyc;
+                    }
+                }
+            }
+            reps.sort_by(|p, q| q.4.partial_cmp(&p.4).unwrap_or(std::cmp::Ordering::Equal));
+            let budget = peak + cap_added;
+            for (m, l, attr, use_, _) in reps {
+                if used > budget {
+                    break;
+                }
+                let cyc = x.raw_cycle_ms(m) / 1000.0;
+                let frac = ((budget - used) / use_).min(1.0);
+                let amount = g(m, attr);
+                if x.charge(m).is_none() {
+                    adj[l] += frac * amount / cyc;
+                } else {
+                    let reload = if factor_reload { g(m, a.reload) } else { 0.0 };
+                    let active_ms = x.num_shots(m).max(1) as f64 * cyc * 1000.0;
+                    adj[l] += frac * amount * (active_ms / (active_ms + reload)) * paste_mult(m) / cyc;
+                }
+                used += use_;
+            }
+            for l in 0..3 {
+                sus[l] += adj[l];
+            }
+        }
+        defense["tank"]["sustained"] = json!({"passive_shield": passive, "shield_repair": sus[0], "armor_repair": sus[1], "hull_repair": sus[2]});
+        defense["tank"]["sustained_effective"] = json!({"passive_shield": effectivify(passive, rs), "shield_repair": effectivify(sus[0], rs),
+            "armor_repair": effectivify(sus[1], ra), "hull_repair": effectivify(sus[2], rh)});
     }
 
     // ---------------- navigation

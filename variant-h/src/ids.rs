@@ -47,6 +47,7 @@ id_table!(AttrIds {
     max_range = "maxRange", falloff = "falloff", tracking = "trackingSpeed", explosion_delay = "explosionDelay",
     aoe_cloud = "aoeCloudSize", aoe_velocity = "aoeVelocity", emp_range = "empFieldRange",
     shield_capacity = "shieldCapacity", armor_hp = "armorHP", shield_bonus = "shieldBonus",
+    charged_armor_mult = "chargedArmorDamageMultiplier",
     armor_dmg_amount = "armorDamageAmount", structure_dmg_amount = "structureDamageAmount",
     shield_recharge = "shieldRechargeRate", cap_capacity = "capacitorCapacity", recharge_rate = "rechargeRate",
     capacitor_bonus = "capacitorBonus", power_transfer = "powerTransferAmount", speed_limit = "speedLimit",
