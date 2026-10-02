@@ -1,25 +1,25 @@
-# Scorecard: variant-d
+# Scorecard: D
 
 - command: `node dist/cli.js calc --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`, batch: `node dist/cli.js batch --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`
-- cases fully correct: **249/249**
-- values correct: **13812/13812** (100.00 %)
+- cases fully correct: **289/289**
+- values correct: **18591/18591** (100.00 %)
 - engine errors: 0
 
 | group | ok | total | % |
 |---|---|---|---|
-| application | 1989 | 1989 | 100.0 |
-| capacitor | 871 | 871 | 100.0 |
-| defense | 4480 | 4480 | 100.0 |
-| fitting | 2241 | 2241 | 100.0 |
-| navigation | 1243 | 1243 | 100.0 |
-| offense | 996 | 996 | 100.0 |
-| tank | 996 | 996 | 100.0 |
-| targeting | 996 | 996 | 100.0 |
+| application | 3428 | 3428 | 100.0 |
+| capacitor | 1015 | 1015 | 100.0 |
+| defense | 5200 | 5200 | 100.0 |
+| fitting | 2601 | 2601 | 100.0 |
+| navigation | 1723 | 1723 | 100.0 |
+| offense | 1156 | 1156 | 100.0 |
+| tank | 2023 | 2023 | 100.0 |
+| targeting | 1445 | 1445 | 100.0 |
 
 | perf | value |
 |---|---|
-| one process per case, median ms (cold start + calc) | 425.0 |
-| batch throughput (corpus x5) fits/s | 315 |
-| latency one fit (exct_rifter) ms/calc | 0.838 |
-| startup + one calc ms | 382.7 |
+| one process per case, median ms (cold start + calc) | 252.9 |
+| batch throughput (corpus x5) fits/s | 482 |
+| latency one fit (exct_rifter) ms/calc | 0.912 |
+| startup + one calc ms | 306.7 |
 | deterministic | True |

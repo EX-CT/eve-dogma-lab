@@ -31,7 +31,7 @@ src/
   stats/
     resources.ts offense.ts defense.ts capacitor.ts navigation.ts targeting.ts validation.ts
     capsim.ts       event-driven capacitor simulator (Pyfa-compatible heap ordering)
-    index.ts        compose sections -> FitStats (sorted keys, 1e-6 rounding like eve-dogma-rs)
+    index.ts        compose sections -> FitStats (fixed key order, 1e-6 rounding like eve-dogma-rs)
   formats/eft.ts    EFT import/export incl. mutation blocks
   index.ts          public API: loadDataset(json), calc(ds, req), calcJson(ds, str), eftParse, eftExport, search, typeInfo, meta
   node.ts           Node helpers: read gz file
@@ -120,6 +120,18 @@ RAH, cap sim with Pyfa heap ordering, nos income, passive shield regen peak `10/
 *pure* derivations of the immutable Dataset (per-type attribute maps, plans, name sets). Every stats section
 builds its objects in a fixed key order and floats are rounded to 1e-6 (same as eve-dogma-rs), so output is
 byte-stable for a given request (verified by the bench's determinism check).
+
+### 7. Cold start: the VDC1 dataset cache
+
+One process per request is dominated by loading the 5 MB dataset (gunzip + `JSON.parse` of ~25 MB + building maps).
+`node dist/cli.js cache --dataset X` (run by the bench `build` step) writes `.cache/<hash(path)>-<size>-<mtime>.vdc`,
+a pure re-layout of the same dataset: a small header JSON (sde info, sha256, attributes, effects, groups, dbuffs,
+mutaplasmids and one compact row per type: name/group/category/mass/... + offset/length) followed by a body of
+per-type `[attrs, effects]` JSON slices and the zh name table. `rawAttrs`/`effects` of a type are decoded on first
+access and memoised (same array identity, which the per-type plan WeakMap relies on), so a typical fit decodes only
+the few hundred types it touches. The CLI uses the cache when present for that exact file (size + mtime key) and
+falls back to the dataset otherwise (`EVE_DOGMA_TS_NO_CACHE=1` forces the fallback). Load: ~380 ms → ~110–150 ms on
+the shared box; per-process median in the bench 469 → 256 ms.
 
 ## Trade-offs vs the other variants
 
