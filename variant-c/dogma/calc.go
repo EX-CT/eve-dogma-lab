@@ -37,7 +37,7 @@ func CalcJSON(ds *Dataset, request []byte) []byte {
 	} else {
 		v = calcRaw(ds, &req)
 	}
-	return appendJSON(nil, v, true)
+	return appendJSON(make([]byte, 0, 8<<10), v, true) // typical response is ~5 KB
 }
 
 // Marshal encodes without HTML escaping (keys sorted by encoding/json).
