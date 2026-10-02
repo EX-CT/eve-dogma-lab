@@ -184,6 +184,13 @@ export function detachCacheBytes(ds: Dataset): { size: number; head: number[] } 
   if (!(tab instanceof TypeTable) || tab.bytes === null) return null;
   const b = tab.bytes;
   tab.bytes = null;
+  // numeric columns without nulls as typed arrays: same values, fewer bytes in the snapshot
+  const c = tab.c as unknown as Record<string, ArrayLike<number | null>>;
+  for (const k of Object.keys(c)) {
+    const col = c[k];
+    if (!Array.isArray(col) || col.some((v) => typeof v !== 'number')) continue;
+    c[k] = (col as number[]).every((v) => (v | 0) === v && !Object.is(v, -0)) ? Int32Array.from(col as number[]) : Float64Array.from(col as number[]);
+  }
   return { size: b.length, head: Array.from(b.subarray(0, Math.min(b.length, 4096))) };
 }
 export function attachCacheBytes(ds: Dataset, bytes: Uint8Array, sig: { size: number; head: number[] }): boolean {
