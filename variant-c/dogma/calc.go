@@ -68,6 +68,8 @@ func Tidy(v any) any {
 	switch x := v.(type) {
 	case float64:
 		return round6(x)
+	case *modRow:
+		return Tidy(x.toObj())
 	case obj:
 		for k, e := range x {
 			x[k] = Tidy(e)

@@ -30,16 +30,13 @@ func (e *jsonEnc) value(v any, inTree bool) {
 	case nil:
 		e.b = append(e.b, "null"...)
 	case float64:
-		if inTree && e.round {
-			if math.IsNaN(x) || math.IsInf(x, 0) {
-				e.b = append(e.b, "null"...)
-				return
-			}
-			if r := math.Round(x*1e6) / 1e6; !math.IsInf(r, 0) && !math.IsNaN(r) {
-				x = r
-			}
+		if inTree {
+			e.treeFloat(x)
+		} else {
+			e.float(x)
 		}
-		e.float(x)
+	case *modRow:
+		e.modRow(x)
 	case string:
 		e.b = appendJSONString(e.b, x)
 	case bool:
@@ -145,6 +142,20 @@ func (e *jsonEnc) obj(m obj) {
 	e.b = append(e.b, '}')
 	clear(ks) // drop references for the GC
 	e.depth--
+}
+
+// treeFloat encodes a float inside the stats tree (rounded like Tidy when e.round).
+func (e *jsonEnc) treeFloat(x float64) {
+	if e.round {
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			e.b = append(e.b, "null"...)
+			return
+		}
+		if r := math.Round(x*1e6) / 1e6; !math.IsInf(r, 0) && !math.IsNaN(r) {
+			x = r
+		}
+	}
+	e.float(x)
 }
 
 // float formats like encoding/json's float64 encoder.

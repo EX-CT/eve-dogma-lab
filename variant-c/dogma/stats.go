@@ -548,7 +548,8 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	}
 	var drains []Drain
 	var capUsed, capAdded float64
-	moduleRows := []any{}
+	moduleRows := make([]any, 0, len(modules))
+	rowBuf := make([]modRow, len(modules)) // one allocation for all rows
 	for _, i := range modules {
 		it := &f.Items[i]
 		capNeed := f.Get(i, w.capNeed)
@@ -565,11 +566,9 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		}
 		cycRaw := f.rawCycleMs(i)
 		full := cycRaw + f.Get(i, w.reactivation)
-		row := obj{"module_index": optIdx(it.ReqIndex), "type_id": it.TypeID, "name": it.T.Name, "slot": it.Slot,
-			"state": it.State, "cpu": f.Get(i, w.cpu), "power": f.Get(i, w.power)}
-		if cycRaw > 0 {
-			row["cycle_time_ms"] = cycRaw
-		}
+		row := &rowBuf[len(moduleRows)]
+		*row = modRow{idx: it.ReqIndex, typeID: it.TypeID, name: it.T.Name, slot: it.Slot,
+			state: it.State, cpu: f.Get(i, w.cpu), power: f.Get(i, w.power), cycleMs: cycRaw, hasCycle: cycRaw > 0}
 		if it.State >= Active && capNeed != 0 && full > 0 {
 			// Pyfa forces reload into capacitor boosters' average cycle (module.forceReload)
 			avg := f.avgCycleMs(i, factorReload || isInj)
@@ -582,7 +581,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 			} else {
 				capAdded -= use
 			}
-			row["cap_use_gj_s"] = use
+			row.capUse, row.hasCapUse = use, true
 			drains = append(drains, Drain{Duration: math.Trunc(full), CapNeed: capNeed, ClipSize: f.numShots(i),
 				ReloadMs: f.Get(i, w.reload), IsInjector: isInj, DisableStagger: f.hasEffect(i, w.eTurret)})
 		}
