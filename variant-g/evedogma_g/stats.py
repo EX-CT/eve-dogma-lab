@@ -126,18 +126,29 @@ class FitStats:
     def __init__(self, batch, fit, vals):
         self.b, self.fit, self.v, self.ds = batch, fit, vals, batch.ds
         self.meta = batch.meta
+        self._an = batch.ds.attr_by_name
 
     # helpers
     def g(self, i, name):
-        return self.v.get(i, self.ds.attr_by_name.get(name, 0))
+        # = self.v.get(i, attr id of name), inlined (the stats layer does ~500 of these per fit)
+        v = self.v
+        d = v._items.get(i)
+        if d is None:
+            d = v.item_dict(i)
+        a = self._an.get(name, 0)
+        x = d.get(a)
+        if x is not None:
+            return x
+        return v._defs[a] if 0 <= a < v._n_def else 0.0
 
     def has_eff(self, i, names):
         return not _effect_names(self.ds, self.meta[i]).isdisjoint(names)
 
     def raw_cycle_ms(self, i):
         v = max(self.g(i, "speed"), self.g(i, "duration"))
+        get = self.v.get
         for a in _cycle_attrs(self.ds):
-            v = max(v, self.v.get(i, a))
+            v = max(v, get(i, a))
         return v
 
     def num_charges(self, i):
@@ -707,7 +718,6 @@ class FitStats:
             idx = it["req_index"]
             ti = it["ti"]
             nm = ds.t_name[ti]
-            ta = lambda a: ds.type_attr(ti, a)  # noqa: E731
             vi = _vinfo(ds, ti)
             if it["slot"] is None:
                 push("NOT_FITTABLE", f"{nm} is not a fittable module", idx)
@@ -715,23 +725,22 @@ class FitStats:
             if (gr or ty) and ship_group not in gr and ship_id not in ty:
                 push("SHIP_RESTRICTION", f"{nm} cannot be fitted to {ship_name}", idx)
             if it["slot"] == "rig":
-                rsz = ta(ds.a("rigSize")) or 0.0
+                rsz = vi["rig_size"] or 0.0
                 srs = g(ship, "rigSize")
                 if rsz != 0.0 and rsz != srs:
                     push("RIG_SIZE", f"{nm} rig size {_rf(rsz)} != ship rig size {_rf(srs)}", idx)
-            fitted_group[it["group"]] = fitted_group.get(it["group"], 0) + 1
-            fitted_type[it["type_id"]] = fitted_type.get(it["type_id"], 0) + 1
+            grp, tid = it["group"], it["type_id"]
+            fitted_group[grp] = fitted_group.get(grp, 0) + 1
+            fitted_type[tid] = fitted_type.get(tid, 0) + 1
             if it["state"] >= ONLINE:
-                online_group[it["group"]] = online_group.get(it["group"], 0) + 1
+                online_group[grp] = online_group.get(grp, 0) + 1
             if it["state"] >= ACTIVE:
-                active_group[it["group"]] = active_group.get(it["group"], 0) + 1
-            for attr, mp, key, code, word in (("maxGroupFitted", fitted_group, it["group"], "MAX_GROUP_FITTED", "fitted of group"),
-                                              ("maxTypeFitted", fitted_type, it["type_id"], "MAX_TYPE_FITTED", "fitted"),
-                                              ("maxGroupOnline", online_group, it["group"], "MAX_GROUP_ONLINE", "online of group"),
-                                              ("maxGroupActive", active_group, it["group"], "MAX_GROUP_ACTIVE", "active of group")):
-                lim = ta(ds.a(attr))
-                if lim is None:
-                    continue
+                active_group[grp] = active_group.get(grp, 0) + 1
+            for k, lim in vi["limits"]:  # only the limits the type has, in check order
+                mp, key, code, word = ((fitted_group, grp, "MAX_GROUP_FITTED", "fitted of group"),
+                                       (fitted_type, tid, "MAX_TYPE_FITTED", "fitted"),
+                                       (online_group, grp, "MAX_GROUP_ONLINE", "online of group"),
+                                       (active_group, grp, "MAX_GROUP_ACTIVE", "active of group"))[k]
                 n = mp.get(key, 0)
                 if lim > 0.0 and n > lim:
                     push(code, f"{nm}: {n} {word}, max {_rf(lim)}", idx)
@@ -742,7 +751,7 @@ class FitStats:
                 cg = vi["charge_groups"]
                 if int(ds.t_group[cti]) not in cg:
                     push("CHARGE_GROUP", f"{cnm} cannot be loaded into {nm}", idx)
-                ms = ta(ds.a("chargeSize"))
+                ms = vi["charge_size"]
                 cs = ds.type_attr(cti, ds.a("chargeSize"))
                 if ms is not None and cs is not None and ms != cs:
                     push("CHARGE_SIZE", f"{cnm} size {_rf(cs)} != launcher size {_rf(ms)}", idx)
@@ -779,7 +788,11 @@ def _vinfo(ds, ti):
                 req.append((sk, ds.type_attr(ti, ds.a(f"requiredSkill{k}Level"), 1.0)))
         v = c[ti] = {"can_groups": ints([f"canFitShipGroup{k:02d}" for k in range(1, 21)]),
                      "can_types": ints([f"canFitShipType{k}" for k in range(1, 12)]),
-                     "charge_groups": ints([f"chargeGroup{k}" for k in range(1, 6)]), "req_skills": req}
+                     "charge_groups": ints([f"chargeGroup{k}" for k in range(1, 6)]), "req_skills": req,
+                     "limits": tuple((k, lim) for k, lim in enumerate(
+                         ta(ds.a(n)) for n in ("maxGroupFitted", "maxTypeFitted", "maxGroupOnline", "maxGroupActive"))
+                                     if lim is not None),
+                     "rig_size": ta(ds.a("rigSize")), "charge_size": ta(ds.a("chargeSize"))}
     return v
 
 

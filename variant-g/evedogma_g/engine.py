@@ -1219,6 +1219,7 @@ class Values:
         # item -> [lo, hi) range of its nodes
         it = ev.keys >> ATTR_BITS
         self._starts = np.searchsorted(it, np.arange(batch.n_items + 1))
+        self._lists = None
 
     def _range(self, i):
         return int(self._starts[i]), int(self._starts[i + 1])
@@ -1230,10 +1231,22 @@ class Values:
         """all evaluated attributes of one item {attr: value}"""
         d = self._items.get(i)
         if d is None:
-            lo, hi = self._range(i)
-            mask = (1 << ATTR_BITS) - 1
-            d = self._type_dict(i)
-            d.update(zip((self._keys[lo:hi] & mask).tolist(), self.ev.val[lo:hi].tolist()))
+            L = self._lists
+            if L is None and len(self._items) >= 256:
+                # many items are read (the stats pass): convert the node arrays to Python lists once
+                # instead of slicing NumPy arrays per item
+                L = self._lists = ((self._keys & ((1 << ATTR_BITS) - 1)).tolist(), self.ev.val.tolist(),
+                                   self._starts.tolist(), self.batch.it_ti.tolist())
+            if L is not None:
+                attrs, vals, starts, tis = L
+                lo, hi = starts[i], starts[i + 1]
+                d = dict(self.ds._tad_get(tis[i])) if self._full[i] else {}
+                d.update(zip(attrs[lo:hi], vals[lo:hi]))
+            else:
+                lo, hi = self._range(i)
+                mask = (1 << ATTR_BITS) - 1
+                d = self._type_dict(i)
+                d.update(zip((self._keys[lo:hi] & mask).tolist(), self.ev.val[lo:hi].tolist()))
             self._items[i] = d
         return d
 
