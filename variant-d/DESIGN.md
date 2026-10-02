@@ -121,24 +121,52 @@ RAH, cap sim with Pyfa heap ordering, nos income, passive shield regen peak `10/
 builds its objects in a fixed key order and floats are rounded to 1e-6 (same as eve-dogma-rs), so output is
 byte-stable for a given request (verified by the bench's determinism check).
 
-### 7. Cold start: the VDC4 dataset cache and the CLI bundle
+### 7. Cold start: VDC4 cache, CLI bundle, V8 code cache and startup snapshot
 
-One process per request is dominated by loading the 5 MB dataset (gunzip + `JSON.parse` of ~25 MB + building maps).
-`node dist-cli/eve-dogma-ts.cjs cache --dataset X` (bench `build` step) writes
-`.cache/<hash(path)>-<size>-<mtime>.vdc4`, a pure re-layout of the same dataset: a header JSON (sde info, sha256,
-attributes, effects, groups, categories, dbuffs, mutaplasmids), a columnar type table (id/group/category/mass/... as
-arrays + byte offsets) and a body of per-type `[attrs, effects]` JSON slices, the type-name array and the zh table.
-`ds.types` is a `TypeStore` interface: a Map on the JSON path, a `TypeTable` of lazily created `LazyType` objects on
-the cache path; `rawAttrs`/`effects` are decoded on first access and memoised (same array identity, which the per-type
-plan WeakMap relies on); the name index is built on first name lookup; zlib is loaded only when a .gz is read.
-Load ≈ 45 ms. The CLI is also shipped as one CommonJS file (`dist-cli/eve-dogma-ts.cjs`: tsc AMD outFile + a 20-line
-loader mapping `node:*` to `require`), which avoids ESM resolution/translation (~25 ms). Cold calc ≈ 200 ms vs bare
-`node -e 0` ≈ 90 ms on the shared box.
+One process per request is dominated by loading the 5 MB dataset (gunzip + `JSON.parse` of ~25 MB + building maps)
+and by compiling/warming the engine. The bench `build` step prepares four pure, rebuildable artefacts:
+
+1. **VDC4 dataset cache.** `node dist-cli/eve-dogma-ts.cjs cache --dataset X` writes
+   `.cache/<fnv64(path)>-<size>-<mtime>.vdc4`, a pure re-layout of the same dataset: a header JSON (sde info, sha256,
+   attributes, groups, categories, dbuffs, an effect index), a columnar type table (id/group/category/mass/... arrays
+   + byte offsets) and a body of per-type `[attrs, effects]` JSON slices, per-effect slices, mutaplasmids, the
+   type-name array and the zh table. `ds.types` is a `TypeStore`: a Map on the JSON path, a `TypeTable` of lazily
+   created `LazyType` objects on the cache path. Type bodies, effects, mutaplasmids, names and the name index are
+   decoded on first access and memoised. zlib and node:crypto are loaded only when really needed. Load is about 33 ms.
+2. **Single-file CLI.** `dist-cli/eve-dogma-ts.engine.js` holds the tsc AMD outFile plus a 20-line loader that maps
+   `node:*` to `require`, so there is no ESM resolution or translation (~25 ms). `dist-cli/eve-dogma-ts.cjs` is a
+   small launcher. stdout goes through `fs.writeSync`, so no stream machinery is loaded.
+3. **V8 code cache.** `cache` also runs a sample calc and stores V8's code cache for the engine
+   (`.cache/engine-<size>-<mtime>-<node version>.v8cc`). The launcher compiles the engine with it through
+   `vm.Script` `cachedData`. A stale or foreign cache is rejected by V8 and simply ignored. It saves about 10 ms.
+4. **Startup snapshot.** `node dist-cli/eve-dogma-ts.cjs snapshot --dataset X` runs
+   `node --build-snapshot dist-cli/eve-dogma-ts.snapshot.cjs X`. That file evaluates the engine, loads the dataset
+   from its VDC4 cache, warms it with a sample calc, detaches the cache *body bytes* (a smaller heap deserialises
+   faster) and registers the CLI as the snapshot main function. Run it as
+   `node --snapshot-blob dist-cli/eve-dogma-ts.blob calc|batch|serve-stdio --dataset X`. The preloaded dataset is
+   used only when the requested dataset file and its cache file are the very files it was built from (path, size,
+   mtime, cache head bytes). Otherwise, or with `EVE_DOGMA_TS_NO_CACHE`, it loads normally. The body bytes are
+   re-read from the cache file (~3 ms). The blob is specific to the node binary (and V8 flags) that built it.
+   Calcs remain the same stateless computation: the snapshot only holds what a load and pure memo tables would
+   produce anyway.
+
+Cold `calc` on the shared box (min of 12, load ~7): snapshot ≈ 101–110 ms, launcher + code cache ≈ 150–160 ms,
+bare `node -e 0` ≈ 90–95 ms, and a trivial snapshot ≈ 60 ms. Most of the remaining gap is the deserialisation of
+about 4 MB of dataset heap.
+
+`batch --threads N` (or `$EVE_DOGMA_TS_THREADS`, where 0 means one per core, up to 8) answers JSONL with an ordered
+pool of worker threads. Each thread does its own dataset load. Small inputs stay on the main thread, and the output
+is byte-identical to a serial run. The default is serial (1): on the loaded 8-core box the pool did not beat one
+thread, because every worker pays its own JIT warm-up.
 
 ### 8. V8 notes (what mattered for speed)
 - Objects keep one hidden class: double fields (`Item.ovV`, `Mod.v`, `Cell.val`) start as `NaN`, never as a small
   integer, otherwise V8 migrates maps on the first fractional write (Fit.build went 1.0 → 0.4 ms).
-- Per-dataset memo tables (plans, skill reach tests, attribute post-processing) instead of per-fit state.
+- Per-dataset memo tables (plans, skill reach tests, attribute post-processing, per-type validation inputs) instead
+  of per-fit state.
+- In one process, the first few hundred calcs run mostly in the interpreter or baseline tier. Rifter: about 2.3 ms
+  each over the first 100, about 0.5 ms at steady state. This warm-up, not the steady state, dominates the bench's
+  500-calc latency figure. `--maglev` and semi-space/lazy-feedback flags made no measurable difference.
 - The capacitor simulator keeps the processed event at the heap top and re-sifts once (same order as Pyfa's
   heappop/heappush because the event order is a strict total order).
 

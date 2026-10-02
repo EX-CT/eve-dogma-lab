@@ -8,11 +8,13 @@ latest bench scorecard: [bench-results/scorecard.md](bench-results/scorecard.md)
 npm ci && npm run build
 node dist/cli.js cache --dataset ../../data/dataset-3569502.json.gz   # optional: fast cold-start cache (.cache/)
 node dist-cli/eve-dogma-ts.cjs calc --dataset ...                     # same CLI as one CommonJS file (faster start)
+node dist-cli/eve-dogma-ts.cjs snapshot --dataset ...                 # optional: V8 startup snapshot, dataset preloaded
+node --snapshot-blob dist-cli/eve-dogma-ts.blob calc --dataset ...    # fastest cold start (what bench.yaml runs)
 node dist/cli.js calc  --dataset ../../data/dataset-3569502.json.gz < request.json
 node dist/cli.js batch --dataset ... < requests.ndjson                # one request per line
 node dist/cli.js serve-stdio --dataset ...                            # JSON-RPC over stdio
 node dist/test/parity.js --dataset ...                                # eve-dogma-rs fixtures vs pyfa oracle
-python3 score_bench.py                                                # bench cases vs Pyfa (306/306 at 1.7.0)
+python3 score_bench.py                                                # bench cases vs Pyfa (326/326 at 1.8.0)
 ```
 
 Library: `import { calc, search, typeInfo } from './dist/index.js'` with a `Dataset` from
