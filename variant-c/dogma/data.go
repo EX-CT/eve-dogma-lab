@@ -8,11 +8,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -241,25 +244,27 @@ type rawDs struct {
 		IsAssistance  bool        `json:"is_assistance"`
 		Mods          [][]float64 `json:"mods"`
 	} `json:"effects"`
-	Types map[string]struct {
-		Name            *string            `json:"name"`
-		Group           uint32             `json:"group"`
-		Category        uint32             `json:"category"`
-		Published       bool               `json:"published"`
-		Mass            float64            `json:"mass"`
-		Volume          float64            `json:"volume"`
-		Capacity        float64            `json:"capacity"`
-		Radius          float64            `json:"radius"`
-		MarketGroup     *uint32            `json:"market_group"`
-		MetaGroup       *uint32            `json:"meta_group"`
-		MetaLevel       *int32             `json:"meta_level"`
-		VariationParent *uint32            `json:"variation_parent"`
-		Attrs           map[string]float64 `json:"attrs"`
-		Effects         [][2]uint32        `json:"effects"`
-	} `json:"types"`
+	Types        map[string]rawType           `json:"-"`
 	Dbuffs       map[string]*DbuffInfo        `json:"dbuffs"`
 	Mutaplasmids map[string]*MutaInfo         `json:"mutaplasmids"`
 	Names        map[string]map[string]string `json:"names"`
+}
+
+type rawType struct {
+	Name            *string            `json:"name"`
+	Group           uint32             `json:"group"`
+	Category        uint32             `json:"category"`
+	Published       bool               `json:"published"`
+	Mass            float64            `json:"mass"`
+	Volume          float64            `json:"volume"`
+	Capacity        float64            `json:"capacity"`
+	Radius          float64            `json:"radius"`
+	MarketGroup     *uint32            `json:"market_group"`
+	MetaGroup       *uint32            `json:"meta_group"`
+	MetaLevel       *int32             `json:"meta_level"`
+	VariationParent *uint32            `json:"variation_parent"`
+	Attrs           map[string]float64 `json:"attrs"`
+	Effects         [][2]uint32        `json:"effects"`
 }
 
 func u32(s string) uint32 { v, _ := strconv.ParseUint(s, 10, 32); return uint32(v) }
@@ -287,14 +292,75 @@ func LoadBytes(b []byte) (*Dataset, error) {
 		if err != nil {
 			return nil, fmt.Errorf("gunzip: %w", err)
 		}
-		js, err = io.ReadAll(zr)
+		// ISIZE trailer = uncompressed size mod 2^32: read straight into a right-sized buffer
+		buf := bytes.NewBuffer(make([]byte, 0, int(binary.LittleEndian.Uint32(b[len(b)-4:]))+512))
+		_, err = buf.ReadFrom(zr)
+		js = buf.Bytes()
 		if err != nil {
 			return nil, fmt.Errorf("gunzip: %w", err)
 		}
 	}
-	sum := sha256.Sum256(js)
+	// Parallel decode: the document is split into top-level sections with a cheap byte scanner,
+	// the small sections are decoded by encoding/json concurrently, and the large "types" section
+	// is split per type and decoded by a worker pool. sha256 runs alongside.
+	defer debug.SetGCPercent(debug.SetGCPercent(400))
+	var sum [32]byte
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); sum = sha256.Sum256(js) }()
+	top, err := splitObject(js)
+	if err != nil {
+		return nil, fmt.Errorf("dataset json: %w", err)
+	}
 	var raw rawDs
-	if err := json.Unmarshal(js, &raw); err != nil {
+	var typesRaw []byte
+	other := []byte{'{'}
+	for _, kv := range top {
+		if string(kv.k) == "types" {
+			typesRaw = kv.v
+			continue
+		}
+		if len(other) > 1 {
+			other = append(other, ',')
+		}
+		other = append(other, '"')
+		other = append(other, kv.k...)
+		other = append(other, '"', ':')
+		other = append(other, kv.v...)
+	}
+	other = append(other, '}')
+	var errOther, errTypes error
+	wg.Add(1)
+	go func() { defer wg.Done(); errOther = json.Unmarshal(other, &raw) }()
+	var tkv []kvRaw
+	var tinfos []*TypeInfo
+	if typesRaw != nil {
+		if tkv, errTypes = splitObject(typesRaw); errTypes == nil {
+			tinfos = make([]*TypeInfo, len(tkv))
+			errs := make([]error, runtime.GOMAXPROCS(0))
+			var tw sync.WaitGroup
+			for w := range errs {
+				tw.Add(1)
+				go func(w int) {
+					defer tw.Done()
+					for i := w; i < len(tkv); i += len(errs) {
+						var rt rawType
+						if err := json.Unmarshal(tkv[i].v, &rt); err != nil {
+							if errs[w] == nil {
+								errs[w] = err
+							}
+							continue
+						}
+						tinfos[i] = buildType(u32(string(tkv[i].k)), &rt)
+					}
+				}(w)
+			}
+			tw.Wait()
+			errTypes = errors.Join(errs...)
+		}
+	}
+	wg.Wait()
+	if err := errors.Join(errOther, errTypes); err != nil {
 		return nil, fmt.Errorf("dataset json: %w", err)
 	}
 	if raw.Format != "exct-eve-dataset" || raw.FormatVersion != 1 {
@@ -351,51 +417,16 @@ func LoadBytes(b []byte) (*Dataset, error) {
 		}
 		ds.Groups[u32(k)] = gi
 	}
-	reqSkillAttrs := [6]uint32{182, 183, 184, 1285, 1289, 1290}
 	var skills []uint32
-	for k, t := range raw.Types {
-		id := u32(k)
-		ti := &TypeInfo{ID: id, Group: t.Group, Category: t.Category, Published: t.Published, Mass: t.Mass,
-			Volume: t.Volume, Capacity: t.Capacity, Radius: t.Radius, MarketGroup: t.MarketGroup,
-			MetaGroup: t.MetaGroup, MetaLevel: t.MetaLevel, VariationParent: t.VariationParent}
-		if t.Name != nil {
-			ti.Name = *t.Name
-		}
-		ids := make([]uint32, 0, len(t.Attrs))
-		for a := range t.Attrs {
-			ids = append(ids, u32(a))
-		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-		vals := make([]float64, len(ids))
-		for i, a := range ids {
-			vals[i] = t.Attrs[strconv.FormatUint(uint64(a), 10)]
-		}
-		ti.raw = attrSet{ids, vals}
-		ti.base = attrSet{append([]uint32(nil), ids...), append([]float64(nil), vals...)}
-		for _, f := range [4]struct {
-			a uint32
-			v float64
-		}{{4, t.Mass}, {38, t.Capacity}, {161, t.Volume}, {162, t.Radius}} {
-			if _, ok := ti.base.get(f.a); f.v != 0 || !ok {
-				ti.base.set(f.a, f.v)
-			}
-		}
-		for _, e := range t.Effects {
-			ti.Effects = append(ti.Effects, TypeEffect{ID: e[0], Default: e[1] != 0})
-		}
-		for _, a := range reqSkillAttrs {
-			if v, ok := ti.raw.get(a); ok && uint32(v) != 0 {
-				ti.ReqSkills = appendUnique(ti.ReqSkills, uint32(v))
-			}
-		}
-		ti.Slot = inferSlot(ti)
+	for _, ti := range tinfos {
+		id := ti.ID
 		ds.Types[id] = ti
 		lname := strings.ToLower(ti.Name)
 		if prev, ok := ds.typeByName[lname]; !ok || betterNamed(ti, ds.Types[prev]) {
 			ds.typeByName[lname] = id
 		}
-		ds.typesByGroup[t.Group] = append(ds.typesByGroup[t.Group], id)
-		if t.Category == 16 && t.Published {
+		ds.typesByGroup[ti.Group] = append(ds.typesByGroup[ti.Group], id)
+		if ti.Category == 16 && ti.Published {
 			skills = append(skills, id)
 		}
 	}
@@ -475,4 +506,126 @@ func inferSlot(t *TypeInfo) Slot {
 		}
 	}
 	return SlotNone
+}
+
+type kvRaw struct{ k, v []byte }
+
+// splitObject splits a JSON object into its top-level key/raw-value pairs without decoding the
+// values (values are validated later by encoding/json). Keys must not contain escapes.
+func splitObject(b []byte) ([]kvRaw, error) {
+	i, n := 0, len(b)
+	ws := func() {
+		for i < n && (b[i] == ' ' || b[i] == '\n' || b[i] == '\r' || b[i] == '\t') {
+			i++
+		}
+	}
+	bad := func(what string) error { return fmt.Errorf("offset %d: %s", i, what) }
+	ws()
+	if i >= n || b[i] != '{' {
+		return nil, bad("expected object")
+	}
+	i++
+	var out []kvRaw
+	for {
+		ws()
+		if i < n && b[i] == '}' && len(out) == 0 {
+			return out, nil
+		}
+		if i >= n || b[i] != '"' {
+			return nil, bad("expected key")
+		}
+		ks := i + 1
+		for i++; i < n && b[i] != '"'; i++ {
+			if b[i] == '\\' {
+				return nil, bad("escaped key")
+			}
+		}
+		if i >= n {
+			return nil, bad("unterminated key")
+		}
+		k := b[ks:i]
+		i++
+		ws()
+		if i >= n || b[i] != ':' {
+			return nil, bad("expected ':'")
+		}
+		i++
+		ws()
+		vs, depth := i, 0
+	scan:
+		for ; i < n; i++ {
+			switch b[i] {
+			case '"':
+				for i++; i < n && b[i] != '"'; i++ {
+					if b[i] == '\\' {
+						i++
+					}
+				}
+			case '{', '[':
+				depth++
+			case '}', ']':
+				if depth == 0 {
+					break scan
+				}
+				depth--
+			case ',':
+				if depth == 0 {
+					break scan
+				}
+			}
+		}
+		if i >= n {
+			return nil, bad("unterminated value")
+		}
+		ve := i
+		for ve > vs && (b[ve-1] == ' ' || b[ve-1] == '\n' || b[ve-1] == '\r' || b[ve-1] == '\t') {
+			ve--
+		}
+		out = append(out, kvRaw{k, b[vs:ve]})
+		if b[i] == '}' {
+			return out, nil
+		}
+		i++
+	}
+}
+
+var reqSkillAttrs = [6]uint32{182, 183, 184, 1285, 1289, 1290}
+
+// buildType converts one decoded type record (runs on loader worker goroutines).
+func buildType(id uint32, t *rawType) *TypeInfo {
+	ti := &TypeInfo{ID: id, Group: t.Group, Category: t.Category, Published: t.Published, Mass: t.Mass,
+		Volume: t.Volume, Capacity: t.Capacity, Radius: t.Radius, MarketGroup: t.MarketGroup,
+		MetaGroup: t.MetaGroup, MetaLevel: t.MetaLevel, VariationParent: t.VariationParent}
+	if t.Name != nil {
+		ti.Name = *t.Name
+	}
+	ids := make([]uint32, 0, len(t.Attrs))
+	for a := range t.Attrs {
+		ids = append(ids, u32(a))
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	vals := make([]float64, len(ids))
+	for i, a := range ids {
+		vals[i] = t.Attrs[strconv.FormatUint(uint64(a), 10)]
+	}
+	ti.raw = attrSet{ids, vals}
+	ti.base = attrSet{append([]uint32(nil), ids...), append([]float64(nil), vals...)}
+	for _, f := range [4]struct {
+		a uint32
+		v float64
+	}{{4, t.Mass}, {38, t.Capacity}, {161, t.Volume}, {162, t.Radius}} {
+		if _, ok := ti.base.get(f.a); f.v != 0 || !ok {
+			ti.base.set(f.a, f.v)
+		}
+	}
+	for _, e := range t.Effects {
+		ti.Effects = append(ti.Effects, TypeEffect{ID: e[0], Default: e[1] != 0})
+	}
+	for _, a := range reqSkillAttrs {
+		if v, ok := ti.raw.get(a); ok && uint32(v) != 0 {
+			ti.ReqSkills = appendUnique(ti.ReqSkills, uint32(v))
+		}
+	}
+	ti.Slot = inferSlot(ti)
+	return ti
 }
