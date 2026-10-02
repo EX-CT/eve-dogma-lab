@@ -55,11 +55,19 @@ Every output leaf was compared, abs 1e-6 / rel 1e-9, against A's working-tree bu
 | component queries for incoming effects | 0.997 G |
 | + ECM/fighter abilities/EFT tools (same 249 fits) | 1.006 G |
 
-## Helpers vs A
+## Helpers (contract v1.4.1)
 
-- `eft` import of all 129 fits in A's tests/fits: **129/129 identical** FitRequests.
-- H `eft_export` → `eft_parse` round trip: 129/129.
-- Export text of the 289 bench cases matches A's apart from blank lines (A adds an extra blank line before boosters
-  when there are no implants) and the T3D mode line. H exports the mode; A drops it.
-- `type` output is identical to A's. `search` matches on 8 of 9 sample queries; for Chinese queries the ordering of
-  equal-rank hits differs slightly.
+- `eft` import of all 129 fits in A's tests/fits: **129/129 identical** FitRequests to A.
+- `eft_export` is checked against Pyfa's own EFT exporter (`service/port/eft.py`, run as a black-box test tool)
+  on 443 FitRequests (bench cases + local cases + a stress fit). **428/429 byte-identical** (14 fits don't
+  build on Pyfa's older eve.db). The one diff: a fit with two boosters in the same booster slot, where Pyfa keeps
+  only one.
+  The format: two blank lines between sections, one between racks; lowercase `/offline`; drones in Pyfa's
+  market-group order; fighters by group then name; implants and boosters by slot; cargo by
+  (category, group, name); mutation lines list every rolled attribute; no trailing newline; no T3D mode line
+  (Pyfa's exporter writes none).
+- `eft_export` → `eft_parse` → `eft_export` on the same 443 fits: 443/443 identical text. Import follows Pyfa's
+  section rule (an all-drone section is the drone bay; a drone in a mixed section is cargo).
+- `search`: categories ship/module/charge/drone/fighter/implant/booster/subsystem/skill, published only;
+  exact > prefix > substring over English and Chinese names; ties by type id ascending; default limit 20.
+- `type` output is identical to A's.

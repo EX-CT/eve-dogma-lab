@@ -90,8 +90,8 @@ A cycle guard returns the base value. Systems that need evaluated values (buff i
   - sustained tank
   - ECM jam chance
   - per-weapon and per-drone application fields
-- Not implemented: EFT import/export, and the `search`/`type` CLI helpers. `serve-stdio` supports only
-  `calc` and `meta` requests.
+- EFT import/export, `search` and `type` live in `src/tools.rs`; they're reachable from the CLI and from
+  `serve-stdio`. Export reimplements the behaviour of Pyfa's EFT exporter, checked black-box. No Pyfa code is used.
 - Known divergences from Pyfa are the bench's `known_divergences.json` entries: invalid fits and SDE/eve.db data
   drift.
 - Void bombs (projected cap drain from a bomb charge) are not modelled. Lockbreaker bomb ECM is modelled.

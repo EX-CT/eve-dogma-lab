@@ -182,7 +182,7 @@ fn main() {
         "search" => {
             let ds = load(dataset);
             let q = args[1..].join(" ");
-            writeln!(out, "{}", serde_json::to_string_pretty(&tools::search(&ds, &q, limit.or(Some(25)))).unwrap()).unwrap();
+            writeln!(out, "{}", serde_json::to_string_pretty(&tools::search(&ds, &q, limit)).unwrap()).unwrap();
         }
         "type" => {
             let ds = load(dataset);

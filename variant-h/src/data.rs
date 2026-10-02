@@ -76,6 +76,7 @@ pub struct TypeInfo {
     pub req_skills: Vec<u32>,
     pub meta_level: Option<i64>,
     pub name_zh: Option<String>,
+    pub market_group: Option<u32>,
 }
 
 impl TypeInfo {
@@ -117,6 +118,7 @@ pub struct Dataset {
     pub sha256: String,
     pub types: FxHashMap<u32, TypeInfo>,
     pub group_names: FxHashMap<u32, String>,
+    pub category_names: FxHashMap<u32, String>,
     pub attrs: FxHashMap<u32, AttrInfo>,
     pub effects: FxHashMap<u32, EffectInfo>,
     pub dbuffs: FxHashMap<u32, DbuffInfo>,
@@ -138,6 +140,8 @@ struct RawDs {
     format_version: u32,
     sde: RawSde,
     groups: HashMap<String, RawGroup>,
+    #[serde(default)]
+    categories: HashMap<String, RawGroup>,
     attributes: HashMap<String, RawAttr>,
     effects: HashMap<String, RawEffect>,
     types: HashMap<String, RawType>,
@@ -186,6 +190,8 @@ struct RawEffect {
 #[derive(Deserialize)]
 struct RawType {
     name: Option<String>,
+    #[serde(default)]
+    market_group: Option<u32>,
     group: u32,
     category: u32,
     #[serde(default)]
@@ -310,6 +316,7 @@ impl Dataset {
                 },
             );
         }
+        let category_names = raw.categories.into_iter().map(|(k, g)| (k.parse().unwrap_or(0), g.name.unwrap_or_default())).collect();
         let group_names = raw.groups.into_iter().map(|(k, g)| (k.parse().unwrap_or(0), g.name.unwrap_or_default())).collect();
         let mut types = FxHashMap::default();
         let mut type_by_name = FxHashMap::default();
@@ -356,6 +363,7 @@ impl Dataset {
                     req_skills,
                     meta_level: t.meta_level.map(|m| m as i64),
                     name_zh: zh.remove(&id.to_string()),
+                    market_group: t.market_group,
                 },
             );
         }
@@ -368,6 +376,7 @@ impl Dataset {
             sha256,
             types,
             group_names,
+            category_names,
             attrs,
             effects,
             dbuffs: raw.dbuffs.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect(),
