@@ -209,7 +209,11 @@ export class Dataset {
 
   finishTypes(): void {
     this.publishedSkills = this.skills.filter((s) => this.types.get(s)!.published);
+    this.pubSkillSet = new Set(this.publishedSkills);
   }
+  private pubSkillSet = new Set<number>();
+  /** published type of category 16 (Skill) */
+  isPublishedSkill(id: number): boolean { return this.pubSkillSet.has(id); }
 
   /** zh names, materialised on first use */
   zhSource: () => Record<string, string> = () => ({});

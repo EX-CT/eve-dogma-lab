@@ -69,7 +69,10 @@ export class Fit extends AttrGraph {
   skillDefault = 0;
   skillCustom = new Map<number, number>();
   /** trained level of a skill as given by the request (0..5) */
-  skillLevel(s: number): number { return this.skillCustom.get(s) ?? (this.ds.types.get(s)?.published && this.ds.types.get(s)?.category === 16 ? this.skillDefault : 0); }
+  skillLevel(s: number): number {
+    const c = this.skillCustom.size ? this.skillCustom.get(s) : undefined;
+    return c ?? (this.ds.isPublishedSkill(s) ? this.skillDefault : 0);
+  }
   /** incoming remote reps / cap transfers / neuts from projected items (evaluated in stats) */
   projSpecial: ProjSpecial[] = [];
 
@@ -432,13 +435,23 @@ export class Fit extends AttrGraph {
     const eBastion = ds.effectId('moduleBonusBastionModule');
     let reaches = REACH.get(ds);
     if (reaches === undefined) REACH.set(ds, (reaches = new Map()));
-    for (const s of list) {
+    // default list: reach tests memoised in an array aligned with ds.publishedSkills (no Map lookup per skill)
+    let arr = list === ds.publishedSkills ? REACH_ARR.get(ds) : undefined;
+    if (list === ds.publishedSkills && arr === undefined) REACH_ARR.set(ds, (arr = new Array(list.length).fill(undefined)));
+    const nl = list.length;
+    const overrides = req.overrides.length > 0;
+    for (let si = 0; si < nl; si++) {
+      const s = list[si];
       // A skill's attributes are only read through its own outgoing modifiers: skip it if none reaches the fit.
-      let r = reaches.get(s);
+      let r = arr !== undefined ? arr[si] : reaches.get(s);
       if (r === undefined) {
-        const t = ds.types.get(s);
-        r = t ? skillReach(planFor(ds, s, t.effects, eBastion)) : null;
-        reaches.set(s, r);
+        r = reaches.get(s);
+        if (r === undefined) {
+          const t = ds.types.get(s);
+          r = t ? skillReach(planFor(ds, s, t.effects, eBastion)) : null;
+          reaches.set(s, r);
+        }
+        if (arr !== undefined) arr[si] = r;
       }
       if (r === null) continue;
       let reach = r.always;
@@ -450,7 +463,7 @@ export class Fit extends AttrGraph {
       const idx = this.newItem(s, Kind.Skill, Loc.Char, '/character/skills');
       this.items[idx].owned = false;
       this.setBase(idx, ATTR_SKILL_LEVEL, this.skillLevel(s));
-      for (const o of req.overrides) if (o.type_id === s) this.setBase(idx, o.attribute_id, o.value);
+      if (overrides) for (const o of req.overrides) if (o.type_id === s) this.setBase(idx, o.attribute_id, o.value);
       this.index.addCharItem(this.items[idx]);
     }
   }
@@ -780,6 +793,7 @@ const PLANS = new WeakMap<[number, number][], Plan>();
  * exist) or else the outgoing modifiers whose targets must be resolved against the fit */
 interface Reach { always: boolean; checks: PlanMod[] }
 const REACH = new WeakMap<Dataset, Map<number, Reach | null>>();
+const REACH_ARR = new WeakMap<Dataset, (Reach | null | undefined)[]>();
 function skillReach(plan: Plan): Reach {
   const checks = plan.outgoing.filter((m) => m.domain !== Domain.Other);
   const always = plan.hasSpecial || checks.some((m) => (m.domain === Domain.Ship || m.domain === Domain.Char) && (m.func === Func.Item || m.func === Func.Location));
