@@ -101,6 +101,35 @@ func (h *evHeap) pop(top *capEv) {
 	*h = a
 }
 
+// pushPop is push(e) followed by pop(top) in one sift: when e precedes the current minimum it is
+// returned directly without touching the heap (the common case for a periodic module).
+func (h *evHeap) pushPop(e capEv, top *capEv) {
+	a := *h
+	n := len(a)
+	if n == 0 || evLess(&e, &a[0]) {
+		*top = e
+		return
+	}
+	*top = a[0]
+	i := 0
+	for {
+		l := 2*i + 1
+		if l >= n {
+			break
+		}
+		m := l
+		if r := l + 1; r < n && evLess(&a[r], &a[l]) {
+			m = r
+		}
+		if !evLess(&a[m], &e) {
+			break
+		}
+		a[i] = a[m]
+		i = m
+	}
+	a[i] = e
+}
+
 func gcd(a, b uint64) uint64 {
 	for b != 0 {
 		a, b = b, a%b
@@ -210,7 +239,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 	}
 	var lastEv capEv
 	haveLast := false
-	reschedule := func(inj capEv, tNow float64) {
+	next := func(inj *capEv, tNow float64) {
 		inj.t = tNow + inj.duration
 		inj.shot++
 		if inj.clip > 0 && inj.shot%inj.clip == 0 {
@@ -219,6 +248,9 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		}
 		inj.seq = seq
 		seq++
+	}
+	reschedule := func(inj capEv, tNow float64) {
+		next(&inj, tNow)
 		h.push(inj)
 	}
 	// exp((tLast-tNow)/tau) memo: event spacings repeat (periodic modules), exp is pure, so results are identical
@@ -235,8 +267,16 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		return v
 	}
 	var ev capEv
-	for len(*h) > 0 {
-		h.pop(&ev)
+	// the popped event is rescheduled at the end of most iterations; its heap insertion is deferred
+	// into the next iteration's pushPop (seq is still assigned in program order, so ordering is unchanged)
+	pending := false
+	for pending || len(*h) > 0 {
+		if pending {
+			h.pushPop(ev, &ev)
+			pending = false
+		} else {
+			h.pop(&ev)
+		}
 		tNow := ev.t
 		if tNow >= tMaxMs {
 			lastEv, haveLast = ev, true
@@ -320,7 +360,11 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 			cap = math.Min(cap-inj.capNeed, capMax)
 			reschedule(inj, tNow)
 		}
-		reschedule(ev, tNow)
+		next(&ev, tNow)
+		pending = true
+	}
+	if pending {
+		h.push(ev)
 	}
 	all := []capEv(*h)
 	if haveLast {
