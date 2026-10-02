@@ -1,14 +1,14 @@
-# Variant G results (2026-10-03 06:27 CST)
+# Variant G results (2026-10-03 06:34 CST)
 
-## Bench 1.8.0 (EX-CT/eve-dogma-bench @ 0969967 / 3da9671 frozen, official full run `bench.py --only G`, 326 cases)
+## Bench 1.8.0 (EX-CT/eve-dogma-bench @ 3da9671 = 1.8.0 frozen, official full run `bench.py --only G` in the shared checkout, 326 cases)
 - cases fully correct vs Pyfa: **326/326**; values: **21051/21051** (all 8 groups 100 %); engine errors 0
-- one process per case (cold start + calc), median: 130.0 ms
-- batch throughput (corpus x5, 1630 requests): 340 fits/s
-- latency one fit (exct_rifter, warm, n=500): 2.21 ms/calc
-- startup + one calc: 132.8 ms
+- one process per case (cold start + calc), median: 121.1 ms
+- batch throughput (corpus x5, 1630 requests): 333 fits/s
+- latency one fit (exct_rifter, warm, n=500): 2.14 ms/calc
+- startup + one calc: 121.8 ms
 - deterministic: True
 - EFT export (informational column, `rpc_cmd` in bench.yaml): 326/326 identical to Pyfa
-- Run against the pushed branch (commit c657d1a engine). Box load ≈ 7 during the run; perf numbers are noisy.
+- Run against the pushed branch (engine commit c657d1a; an earlier scratch-copy full run gave 130 ms / 340 fits/s / 2.21 ms). Box load ≈ 7 during the run; perf numbers are noisy.
 - Raw scorecard: `results/bench/scorecard.{md,json}`, `failures.json` (empty).
 
 ## Older corpora (tests/run_tests.py, same tree)
