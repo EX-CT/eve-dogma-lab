@@ -15,7 +15,7 @@ Updated: 2026-10-03 06:10 CST
 - Contract 1.4.2 / bench 1.5–1.7: projected amount semantics, projected TD/GD (Effect6424/6423), RTC (Effect6428,
   disallowAssistance), TD drones (Effect6694), local "active" handlers without modifierInfo (superweapon/lance speed and
   warp status, EHE, entosis, MJFG, local WDFG), Python `round(v, 2)` for cpu/power (exact ties-to-even).
-- Parity: **official bench 1.7.0: 306/306 cases, 19 621/19 621 values, EFT export 306/306, deterministic**
+- Parity: **official bench 1.8.0: 326/326 cases, 21 051/21 051 values, EFT export 326/326, deterministic**
   (`bench-results/`). Fast inner loop: `python3 score_bench.py` (batch mode; `VD_CLI=dist-cli/eve-dogma-ts.cjs`
   for the bundle).
 - Browser: zero-dependency bundle (`npm run build:web`, ~160 KB), demo page `web/index.html` verified in headless
