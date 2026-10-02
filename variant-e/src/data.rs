@@ -39,6 +39,8 @@ pub struct TypeInfo {
     pub effect_ids: Vec<u32>,
     /// requiredSkill1..6 -> (skill type id, level)
     pub req_skills: Vec<(u32, u8)>,
+    pub market_group: Option<u32>,
+    pub variation_parent: Option<u32>,
 }
 
 impl TypeInfo {
@@ -78,6 +80,7 @@ pub struct Dataset {
     pub type_by_name: FxHashMap<String, u32>,
     pub group_names: FxHashMap<u32, String>,
     pub group_category: FxHashMap<u32, u32>,
+    pub category_names: FxHashMap<u32, String>,
     pub dbuffs: FxHashMap<u32, DbuffInfo>,
     pub mutaplasmids: FxHashMap<u32, Mutaplasmid>,
     /// published skills, ascending type id (Pyfa Character.getSkillList)
@@ -126,6 +129,14 @@ struct RawType {
     radius: Option<f64>,
     #[serde(default)]
     volume: Option<f64>,
+    #[serde(default)]
+    market_group: Option<u32>,
+    #[serde(default)]
+    variation_parent: Option<u32>,
+}
+#[derive(Deserialize)]
+struct RawCategory {
+    name: String,
 }
 #[derive(Deserialize)]
 struct RawGroup {
@@ -168,6 +179,8 @@ struct Raw {
     types: FxHashMap<String, RawType>,
     groups: FxHashMap<String, RawGroup>,
     #[serde(default)]
+    categories: FxHashMap<String, RawCategory>,
+    #[serde(default)]
     dbuffs: FxHashMap<String, RawDbuff>,
     #[serde(default)]
     mutaplasmids: FxHashMap<String, RawMuta>,
@@ -195,7 +208,7 @@ impl Dataset {
             use std::hash::Hasher;
             let mut h = rustc_hash::FxHasher::default();
             h.write(&bytes);
-            h.write(concat!(env!("CARGO_PKG_VERSION"), "-cache-v1").as_bytes());
+            h.write(concat!(env!("CARGO_PKG_VERSION"), "-cache-v2").as_bytes());
             format!("{:016x}-{}", h.finish(), bytes.len())
         };
         let dir = std::env::var_os("EVE_DOGMA_E_CACHE")
@@ -318,6 +331,8 @@ impl Dataset {
                     effect_ids: t.effects.iter().map(|(e, _)| *e).collect(),
                     effects: t.effects.into_iter().map(|(e, d)| (e, d != 0)).collect(),
                     req_skills: req,
+                    market_group: t.market_group,
+                    variation_parent: t.variation_parent,
                 },
             );
         }
@@ -329,6 +344,7 @@ impl Dataset {
             group_names.insert(id, g.name);
             group_category.insert(id, g.category);
         }
+        let category_names: FxHashMap<u32, String> = raw.categories.into_iter().map(|(k, c)| (k.parse().unwrap_or(0), c.name)).collect();
         let mut dbuffs = FxHashMap::default();
         for (k, b) in raw.dbuffs {
             dbuffs.insert(
@@ -360,6 +376,7 @@ impl Dataset {
             type_by_name,
             group_names,
             group_category,
+            category_names,
             dbuffs,
             mutaplasmids,
             skills,

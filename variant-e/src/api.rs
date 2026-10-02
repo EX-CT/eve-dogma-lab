@@ -93,3 +93,19 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Result<Value, BuildError> {
     }
     Ok(out)
 }
+
+/// `eft_export` RPC: params {fit: FitRequest, name?} -> {text}
+pub fn eft_export_value(ds: &Dataset, params: serde_json::Value) -> Value {
+    let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+    let Some(fit) = params.get("fit").cloned() else {
+        return err("BAD_REQUEST", "missing params.fit", "/params/fit");
+    };
+    let req: FitRequest = match serde_json::from_value(fit) {
+        Ok(r) => r,
+        Err(e) => return err("BAD_REQUEST", &e.to_string(), "/params/fit"),
+    };
+    match crate::eft::export(ds, &req, &name) {
+        Ok(t) => Value::from(json!({ "text": t })),
+        Err(e) => be(e),
+    }
+}

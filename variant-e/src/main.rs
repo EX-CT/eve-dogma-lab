@@ -9,7 +9,7 @@ const USAGE: &str = "eve-dogma-e <command> [--dataset PATH] [args]
 Commands:
   calc [FILE]     FitRequest JSON (file or stdin) -> FitStats JSON (default when no command is given)
   batch           JSONL FitRequests on stdin -> JSONL FitStats on stdout
-  serve-stdio     JSONL RPC {\"id\",\"method\":\"calc|meta\",\"params\"} -> {\"id\",\"result\"}
+  serve-stdio     JSONL RPC {\"id\",\"method\":\"calc|eft_export|meta\",\"params\"} -> {\"id\",\"result\"}
   meta            dataset info
 
 Dataset: --dataset PATH, or $EVE_DOGMA_DATASET, or ./dataset.json.gz";
@@ -111,6 +111,7 @@ fn main() {
                 let params = r.get("params").cloned().unwrap_or(Value::Null);
                 let res = match r.get("method").and_then(|m| m.as_str()) {
                     Some("calc") => api::calc_value(&ds, params),
+                    Some("eft_export") => api::eft_export_value(&ds, params),
                     Some("meta") => eve_dogma_e::jv::Value::from(meta(&ds)),
                     m => api::err("UNKNOWN_METHOD", &format!("{m:?}"), "/method"),
                 };
