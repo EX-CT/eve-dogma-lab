@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /** eve-dogma-ts CLI — same stateless contract as eve-dogma-rs (docs/contract.md). */
 import { readFileSync } from 'node:fs';
-import { createInterface } from 'node:readline';
 import { calc, calcJson, meta, parseEft, rpc, search, typeInfo } from './index.js';
 import { datasetPath, loadDatasetFile, setPackageDir, writeCache } from './node.js';
 import { dirname, resolve } from 'node:path';
@@ -50,9 +49,28 @@ function readInput(f?: string): string {
 }
 const out = (s: string) => process.stdout.write(s + '\n');
 
-async function lines(fn: (l: string) => void) {
-  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  for await (const l of rl) if (l.trim()) fn(l);
+/**
+ * JSONL loop: answers every complete line of each stdin chunk, then writes the answers of that chunk in one
+ * write (no readline/async-iterator overhead; an interactive client still gets each answer as soon as its line arrives).
+ */
+function lines(fn: (l: string) => string): Promise<void> {
+  return new Promise((done) => {
+    let rest = '';
+    const flush = (text: string, final: boolean) => {
+      const parts = text.split('\n');
+      rest = final ? '' : parts.pop()!;
+      let o = '';
+      for (const raw of parts) {
+        const l = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+        if (l.trim()) o += fn(l) + '\n';
+        if (o.length > 1 << 20) { process.stdout.write(o); o = ''; }
+      }
+      if (o) process.stdout.write(o);
+    };
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (c: string) => flush(rest + c, false));
+    process.stdin.on('end', () => { flush(rest, true); done(); });
+  });
 }
 
 async function main() {
@@ -67,13 +85,13 @@ async function main() {
     }
     case 'batch': {
       const ds = load();
-      await lines((l) => out(calcJson(ds, l)));
+      await lines((l) => calcJson(ds, l));
       break;
     }
     case 'serve-stdio': {
       const ds = load();
       process.stderr.write(`eve-dogma-ts serve-stdio ready (sde ${ds.build})\n`);
-      await lines((l) => out(JSON.stringify(rpc(ds, l))));
+      await lines((l) => JSON.stringify(rpc(ds, l)));
       break;
     }
     case 'eft': {

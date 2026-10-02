@@ -475,10 +475,14 @@ export class Fit extends AttrGraph {
         }
         continue;
       }
-      if (e.name === 'shipModuleTrackingDisruptor' || e.name === 'shipModuleGuidanceDisruptor') {
-        // Pyfa Effect6424 / Effect6423: the target's gunnery modules / missile charges
-        if (targetOffenseOk) {
-          const td = e.name === 'shipModuleTrackingDisruptor';
+      if (e.name === 'shipModuleTrackingDisruptor' || e.name === 'shipModuleGuidanceDisruptor' || e.name === 'shipModuleRemoteTrackingComputer') {
+        // Pyfa Effect6424 / Effect6423 / Effect6428: the target's gunnery modules (TD, remote tracking computer) /
+        // missile charges (GD); the RTC is assistance (blocked by disallowAssistance), the disruptors are offensive
+        const rtc = e.name === 'shipModuleRemoteTrackingComputer';
+        const da = ds.attrId('disallowAssistance');
+        const allowed = rtc ? !this.has(ship, da) || this.base(ship, da) === 0 : targetOffenseOk;
+        if (allowed) {
+          const td = e.name !== 'shipModuleGuidanceDisruptor';
           const sk = ds.typeByName(td ? 'Gunnery' : 'Missile Launcher Operation') ?? 0;
           const pairs = td
             ? [['trackingSpeedBonus', 'trackingSpeed'], ['maxRangeBonus', 'maxRange'], ['falloffBonus', 'falloff']]
