@@ -302,8 +302,12 @@ function fitResists(t: FitPrim, mode: string): number[] {
   let res: number[];
   if (mode === "shield" || mode === "armor" || mode === "hull") res = layers[mode];
   else if (mode === "weighted_average") {
-    const tot = hp.shield + hp.armor + hp.hull || 1;
-    res = [0, 1, 2, 3].map((i) => (layers.shield[i] * hp.shield + layers.armor[i] * hp.armor + layers.hull[i] * hp.hull) / tot);
+    // per damage type: total HP / total EHP (the resonance that turns raw damage into HP removed over all layers)
+    const tot = hp.shield + hp.armor + hp.hull;
+    res = [0, 1, 2, 3].map((i) => {
+      const ehp = (["shield", "armor", "hull"] as const).reduce((s, l) => s + (layers[l][i] > 0 ? hp[l] / layers[l][i] : 0), 0);
+      return ehp > 0 ? tot / ehp : 1;
+    });
   } else res = autoLayer(t, layers, hp);
   return res.map((r) => 1 - r);
 }

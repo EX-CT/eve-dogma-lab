@@ -50,7 +50,8 @@ export function dealerSchedule(d: Dealer, _p: FitPrim): TimeState {
       let reloadNow = false;
       if (shots > 0 && shot >= shots && reload > 0) (reloadNow = true), (shot = 0);
       if (reloadNow) len = active + Math.max(reload, inactive);
-      ev.push({ t, volley: vol, dps: vol.map((v) => v / len) });
+      ev.push({ t, volley: vol, dps: vol.map((v) => v / full) });
+      if (reloadNow) ev.push({ t: t + active, volley: zero, dps: zero }); // reloading: no damage
       t += len;
       n++;
       spoolN = reloadNow ? 0 : spoolN + 1;
