@@ -97,7 +97,7 @@ def _join(qkeys, tkeys_sorted, tvals_sorted):
 DAMAGE_EFFECTS = frozenset((
     "projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack", "missileLaunchingForEntity",
     "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente",
-    "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching"))
+    "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching", "ChainLightning"))
 
 
 def _sec_set(ds, src):
@@ -804,10 +804,19 @@ class Batch:
             elif nm.startswith("remoteSensorDamp") or nm == "structureModuleEffectRemoteSensorDampener":
                 push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
                 push(a("scanResolution"), a("scanResolutionBonus"), 6)
-            elif nm == "shipModuleTrackingDisruptor" or nm == "shipModuleGuidanceDisruptor":
-                # Pyfa Effect6424 / Effect6423: the target's gunnery modules / missile charges, postPercent
-                if target_offense_ok:
-                    if nm == "shipModuleTrackingDisruptor":
+            elif nm in ("shipModuleTrackingDisruptor", "shipModuleGuidanceDisruptor", "shipModuleRemoteTrackingComputer"):
+                # Pyfa Effect6424 / Effect6423 / shipModuleRemoteTrackingComputer: the target's gunnery modules
+                # (TD, remote tracking computer) / missile charges (GD), postPercent
+                if nm == "shipModuleRemoteTrackingComputer":
+                    da = a("disallowAssistance")
+                    sb = self.overrides.get((ship, da))
+                    if sb is None:
+                        sb = ds.type_attr(self.meta[ship]["ti"], da)
+                    allowed = sb is None or sb == 0.0
+                else:
+                    allowed = target_offense_ok
+                if allowed:
+                    if nm != "shipModuleGuidanceDisruptor":
                         skill, want_kind, pairs = "Gunnery", MODULE, (("trackingSpeedBonus", "trackingSpeed"),
                                                                       ("maxRangeBonus", "maxRange"),
                                                                       ("falloffBonus", "falloff"))
