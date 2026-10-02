@@ -64,7 +64,7 @@ public static partial class ProjectedRegistration
             double fo = e.FalloffAttr is { } fa && fit.Has(i, fa) ? fit.Base(i, fa) : 0.0;
             double factor = Formulas.RangeFactor(opt, fo, it.DistanceM, restricted: true);
             AttrId resist = e.ResistanceAttr ?? ResistanceOf(fit, i, e, isFighterAbility);
-            if (e.Modifiers.Length == 0 && FighterProjectedAbilities.TryApply(fit, i, e.Name, resist)) continue;
+            if (e.Modifiers.Length == 0 && (FighterProjectedAbilities.TryApply(fit, i, e.Name, resist) || WeaponDisruption.TryApply(fit, i, e.Name, resist))) continue;
             var rule = rules.FirstOrDefault(r => r.Matches(e));
             if (rule == null)
             {
@@ -132,6 +132,36 @@ public static class FighterProjectedAbilities
             default:
                 return false;
         }
+    }
+}
+
+/// <summary>
+/// Tracking / guidance disruptors (Pyfa Effect6424 / Effect6423, eos LGPL; via the reference): they penalise the
+/// target's own turrets (modules requiring Gunnery) or missiles (charges requiring Missile Launcher Operation).
+/// </summary>
+public static class WeaponDisruption
+{
+    private static readonly (string Source, string Target)[] Tracking =
+        { ("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"), ("falloffBonus", "falloff") };
+    private static readonly (string Source, string Target)[] Guidance =
+        { ("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"), ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay") };
+
+    public static bool TryApply(Fit fit, int i, string effectName, AttrId resist)
+    {
+        (string Skill, ItemKind Kind, (string Source, string Target)[] Pairs) spec;
+        if (effectName == "shipModuleTrackingDisruptor") spec = ("Gunnery", ItemKind.Module, Tracking);
+        else if (effectName == "shipModuleGuidanceDisruptor") spec = ("Missile Launcher Operation", ItemKind.Charge, Guidance);
+        else return false;
+        if (!ProjectedRegistration.OffensiveAllowed(fit)) return true;
+        var ds = fit.Ds;
+        int skill = ds.TypeByNameLookup(spec.Skill) ?? 0;
+        var it = fit[i];
+        double Base(string n) { var a = ds.AttrIdOf(n); return fit.Has(i, a) ? fit.Base(i, a) : 0.0; }
+        double factor = Formulas.RangeFactor(Base("maxRange"), Base("falloffEffectiveness"), it.DistanceM, restricted: true);
+        foreach (var t in fit.Items.Where(t => t.Location == ItemLocation.Ship && t.Owned && t.Kind == spec.Kind && t.RequiresSkill(skill)).Select(t => t.Index).ToList())
+            foreach (var (src, tgt) in spec.Pairs)
+                fit.AddModifier(t, ds.AttrIdOf(tgt), Op.PostPercent, ModSource.Projected(i, ds.AttrIdOf(src), factor, fit.Ship, resist, false), i, it.Category);
+        return true;
     }
 }
 
