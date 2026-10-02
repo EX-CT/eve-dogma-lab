@@ -97,7 +97,7 @@ def _join(qkeys, tkeys_sorted, tvals_sorted):
 LOCAL_SPECIAL = frozenset((
     "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente", "superWeaponMinmatar", "doomsdaySlash",
     "doomsdayBeamDOT", "doomsdayConeDOT", "doomsdayHOG", "debuffLance", "emergencyHullEnergizer", "entosisLink",
-    "microJumpPortalDrive", "microJumpPortalDriveCapital", "warpDisruptSphere"))
+    "microJumpPortalDrive", "microJumpPortalDriveCapital", "warpDisruptSphere", "moduleBonusBreacherPodDamageControl"))
 
 DAMAGE_EFFECTS = frozenset((
     "projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack", "missileLaunchingForEntity",
@@ -726,8 +726,11 @@ class Batch:
             if self.meta[i]["state"] >= ACTIVE:
                 self._register_local_special(fit, i)
         for i in fit.items:
-            if self.meta[i]["kind"] == PROJECTED:
+            k = self.meta[i]["kind"]
+            if k == PROJECTED:
                 self._register_projected(fit, i)
+            elif k == BEACON:
+                self._register_beacon(fit, i)
         # explicit fleet buffs (aggregated per buff id)
         agg = {}
         for b in fit.req["fleet"]["buffs"]:
@@ -789,6 +792,8 @@ class Batch:
                     push(ship, a(f"scan{t}Strength"), 6, f"scan{t}StrengthPercent")
             elif nm in ("microJumpPortalDrive", "microJumpPortalDriveCapital"):
                 push(ship, a("signatureRadius"), 6, "signatureRadiusBonusPercent")
+            elif nm == "moduleBonusBreacherPodDamageControl":
+                push(ship, a("breacherPodDamageResistance"), 6, "breacherPodActivatedDamageReceivedPercentage", src_cat=6)
             elif nm == "warpDisruptSphere":
                 push(ship, a("disallowAssistance"), 7, const=1.0, src_cat=6)
                 if m["charge"] is None:
@@ -800,6 +805,46 @@ class Batch:
                                 ds.group_name.get(mt["group"]) == "Propulsion Module":
                             push(t, a("speedBoostFactor"), 6, "speedBoostFactorBonus", src_cat=6)
                             push(t, a("speedFactor"), 6, "speedFactorBonus", src_cat=6)
+
+    def _register_beacon(self, fit, b):
+        """Sansha / Drifter incursion system effects (Pyfa Effect4728 OffensiveDefensiveReduction, LGPL; re-expressed):
+        unpenalised PostPercent of missile-charge and smartbomb damage, turret and drone damageMultiplier by
+        systemEffectDamageReduction, and of the ship's armor/shield resonances by the beacon's resistance bonuses."""
+        ds = self.ds
+        m = self.meta[b]
+        if not any(ds.effect_name.get(e) == "OffensiveDefensiveReduction" for e, _ in m["effects"]):
+            return
+        a = ds.a
+        K = self.key
+        o = (b, 0)
+        red = K(b, a("systemEffectDamageReduction"))
+        mls = ds.type_by_name.get("missile launcher operation") or 0
+        gun = ds.type_by_name.get("gunnery") or 0
+        for t in fit.items:
+            mt = self.meta[t]
+            if mt is None or not self.it_owned[t] or (self.it_loc[t] != L_SHIP and mt["kind"] != DRONE):
+                continue
+            k = mt["kind"]
+            dmg = mult = False
+            if k in (CHARGE, MODULE):
+                req = self.custom_reqskills.get(t) or ds.t_reqskills[mt["ti"]]
+                if k == CHARGE:
+                    dmg = mls in req
+                else:
+                    dmg = ds.group_name.get(mt["group"]) == "Smart Bomb"
+                    mult = gun in req
+            elif k == DRONE:
+                mult = True
+            if dmg:
+                for d in ("em", "thermal", "kinetic", "explosive"):
+                    self.push(t, a(f"{d}Damage"), 6, SRC_ATTR, red, src_item=b, src_cat=6, order=o)
+            if mult:
+                self.push(t, a("damageMultiplier"), 6, SRC_ATTR, red, src_item=b, src_cat=6, order=o)
+        ship = fit.ship
+        for d in ("Em", "Thermal", "Kinetic", "Explosive"):
+            for l in ("armor", "shield"):
+                self.push(ship, a(f"{l}{d}DamageResonance"), 6, SRC_ATTR, K(b, a(f"{l}{d}DamageResistanceBonus")),
+                          src_item=b, src_cat=6, order=o)
 
     def _register_projected(self, fit, i):
         ds = self.ds
@@ -820,7 +865,8 @@ class Batch:
 
         for en, (eid, _) in enumerate(it["effects"]):
             e = ds.eff_info.get(eid)
-            if e is None or (e["category"] not in (2, 3) and e["name"] != "ECMBurstJammer"):
+            if e is None or (e["category"] not in (2, 3) and e["name"] != "ECMBurstJammer"
+                             and not e["name"].startswith("doomsdayAOE")):
                 continue
             if abil is not None and e["name"].startswith("fighterAbility") and eid not in abil:
                 continue
@@ -843,13 +889,34 @@ class Batch:
                 self.push(ship, tattr, op, SRC_PROJ, K(i, sattr), -1, K(ship, resist) if resist else -1,
                           factor=factor, mul=op in (0, 4), src_item=i, src_cat=it["category"], order=(i, en))
 
-            if e["mods"]:
+            nm = e["name"]
+            # burst projectors / Standup weapon disruptor stay engine-side even if a dataset revision gives them
+            # modifiers (no AoE full-strength rule on the generic path)
+            engine_side = nm.startswith("doomsdayAOE") or nm == "structureModuleEffectWeaponDisruption"
+            if e["mods"] and not engine_side:
                 for f, dom, mod_, mding, op, extra in e["mods"]:
                     if dom in (5, 6, 1) and f == 0:
                         push(mod_, mding, op)
                 continue
-            nm = e["name"]
             pb = lambda n: base.get(a(n), 0.0)  # noqa: E731
+            if nm.startswith("doomsdayAOE") and nm != "doomsdayAOETrack":
+                # burst projectors (Pyfa Effect6476-6482/6513): full strength on every ship in the AoE
+                if nm in ("doomsdayAOEWeb", "doomsdayAOEPaint", "doomsdayAOEDamp"):
+                    if target_offense_ok:
+                        prs = {"doomsdayAOEWeb": (("maxVelocity", "speedFactor"),),
+                               "doomsdayAOEPaint": (("signatureRadius", "signatureRadiusBonus"),)}.get(
+                            nm, (("maxTargetRange", "maxTargetRangeBonus"), ("scanResolution", "scanResolutionBonus")))
+                        for t_, sa_ in prs:
+                            self.push(ship, a(t_), 6, SRC_PROJ, K(i, a(sa_)), -1, K(ship, resist) if resist else -1,
+                                      factor=1.0, mul=False, src_item=i, src_cat=it["category"], order=(i, en))
+                elif nm == "doomsdayAOENeut":
+                    fit.proj_special.append(("drain", i, a("energyNeutralizerAmount"), a("duration"), 1.0, resist, 1.0))
+                elif nm == "doomsdayAOEECM":
+                    if target_offense_ok:
+                        fit.proj_special.append(("ecm", i, False, 1.0, resist))
+                elif nm not in ("doomsdayAOEBubble", "doomsdayAOEGuide"):
+                    fit.warnings.append(f"projected effect '{nm}' not modelled yet")
+                continue
             if nm == "fighterAbilityStasisWebifier":
                 if target_offense_ok:
                     f = range_factor(pb("fighterAbilityStasisWebifierOptimalRange"), pb("fighterAbilityStasisWebifierFalloffRange"),
@@ -871,6 +938,29 @@ class Batch:
             elif nm.startswith("remoteSensorDamp") or nm == "structureModuleEffectRemoteSensorDampener":
                 push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
                 push(a("scanResolution"), a("scanResolutionBonus"), 6)
+            elif nm in ("doomsdayAOETrack", "structureModuleEffectWeaponDisruption"):
+                # AoE weapon disruption burst (full strength) / Standup Weapon Disruptor (range factor)
+                if target_offense_ok:
+                    tf = 1.0 if nm == "doomsdayAOETrack" else \
+                        range_factor(pb("maxRange"), pb("falloffEffectiveness"), it["distance"], True)
+                    gun = ds.type_by_name.get("gunnery") or 0
+                    mls = ds.type_by_name.get("missile launcher operation") or 0
+                    for t in fit.items:
+                        mt = self.meta[t]
+                        if mt is None or self.it_loc[t] != L_SHIP or not self.it_owned[t]:
+                            continue
+                        req = self.custom_reqskills.get(t) or ds.t_reqskills[mt["ti"]]
+                        if mt["kind"] == MODULE and gun in req:
+                            prs = (("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"),
+                                   ("falloffBonus", "falloff"))
+                        elif mt["kind"] == CHARGE and mls in req:
+                            prs = (("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"),
+                                   ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay"))
+                        else:
+                            continue
+                        for sa, ta in prs:
+                            self.push(t, a(ta), 6, SRC_PROJ, K(i, a(sa)), -1, K(ship, resist) if resist else -1,
+                                      factor=tf, mul=False, src_item=i, src_cat=it["category"], order=(i, en))
             elif nm in ("shipModuleTrackingDisruptor", "shipModuleGuidanceDisruptor", "shipModuleRemoteTrackingComputer",
                         "npcEntityWeaponDisruptor"):
                 # Pyfa Effect6424 / Effect6423 / shipModuleRemoteTrackingComputer: the target's gunnery modules
@@ -983,6 +1073,11 @@ class Batch:
             return drain("energyNeutralizerAmount", "energyNeutralizerDuration", gate(b("energyNeutralizerRangeOptimal")), 1.0)
         return None
 
+    def attr_value(self, i, attr):
+        """base value of an item attribute (override, else type value), None when absent"""
+        v = self.overrides.get((i, attr))
+        return v if v is not None else self.ds.type_attr(self.meta[i]["ti"], attr)
+
     def loc_ship_items(self, fit):
         return [i for i in fit.items if self.meta[i]["kind"] in (SHIP, MODULE, CHARGE)]
 
@@ -993,20 +1088,37 @@ class Batch:
         op = info["op"]
         ship = fit.ship
         loc = self.loc_ship_items(fit)
+        # Pyfa penalises most buffs; the abyssal weather resistance/HP/velocity buffs are not
+        cat = 6 if bid in (90, 93, 94, 95, 96, 98, 99) else 0
         for at in info["item"]:
-            self.push(ship, at, op, kind, a_key, const=const, src_item=source_item, src_cat=0)
+            self.push(ship, at, op, kind, a_key, const=const, src_item=source_item, src_cat=cat)
+        # AoE cloud / weather buffs also hit drones that require the Drones skill (Pyfa fit.py commandBonus)
+        dattrs = BUFF_DRONE_ATTRS.get(bid)
+        if dattrs:
+            ds = self.ds
+            for d in fit.items:
+                md = self.meta[d]
+                if md is None or md["kind"] != DRONE:
+                    continue
+                req = self.custom_reqskills.get(d) or ds.t_reqskills[md["ti"]]
+                if 3436 not in req:
+                    continue
+                for n in dattrs:
+                    at = ds.a(n)
+                    if at:
+                        self.push(d, at, op, kind, a_key, const=const, src_item=source_item, src_cat=cat)
         for at in info["location"]:
             for t in loc:
-                self.push(t, at, op, kind, a_key, const=const, src_item=source_item, src_cat=0)
+                self.push(t, at, op, kind, a_key, const=const, src_item=source_item, src_cat=cat)
         for at, g in info["location_group"]:
             for t in loc:
                 if self.meta[t]["group"] == g:
-                    self.push(t, at, op, kind, a_key, const=const, src_item=source_item, src_cat=0)
+                    self.push(t, at, op, kind, a_key, const=const, src_item=source_item, src_cat=cat)
         for at, s in info["location_skill"]:
             for t in loc:
                 req = self.custom_reqskills.get(t) or self.ds.t_reqskills[self.meta[t]["ti"]]
                 if s in req:
-                    self.push(t, at, op, kind, a_key, const=const, src_item=source_item, src_cat=0)
+                    self.push(t, at, op, kind, a_key, const=const, src_item=source_item, src_cat=cat)
 
 
 def range_factor(optimal, falloff, distance, restricted):
@@ -1443,7 +1555,34 @@ class Values:
         return v if v is not None else self.ds.attr_default(attr)
 
 
+BUFF_DRONE_ATTRS = {
+    79: ("signatureRadius",),
+    90: ("shieldEmDamageResonance", "armorEmDamageResonance", "emDamageResonance"),
+    93: ("shieldExplosiveDamageResonance", "armorExplosiveDamageResonance", "explosiveDamageResonance"),
+    95: ("shieldThermalDamageResonance", "armorThermalDamageResonance", "thermalDamageResonance"),
+    99: ("shieldKineticDamageResonance", "armorKineticDamageResonance", "kineticDamageResonance"),
+    94: ("shieldCapacity",),
+    96: ("armorHP",),
+    97: ("maxRange", "falloff"),
+    98: ("maxVelocity",),
+}
+
 WARFARE_PAIRS = [(f"warfareBuff{k}ID", f"warfareBuff{k}Value") for k in range(1, 5)]
+
+
+def _weather_beacons(batch, fit):
+    ds = batch.ds
+    out = []
+    for i in fit.items:
+        m = batch.meta[i]
+        if m is None or m["kind"] != BEACON:
+            continue
+        for e, _ in m["effects"]:
+            nm = ds.effect_name.get(e) or ""
+            if nm.startswith("weather_") or nm.startswith("aoe_beacon_"):
+                out.append(i)
+                break
+    return out
 
 
 def run(batch):
@@ -1475,7 +1614,8 @@ def run(batch):
         fit.warnings.extend(getattr(fit, "booster_warnings", None) or [])
         offers = getattr(fit, "booster_offers", None) or []
         explicit = fit.explicit_buffs
-        if not need[fit.index] and not offers and not explicit:
+        wb = _weather_beacons(batch, fit)
+        if not need[fit.index] and not offers and not explicit and not wb:
             continue
         # Pyfa keeps per buff id the single strongest (|value|) source among the fit's own bursts and the
         # fleet booster fits; explicit fleet.buffs (already registered) override both.
@@ -1495,6 +1635,15 @@ def run(batch):
                     if bid == 0 or bid in explicit:
                         continue
                     offer(bid, vals.get(i, vala), (SRC_ATTR, Batch.key(i, vala), 0.0, i))
+        # abyssal weather / AoE cloud beacons: warfareBuff1/2 join the same pool
+        for i in wb:
+            for ida, vala in pairs[:2]:
+                bv = batch.attr_value(i, ida)
+                bid = int(bv) if bv is not None else 0
+                if bid == 0 or bid in explicit:
+                    continue
+                v = batch.attr_value(i, vala) or 0.0
+                offer(bid, v, (SRC_CONST, -1, v, i))
         for bid, v in offers:
             if bid == 0 or bid in explicit:
                 continue
