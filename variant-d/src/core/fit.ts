@@ -391,14 +391,13 @@ export class Fit extends AttrGraph {
       const plan = planFor(ds, it.typeId, it.effects, eBastion);
       for (const pe of plan.effects) {
         const eid = pe.eid;
-        const e = pe.e;
-        if (this.isStructure && kind === Kind.Skill && !structureOk.has(eid) && !e.itemOnly) continue;
-        if (e.fittingUsageChanceAttr !== null && !it.boosterSideEffects.includes(eid)) continue;
-        if (kind === Kind.Fighter && e.category !== 0) {
+        if (this.isStructure && kind === Kind.Skill && !structureOk.has(eid) && !pe.itemOnly) continue;
+        if (pe.usage && !it.boosterSideEffects.includes(eid)) continue;
+        if (kind === Kind.Fighter && pe.cat !== 0) {
           const used = it.fighterAbilities !== null ? it.fighterAbilities.includes(eid) : pe.isDefault;
           if (!used) continue;
         }
-        if (kind === Kind.Beacon && e.name === 'OffensiveDefensiveReduction') {
+        if (kind === Kind.Beacon && pe.odr) {
           this.incursionEffect(i);
           continue;
         }
@@ -407,7 +406,7 @@ export class Fit extends AttrGraph {
           pe.active({ fit: this, item: i, cat });
           continue;
         }
-        if (!stateOk(e.category, state)) continue;
+        if (!stateOk(pe.cat, state)) continue;
         if (pe.special !== null) {
           pe.special({ fit: this, item: i, cat });
           continue;
@@ -784,7 +783,11 @@ function applyRah(fit: Fit, req: NormRequest): void {
 
 // ------------------------------------------------------------------ compiled per-type registration plans
 interface PlanMod { func: Func; domain: Domain; modified: number; modifying: number; op: number; extra: number; bastion: boolean; nonStack: boolean }
-interface PlanEffect { eid: number; e: import('./dataset.js').EffectInfo; isDefault: boolean; special: SpecialHandler | null; active: SpecialHandler | null; mods: PlanMod[] }
+interface PlanEffect {
+  eid: number; e: import('./dataset.js').EffectInfo; isDefault: boolean; special: SpecialHandler | null; active: SpecialHandler | null; mods: PlanMod[];
+  /** copies of the effect fields registration tests (no second object touched per effect) */
+  cat: number; usage: boolean; itemOnly: boolean; odr: boolean;
+}
 interface Plan { effects: PlanEffect[]; outgoing: PlanMod[]; hasSpecial: boolean }
 /** memo keyed by the (immutable) effects array of a type, or of a mutated item */
 const PLANS = new WeakMap<[number, number][], Plan>();
@@ -828,7 +831,7 @@ function planFor(ds: Dataset, typeId: number, effects: [number, number][], eBast
     const active = e.mods.length === 0 ? activeSpecial(e.name) ?? null : null;
     // effects that can never do anything here are left out of the plan (registration loops over plan.effects only)
     if (mods.length === 0 && special === null && active === null && e.name !== 'OffensiveDefensiveReduction') continue;
-    p.effects.push({ eid, e, isDefault: d !== 0, special, active, mods });
+    p.effects.push({ eid, e, isDefault: d !== 0, special, active, mods, cat: e.category, usage: e.fittingUsageChanceAttr !== null, itemOnly: !!e.itemOnly, odr: e.name === 'OffensiveDefensiveReduction' });
   }
   PLANS.set(effects, p);
   return p;
