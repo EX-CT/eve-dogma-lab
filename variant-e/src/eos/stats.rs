@@ -518,6 +518,65 @@ impl<'a> Fit<'a> {
         }
     }
 
+    /// Module.maxRange
+    pub fn max_range(&self, m: It) -> Option<f64> {
+        for a in ["maxRange", "shieldTransferRange", "powerTransferRange", "energyDestabilizationRange", "empFieldRange",
+                  "ecmBurstRange", "warpScrambleRange", "cargoScanRange", "shipScanRange", "surveyScanRange"] {
+            let v = self.g(m, a);
+            if v != 0.0 {
+                if self.items[m].t.name.to_lowercase().contains("burst projector") {
+                    return Some(v - self.g(self.ship, "radius"));
+                }
+                return Some(v);
+            }
+        }
+        let (lo, hi, ch) = self.missile_range(m)?;
+        Some(lo * (1.0 - ch) + hi * ch)
+    }
+
+    fn missile_range(&self, m: It) -> Option<(f64, f64, f64)> {
+        let c = self.items[m].charge;
+        if c == NONE {
+            return None;
+        }
+        let gn = self.ds.group_name(self.items[c].t.group);
+        if gn == "Scanner Probe" || gn == "Survey Probe" {
+            return None;
+        }
+        let v = self.g(c, "maxVelocity");
+        if v == 0.0 {
+            return None;
+        }
+        let r = self.g(self.ship, "radius");
+        let ft = float_unerr(self.g(c, "explosionDelay") / 1000.0 + r / v);
+        let mass = self.g(c, "mass");
+        let ag = self.g(c, "agility");
+        let calc = |t: f64| {
+            let acc = t.min(mass * ag / 1e6);
+            v / 2.0 * acc + v * (t - acc)
+        };
+        let (lt, ht) = (ft.floor(), ft.ceil());
+        let (mut lo, mut hi) = (calc(lt), calc(ht));
+        if self.has_effect_name(c, "fofMissileLaunching") {
+            let lim = self.g(c, "maxFOFTargetRange");
+            if lim != 0.0 {
+                lo = lo.min(lim);
+                hi = hi.min(lim);
+            }
+        }
+        Some(((lo - r).max(0.0), (hi - r).max(0.0), ft - lt))
+    }
+
+    pub fn falloff(&self, m: It) -> Option<f64> {
+        for a in ["falloffEffectiveness", "falloff", "shipScanFalloff"] {
+            let v = self.g(m, a);
+            if v != 0.0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+
     fn effectivify(&self, pattern: [f64; 4], amount: f64, layer: &str) -> f64 {
         let r = self.resonances(layer);
         let tot: f64 = pattern.iter().sum();
@@ -610,11 +669,25 @@ impl<'a> Fit<'a> {
             let d = self.module_dps(m, spool);
             w_vol.add(&v);
             w_dps.add(&d);
-            if v.total() > 0.0 || d.total() > 0.0 {
+            if self.items[m].state >= ACTIVE && d.total() > 0.0 {
                 let c = self.items[m].charge;
-                weapons.push(json!({"module_index": self.items[m].req_index, "type_id": self.items[m].t.id, "name": self.items[m].t.name,
+                let mut w = json!({"module_index": self.items[m].req_index, "type_id": self.items[m].t.id, "name": self.items[m].t.name,
                     "charge_type_id": if c != NONE { Some(self.items[c].t.id) } else { None },
-                    "volley": v.json(), "dps": d.json(), "cycle_time_ms": self.cycle_avg(m, None)}));
+                    "volley": v.json(), "dps": d.json(), "cycle_time_ms": self.cycle_avg(m, None)});
+                match self.hardpoint(m) {
+                    1 => {
+                        w["optimal_m"] = json!(self.max_range(m));
+                        w["falloff_m"] = json!(self.falloff(m));
+                        w["tracking"] = json!(self.g(m, "trackingSpeed"));
+                    }
+                    2 if c != NONE => {
+                        w["range_m"] = json!(self.max_range(m));
+                        w["explosion_radius"] = json!(self.g(c, "aoeCloudSize"));
+                        w["explosion_velocity"] = json!(self.g(c, "aoeVelocity"));
+                    }
+                    _ => {}
+                }
+                weapons.push(w);
             }
         }
         let (mut d_vol, mut d_dps) = (Dmg::default(), Dmg::default());
