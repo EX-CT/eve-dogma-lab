@@ -70,7 +70,9 @@ FitRequest ─▶ eos::fit::build ─▶ calculate (early/normal/late) ─▶ pr
   type index (sorted ids, groups, offsets) is decoded eagerly, each `TypeInfo` lazily (`OnceLock` per type) straight
   from the cache buffer (no copy), and the name index is built only when EFT/T3D-mode lookups need it. One-shot
   `calc` also skips freeing the dataset. Cold start + calc ≈7–8 ms (was ~160 ms without a cache, ~14 ms eager).
-- mimalloc is the global allocator.
+- mimalloc is the global allocator. Skill type records are resolved once per dataset (`skill_pos`) and the per-fit
+  item/skill tables are presized; each weapon's volley parameters and cycle time are evaluated once in the offense
+  section; the capSim heap compare short-circuits on the event time (same ordering as Python tuple comparison).
 - Hot paths use dense tables instead of hash maps: effect metadata (`MetaTable`, a `Vec<u16>` index into
   `effects::META`), attribute metadata for ids < 8192 (`AttrLite` in `mad.rs`), and static attribute-id arrays for
   resonances/cycle-time lookups. capSim uses an index-arena binary heap with the same `heapq` ordering, so event
