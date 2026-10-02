@@ -1,0 +1,949 @@
+//! FitStats from a calculated fit. Ports of Pyfa eos/saveddata/fit.py (cpuUsed, hp/ehp, tank, capacitor,
+//! maxSpeed, alignTime, warpSpeed, maxTargets, scanStrength, probeSize), module.py (getCycleParameters,
+//! numShots, getVolleyParameters, getDps, capUse), drone.py, fighter.py, fighterAbility.py and
+//! damagePattern.py. GPL-3.0-or-later.
+use super::capsim::{self, Drain};
+use super::cx::*;
+use super::fit::{extra_attr, meta};
+use crate::request::{FitRequest, SlotReq, Spool, SpoolType};
+use serde_json::{Map, Value, json};
+
+const INF: f64 = f64::INFINITY;
+
+#[derive(Clone, Copy, Default)]
+pub struct Dmg {
+    pub em: f64,
+    pub th: f64,
+    pub ki: f64,
+    pub ex: f64,
+}
+impl Dmg {
+    fn total(&self) -> f64 {
+        self.em + self.th + self.ki + self.ex
+    }
+    fn add(&mut self, o: &Dmg) {
+        self.em += o.em;
+        self.th += o.th;
+        self.ki += o.ki;
+        self.ex += o.ex;
+    }
+    fn mul(&self, f: f64) -> Dmg {
+        Dmg { em: self.em * f, th: self.th * f, ki: self.ki * f, ex: self.ex * f }
+    }
+    fn json(&self) -> Value {
+        json!({"em": self.em, "thermal": self.th, "kinetic": self.ki, "explosive": self.ex, "total": self.total()})
+    }
+    fn vs(&self, r: [f64; 4]) -> Value {
+        let d = Dmg { em: self.em * (1.0 - r[0]), th: self.th * (1.0 - r[1]), ki: self.ki * (1.0 - r[2]), ex: self.ex * (1.0 - r[3]) };
+        d.json()
+    }
+}
+
+/// eos/utils/float.py floatUnerr (keepDigits = 7)
+pub fn float_unerr(v: f64) -> f64 {
+    if v == 0.0 || v == INF {
+        return v;
+    }
+    let f = 7 - (v.abs().log10()).ceil() as i32;
+    py_round_digits(v, f)
+}
+
+/// Python round(v, n)
+pub fn py_round_digits(v: f64, n: i32) -> f64 {
+    if !v.is_finite() {
+        return v;
+    }
+    if n >= 0 {
+        format!("{:.*}", n as usize, v).parse().unwrap_or(v)
+    } else {
+        let p = 10f64.powi(-n);
+        let q = v / p;
+        let r = q.round();
+        let r = if (q - q.trunc()).abs() == 0.5 { 2.0 * (q / 2.0).round() } else { r };
+        r * p
+    }
+}
+
+/// eos/utils/spoolSupport.py calculateSpoolup -> (value, cycles, time)
+pub fn calculate_spoolup(max: f64, step: f64, cycle_s: f64, sp: Option<Spool>) -> (f64, f64, f64) {
+    if max == 0.0 || step == 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let Some(sp) = sp else { return (0.0, 0.0, 0.0) };
+    let cycles = match sp.kind {
+        SpoolType::SpoolScale => float_unerr(max * sp.amount / step).ceil(),
+        SpoolType::CycleScale => {
+            let c = sp.amount * float_unerr(max / step).ceil();
+            py_round_digits(c, 0)
+        }
+        SpoolType::Time => float_unerr(sp.amount / cycle_s).floor().min(float_unerr(max / step).ceil()),
+        SpoolType::Cycles => sp.amount.floor().min(float_unerr(max / step).ceil()),
+    };
+    (max.min(cycles * step), cycles, cycles * cycle_s)
+}
+
+pub struct Ids {
+    pub cpu: u32,
+    pub power: u32,
+    pub upgrade_cost: u32,
+    pub cap_need: u32,
+    pub reload_time: u32,
+    pub charge_rate: u32,
+    pub crystals: u32,
+    pub reactivation: u32,
+}
+
+impl<'a> Fit<'a> {
+    pub fn a(&self, name: &str) -> u32 {
+        self.ds.attr_id(name)
+    }
+    /// getModifiedItemAttr(name, default)
+    pub fn g(&self, it: It, name: &str) -> f64 {
+        let id = self.ds.attr_id(name);
+        if id == 0 {
+            return 0.0;
+        }
+        self.attr_opt(it, id).unwrap_or(0.0)
+    }
+    pub fn gd(&self, it: It, name: &str, d: f64) -> f64 {
+        let id = self.ds.attr_id(name);
+        if id == 0 {
+            return d;
+        }
+        self.attr_opt(it, id).unwrap_or(d)
+    }
+    fn has_effect_name(&self, it: It, name: &str) -> bool {
+        let id = self.ds.effect_id(name);
+        id != 0 && self.items[it].effects.contains(&id)
+    }
+
+    fn raw_cycle_time(&self, m: It) -> f64 {
+        [
+            "speed",
+            "duration",
+            "durationHighisGood",
+            "durationSensorDampeningBurstProjector",
+            "durationTargetIlluminationBurstProjector",
+            "durationECMJammerBurstProjector",
+            "durationWeaponDisruptionBurstProjector",
+        ]
+        .iter()
+        .map(|n| self.g(m, n))
+        .fold(0.0, f64::max)
+    }
+
+    fn num_charges(&self, m: It) -> f64 {
+        let c = self.items[m].charge;
+        if c == NONE {
+            return 0.0;
+        }
+        let vol = self.items[c].t.attr(161);
+        let cap = self.items[m].t.attr(38);
+        match (vol, cap) {
+            (Some(v), Some(cap)) if v != 0.0 => float_unerr(cap / v).trunc(),
+            _ => 0.0,
+        }
+    }
+
+    pub fn num_shots(&self, m: It) -> f64 {
+        let c = self.items[m].charge;
+        if c == NONE {
+            return 0.0;
+        }
+        let n = self.num_charges(m);
+        let cr = self.a("chargeRate");
+        let cg = self.a("crystalsGetDamaged");
+        if n > 0.0 && self.items[m].mad.contains(cr) {
+            (n / self.attr(m, cr)).floor()
+        } else if n > 0.0 && self.items[c].mad.contains(cg) {
+            if self.attr(c, cg) == 1.0 {
+                let hp = self.g(c, "hp");
+                let ch = self.g(c, "crystalVolatilityChance");
+                let dm = self.g(c, "crystalVolatilityDamage");
+                ((n * hp) / (dm * ch)).floor()
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        }
+    }
+
+    fn reload_time(&self, m: It) -> f64 {
+        let id = self.a("reloadTime");
+        let v = if id == 0 { None } else { self.attr_opt(m, id) };
+        let v = v.or(self.items[m].reload_time);
+        v.unwrap_or(0.0)
+    }
+
+    /// getCycleParameters().averageTime (None = no cycle)
+    pub fn cycle_avg(&self, m: It, reload_override: Option<bool>) -> Option<f64> {
+        let factor = reload_override.unwrap_or(self.items[m].force_reload.unwrap_or(self.factor_reload));
+        let mut cur = self.num_shots(m);
+        if cur == 0.0 {
+            cur = INF;
+        }
+        let active = self.raw_cycle_time(m);
+        if active == 0.0 {
+            return None;
+        }
+        let inactive = self.g(m, "moduleReactivationDelay");
+        let reload = self.reload_time(m);
+        if !factor || cur == INF || inactive >= reload {
+            return Some(active + inactive);
+        }
+        let early = cur - 1.0;
+        if early == 0.0 {
+            return Some(active + reload);
+        }
+        // CycleSequence((active, inactive, early), (active, reload, 1)) -> averageTime
+        Some(((active + inactive) * early + (active + reload)) / (early + 1.0))
+    }
+
+    fn is_breacher(&self, m: It) -> bool {
+        let c = self.items[m].charge;
+        c != NONE && self.has_effect_name(c, "dotMissileLaunching")
+    }
+
+    fn spool_opts(&self, m: It, default: Option<Spool>) -> Option<Spool> {
+        self.items[m].spool.or(default)
+    }
+
+    /// getVolleyParameters -> list of (time, volley)
+    fn volley_params(&self, m: It, default_spool: Option<Spool>) -> Vec<(f64, Dmg)> {
+        if self.items[m].state < ACTIVE {
+            return vec![(0.0, Dmg::default())];
+        }
+        let c = self.items[m].charge;
+        let mut base: Vec<(f64, Dmg)> = Vec::new();
+        if self.is_breacher(m) {
+            // breacher DoT: not damage in DmgTypes terms (absolute/relative per tick)
+            let sub = (self.g(c, "dotDuration") / 1000.0).floor();
+            for i in 0..(sub as i64) {
+                base.push((1.0 + i as f64, Dmg::default()));
+            }
+        } else {
+            let src = if c != NONE { c } else { m };
+            let mult = self.gd(m, "damageMultiplier", 1.0);
+            let eff = |n: &str| self.has_effect_name(m, n);
+            let delay = if ["superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente", "superWeaponMinmatar", "lightningWeapon"].iter().any(|n| eff(n)) {
+                self.g(m, "damageDelayDuration")
+            } else if ["doomsdayBeamDOT", "doomsdaySlash", "doomsdayConeDOT", "debuffLance"].iter().any(|n| eff(n)) {
+                self.g(m, "doomsdayWarningDuration")
+            } else {
+                0.0
+            };
+            let dur = self.g(m, "doomsdayDamageDuration");
+            let sub = self.g(m, "doomsdayDamageCycleTime");
+            let n = if dur != 0.0 && sub != 0.0 && !eff("doomsdaySlash") { float_unerr(dur / sub).floor() } else { 1.0 };
+            let d = Dmg {
+                em: self.g(src, "emDamage") * mult,
+                th: self.g(src, "thermalDamage") * mult,
+                ki: self.g(src, "kineticDamage") * mult,
+                ex: self.g(src, "explosiveDamage") * mult,
+            };
+            for i in 0..(n as i64) {
+                let t = delay + sub * i as f64;
+                match base.iter_mut().find(|x| x.0 == t) {
+                    Some(x) => x.1 = d,
+                    None => base.push((t, d)),
+                }
+            }
+        }
+        let sp = calculate_spoolup(
+            self.g(m, "damageMultiplierBonusMax"),
+            self.g(m, "damageMultiplierBonusPerCycle"),
+            self.raw_cycle_time(m) / 1000.0,
+            self.spool_opts(m, default_spool),
+        )
+        .0;
+        base.into_iter().map(|(t, d)| (t, d.mul(1.0 + sp))).collect()
+    }
+
+    pub fn module_volley(&self, m: It, sp: Option<Spool>) -> Dmg {
+        let p = self.volley_params(m, sp);
+        p.iter().min_by(|a, b| a.0.partial_cmp(&b.0).unwrap()).map(|x| x.1).unwrap_or_default()
+    }
+
+    pub fn module_dps(&self, m: It, sp: Option<Spool>) -> Dmg {
+        let Some(avg) = self.cycle_avg(m, None) else { return Dmg::default() };
+        let p = self.volley_params(m, sp);
+        if p.is_empty() || avg == 0.0 {
+            return Dmg::default();
+        }
+        if self.is_breacher(m) {
+            return self.module_volley(m, sp);
+        }
+        let mut d = Dmg::default();
+        for (_, v) in &p {
+            d.add(v);
+        }
+        d.mul(1.0 / (avg / 1000.0))
+    }
+
+    pub fn cap_use(&self, m: It) -> f64 {
+        let need = self.g(m, "capacitorNeed");
+        if need != 0.0 && self.items[m].state >= ACTIVE {
+            match self.cycle_avg(m, None) {
+                Some(t) if t > 0.0 => need / (t / 1000.0),
+                _ => 0.0,
+            }
+        } else {
+            0.0
+        }
+    }
+
+    fn drone_deals_damage(&self, d: It) -> bool {
+        let c = self.items[d].charge;
+        ["emDamage", "kineticDamage", "explosiveDamage", "thermalDamage"].iter().any(|n| {
+            let id = self.a(n);
+            self.items[d].mad.contains(id) || (c != NONE && self.items[c].mad.contains(id))
+        })
+    }
+
+    fn drone_cycle(&self, d: It) -> f64 {
+        let ct = if self.items[d].charge != NONE {
+            self.g(d, "missileLaunchDuration")
+        } else {
+            let mut c = 0.0;
+            for n in ["speed", "duration", "durationHighisGood"] {
+                c = self.g(d, n);
+                if c != 0.0 {
+                    break;
+                }
+            }
+            c
+        };
+        ct.max(0.0)
+    }
+
+    pub fn drone_volley(&self, d: It) -> Dmg {
+        let n = self.items[d].amount_active as f64;
+        if !self.drone_deals_damage(d) || n <= 0.0 {
+            return Dmg::default();
+        }
+        let c = self.items[d].charge;
+        let src = if c != NONE { c } else { d };
+        let mult = n * self.gd(d, "damageMultiplier", 1.0);
+        Dmg {
+            em: self.g(src, "emDamage") * mult,
+            th: self.g(src, "thermalDamage") * mult,
+            ki: self.g(src, "kineticDamage") * mult,
+            ex: self.g(src, "explosiveDamage") * mult,
+        }
+    }
+
+    pub fn drone_dps(&self, d: It) -> Dmg {
+        let v = self.drone_volley(d);
+        if v.total() == 0.0 {
+            return Dmg::default();
+        }
+        let ct = self.drone_cycle(d);
+        if ct == 0.0 {
+            return Dmg::default();
+        }
+        v.mul(1.0 / (ct / 1000.0))
+    }
+
+    fn ability_prefix(&self, e: u32) -> &'static str {
+        meta().get(&e).map(|m| m.prefix).unwrap_or("")
+    }
+
+    fn ability_volley(&self, f: It, e: u32, active: bool) -> Dmg {
+        let p = self.ability_prefix(e);
+        let deals = self.items[f].mad.contains(self.a(&format!("{p}DamageMultiplier"))) || self.items[f].charge != NONE;
+        if !deals || !active {
+            return Dmg::default();
+        }
+        let (em, th, ki, ex) = if p == "fighterAbilityLaunchBomb" {
+            let c = self.items[f].charge;
+            (self.g(c, "emDamage"), self.g(c, "thermalDamage"), self.g(c, "kineticDamage"), self.g(c, "explosiveDamage"))
+        } else {
+            (
+                self.g(f, &format!("{p}DamageEM")),
+                self.g(f, &format!("{p}DamageTherm")),
+                self.g(f, &format!("{p}DamageKin")),
+                self.g(f, &format!("{p}DamageExp")),
+            )
+        };
+        let mult = self.items[f].amount as f64 * self.gd(f, &format!("{p}DamageMultiplier"), 1.0);
+        Dmg { em: em * mult, th: th * mult, ki: ki * mult, ex: ex * mult }
+    }
+
+    fn ability_cycle(&self, f: It, e: u32) -> f64 {
+        self.g(f, &format!("{}Duration", self.ability_prefix(e)))
+    }
+    fn ability_has_charges(e: u32) -> bool {
+        meta().get(&e).map(|m| m.has_charges).unwrap_or(false)
+    }
+    fn ability_num_shots(&self, f: It, e: u32) -> f64 {
+        if !Self::ability_has_charges(e) {
+            return 0.0;
+        }
+        match self.g(f, "fighterSquadronRole") as i64 {
+            2 => 12.0,
+            4 => 6.0,
+            5 => 3.0,
+            _ => 0.0,
+        }
+    }
+    fn ability_reload(&self, f: It, e: u32, spent: Option<f64>) -> f64 {
+        let ns = self.ability_num_shots(f, e);
+        let spent = spent.map(|s| s.max(ns)).unwrap_or(ns);
+        let rearm = if Self::ability_has_charges(e) {
+            match self.g(f, "fighterSquadronRole") as i64 {
+                2 => 4000.0,
+                4 => 6000.0,
+                5 => 20000.0,
+                _ => 0.0,
+            }
+        } else {
+            0.0
+        };
+        self.g(f, "fighterRefuelingTime") + rearm * spent
+    }
+
+    /// fighter.getCycleParametersPerEffect -> (effect, averageTime)
+    fn fighter_cycles(&self, f: It, factor: bool) -> Vec<(u32, f64)> {
+        let ab = &self.items[f].abilities;
+        let all: Vec<(u32, f64)> = ab.iter().map(|a| (a.0, self.ability_cycle(f, a.0))).filter(|x| x.1 > 0.0).collect();
+        if !factor {
+            return all;
+        }
+        let limited: Vec<u32> = ab.iter().map(|a| a.0).filter(|&e| self.ability_num_shots(f, e) > 0.0 && self.ability_cycle(f, e) > 0.0).collect();
+        if limited.is_empty() {
+            return all;
+        }
+        if all.is_empty() {
+            return vec![];
+        }
+        let mut most = limited[0];
+        for &e in &limited {
+            if self.ability_cycle(f, e) * self.ability_num_shots(f, e) < self.ability_cycle(f, most) * self.ability_num_shots(f, most) {
+                most = e;
+            }
+        }
+        let dur = self.ability_cycle(f, most) * self.ability_num_shots(f, most);
+        let mut until: Vec<(u32, f64, Option<f64>)> = vec![(most, self.ability_num_shots(f, most), None)];
+        for &(e, ct) in &all {
+            if e == most {
+                continue;
+            }
+            let full = float_unerr(dur / ct).trunc();
+            let mut extra = Some(float_unerr(dur - full * ct));
+            if extra == Some(0.0) {
+                extra = None;
+            }
+            until.push((e, full, extra));
+        }
+        let get = |e: u32| until.iter().find(|x| x.0 == e).copied().unwrap();
+        let mut refuel = 0.0f64;
+        for &(e, _) in &all {
+            let (_, mut spent, extra) = get(e);
+            if extra.is_some() {
+                spent += 1.0;
+            }
+            refuel = refuel.max(self.ability_reload(f, e, Some(spent)));
+        }
+        let mut out = Vec::new();
+        for &(e, ct) in &all {
+            let (_, regular, extra) = get(e);
+            let mut seq: Vec<(f64, f64, f64)> = Vec::new();
+            if let Some(x) = extra {
+                if regular > 0.0 {
+                    seq.push((ct, 0.0, regular));
+                }
+                seq.push((x, refuel, 1.0));
+            } else {
+                if regular - 1.0 > 0.0 {
+                    seq.push((ct, 0.0, regular - 1.0));
+                }
+                seq.push((ct, refuel, 1.0));
+            }
+            let t: f64 = seq.iter().map(|s| (s.0 + s.1) * s.2).sum();
+            let q: f64 = seq.iter().map(|s| s.2).sum();
+            out.push((e, t / q));
+        }
+        out
+    }
+
+    pub fn fighter_volley(&self, f: It) -> Dmg {
+        let mut v = Dmg::default();
+        if !self.items[f].active || self.items[f].amount == 0 {
+            return v;
+        }
+        for &(e, on) in &self.items[f].abilities {
+            v.add(&self.ability_volley(f, e, on));
+        }
+        v
+    }
+
+    pub fn fighter_dps(&self, f: It) -> Dmg {
+        let mut d = Dmg::default();
+        if !self.items[f].active || self.items[f].amount == 0 {
+            return d;
+        }
+        let ab = self.items[f].abilities.clone();
+        let dps_with = |cyc: &[(u32, f64)]| -> Vec<(u32, Dmg)> {
+            ab.iter()
+                .filter_map(|&(e, on)| cyc.iter().find(|x| x.0 == e).map(|x| (e, self.ability_volley(f, e, on).mul(1.0 / (x.1 / 1000.0)))))
+                .collect()
+        };
+        let inf: Vec<(u32, f64)> = ab
+            .iter()
+            .filter(|a| self.ability_num_shots(f, a.0) == 0.0 && self.ability_cycle(f, a.0) > 0.0)
+            .map(|a| (a.0, self.ability_cycle(f, a.0)))
+            .collect();
+        let rel = self.fighter_cycles(f, self.factor_reload);
+        let ti: f64 = dps_with(&inf).iter().map(|x| x.1.total()).sum();
+        let tr: f64 = dps_with(&rel).iter().map(|x| x.1.total()).sum();
+        let chosen = if ti >= tr { inf } else { rel };
+        for (_, x) in dps_with(&chosen) {
+            d.add(&x);
+        }
+        d
+    }
+
+    fn slot_of(&self, m: It) -> Option<SlotReq> {
+        self.items[m].slot
+    }
+    fn hardpoint(&self, m: It) -> u8 {
+        let t = self.items[m].t;
+        if t.has_effect(42) {
+            1
+        } else if t.has_effect(40) {
+            2
+        } else {
+            0
+        }
+    }
+
+    fn effectivify(&self, pattern: [f64; 4], amount: f64, layer: &str) -> f64 {
+        let r = self.resonances(layer);
+        let tot: f64 = pattern.iter().sum();
+        let tot = if tot == 0.0 { 1.0 } else { tot };
+        let div: f64 = (0..4).map(|i| pattern[i] / tot * r[i]).sum();
+        amount / if div == 0.0 { 1.0 } else { div }
+    }
+
+    fn resonances(&self, layer: &str) -> [f64; 4] {
+        let s = self.ship;
+        let n = |t: &str| {
+            if layer == "hull" {
+                format!("{}DamageResonance", t.to_lowercase())
+            } else {
+                format!("{layer}{t}DamageResonance")
+            }
+        };
+        [self.g(s, &n("Em")), self.g(s, &n("Thermal")), self.g(s, &n("Kinetic")), self.g(s, &n("Explosive"))]
+    }
+
+    fn cap_recharge_at(&self, pct: f64, capacity: f64, rate_s: f64) -> f64 {
+        10.0 / rate_s * pct.sqrt() * (1.0 - pct.sqrt()) * capacity
+    }
+
+    pub fn stats(&self, req: &FitRequest) -> Value {
+        let ds = self.ds;
+        let ship = self.ship;
+        let s = |n: &str| self.g(ship, n);
+        let online = |m: It| self.items[m].state >= ONLINE;
+        let mods = &self.modules;
+        let sum_online = |n: &str| mods.iter().filter(|&&m| online(m)).map(|&m| self.g(m, n)).sum::<f64>();
+        let cpu_used = py_round_digits(sum_online("cpu"), 2);
+        let pg_used = py_round_digits(sum_online("power"), 2);
+        let calib = sum_online("upgradeCost");
+        let bw: f64 = self.drones.iter().map(|&d| self.g(d, "droneBandwidthUsed") * self.items[d].amount_active as f64).sum();
+        let bay: f64 = self.drones.iter().map(|&d| self.items[d].t.attr(161).unwrap_or(0.0) * self.items[d].amount as f64).sum();
+        let fbay: f64 = self.fighters.iter().map(|&f| self.items[f].t.attr(161).unwrap_or(0.0) * self.items[f].amount as f64).sum();
+        let cargo: f64 = req
+            .cargo
+            .iter()
+            .map(|c| ds.types.get(&c.type_id).and_then(|t| t.attr(161)).unwrap_or(0.0) * c.quantity as f64)
+            .sum();
+        let usage = |u: f64, t: f64| json!({"used": u, "total": t});
+        let count = |sl: SlotReq| mods.iter().filter(|&&m| self.slot_of(m) == Some(sl)).count() as f64;
+        let hp_used = |h: u8| mods.iter().filter(|&&m| self.hardpoint(m) == h).count() as f64;
+        let fclass = |m: It| -> &'static str {
+            let f = &self.items[m];
+            let a = |n: &str| f.t.attr(ds.attr_id(n)).unwrap_or(0.0) != 0.0;
+            if a("fighterSquadronIsHeavy") || a("fighterSquadronIsStandupHeavy") {
+                "heavy"
+            } else if a("fighterSquadronIsSupport") || a("fighterSquadronIsStandupSupport") {
+                "support"
+            } else {
+                "light"
+            }
+        };
+        let factive: Vec<It> = self.fighters.iter().copied().filter(|&f| self.items[f].active).collect();
+        let fcls = |c: &str| factive.iter().filter(|&&f| fclass(f) == c).count() as f64;
+        let resources = json!({
+            "cpu": usage(cpu_used, s("cpuOutput")),
+            "power": usage(pg_used, s("powerOutput")),
+            "calibration": usage(calib, s("upgradeCapacity")),
+            "drone_bandwidth": usage(bw, s("droneBandwidth")),
+            "drone_bay": usage(bay, s("droneCapacity")),
+            "fighter_bay": usage(fbay, s("fighterCapacity")),
+            "cargo": usage(cargo, s("capacity")),
+            "slots": {
+                "high": usage(count(SlotReq::High), s("hiSlots")),
+                "mid": usage(count(SlotReq::Mid), s("medSlots")),
+                "low": usage(count(SlotReq::Low), s("lowSlots")),
+                "rig": usage(count(SlotReq::Rig), s("rigSlots")),
+                "subsystem": usage(count(SlotReq::Subsystem), s("maxSubSystems")),
+                "service": usage(count(SlotReq::Service), s("serviceSlots")),
+            },
+            "hardpoints": {"turret": usage(hp_used(1), s("turretSlotsLeft")), "launcher": usage(hp_used(2), s("launcherSlotsLeft"))},
+            "fighter_tubes": {
+                "total": usage(factive.len() as f64, s("fighterTubes")),
+                "light": usage(fcls("light"), s("fighterLightSlots") + s("fighterStandupLightSlots")),
+                "support": usage(fcls("support"), s("fighterSupportSlots") + s("fighterStandupSupportSlots")),
+                "heavy": usage(fcls("heavy"), s("fighterHeavySlots") + s("fighterStandupHeavySlots")),
+            },
+        });
+
+        // ---------------- offense
+        let spool = req.options.default_spool.or(Some(Spool { kind: SpoolType::SpoolScale, amount: 1.0 }));
+        let mut weapons = Vec::new();
+        let (mut w_vol, mut w_dps) = (Dmg::default(), Dmg::default());
+        for &m in mods {
+            let v = self.module_volley(m, spool);
+            let d = self.module_dps(m, spool);
+            w_vol.add(&v);
+            w_dps.add(&d);
+            if v.total() > 0.0 || d.total() > 0.0 {
+                let c = self.items[m].charge;
+                weapons.push(json!({"module_index": self.items[m].req_index, "type_id": self.items[m].t.id, "name": self.items[m].t.name,
+                    "charge_type_id": if c != NONE { Some(self.items[c].t.id) } else { None },
+                    "volley": v.json(), "dps": d.json(), "cycle_time_ms": self.cycle_avg(m, None)}));
+            }
+        }
+        let (mut d_vol, mut d_dps) = (Dmg::default(), Dmg::default());
+        let mut drone_out = Vec::new();
+        for &d in &self.drones {
+            let v = self.drone_volley(d);
+            let p = self.drone_dps(d);
+            d_vol.add(&v);
+            d_dps.add(&p);
+            if self.items[d].amount_active > 0 {
+                drone_out.push(json!({"drone_index": self.items[d].req_index, "type_id": self.items[d].t.id, "name": self.items[d].t.name,
+                    "count": self.items[d].amount_active, "volley": v.json(), "dps": p.json()}));
+            }
+        }
+        let (mut f_vol, mut f_dps) = (Dmg::default(), Dmg::default());
+        let mut fighter_out = Vec::new();
+        for &f in &self.fighters {
+            let v = self.fighter_volley(f);
+            let p = self.fighter_dps(f);
+            f_vol.add(&v);
+            f_dps.add(&p);
+            if self.items[f].active {
+                fighter_out.push(json!({"fighter_index": self.items[f].req_index, "type_id": self.items[f].t.id, "name": self.items[f].t.name,
+                    "squadron_size": self.items[f].amount, "volley": v.json(), "dps": p.json()}));
+            }
+        }
+        let mut t_vol = w_vol;
+        t_vol.add(&d_vol);
+        t_vol.add(&f_vol);
+        let mut t_dps = w_dps;
+        t_dps.add(&d_dps);
+        t_dps.add(&f_dps);
+        let tp = req.target_profile.clone().unwrap_or_default();
+        let tp_r = [tp.em, tp.thermal, tp.kinetic, tp.explosive];
+        let offense = json!({
+            "weapons": weapons, "drones": drone_out, "fighters": fighter_out,
+            "total": {"weapon_dps": w_dps.total(), "weapon_volley": w_vol.total(), "drone_dps": d_dps.total(), "drone_volley": d_vol.total(),
+                      "fighter_dps": f_dps.total(), "fighter_volley": f_vol.total(), "dps": t_dps.json(), "volley": t_vol.json()},
+            "vs_target_profile": {"dps": t_dps.vs(tp_r), "volley": t_vol.vs(tp_r)},
+        });
+
+        // ---------------- defense
+        let pat = req.damage_pattern.map(|p| [p.em, p.thermal, p.kinetic, p.explosive]).unwrap_or([25.0; 4]);
+        let (hs, ha, hh) = (s("shieldCapacity"), s("armorHP"), s("hp"));
+        let (es, ea, eh) = (self.effectivify(pat, hs, "shield"), self.effectivify(pat, ha, "armor"), self.effectivify(pat, hh, "hull"));
+        let rj = |r: [f64; 4]| json!({"em": r[0], "thermal": r[1], "kinetic": r[2], "explosive": r[3]});
+        let ex = |n: &str| self.attr(ship, extra_attr(n));
+        let srr = self.applied_rr(0);
+        let arr = self.applied_rr(1);
+        let hrr = self.applied_rr(2);
+        let passive = {
+            let rate = s("shieldRechargeRate") / 1000.0;
+            self.cap_recharge_at(0.25, hs, rate)
+        };
+        let shield_rep = ex("shieldRepair") + srr;
+        let armor_rep = ex("armorRepair") + arr;
+        let hull_rep = ex("hullRepair") + hrr;
+        let defense = json!({
+            "hp": {"shield": hs, "armor": ha, "hull": hh, "total": hs + ha + hh},
+            "ehp": {"shield": es, "armor": ea, "hull": eh, "total": es + ea + eh},
+            "resonance": {"shield": rj(self.resonances("shield")), "armor": rj(self.resonances("armor")), "hull": rj(self.resonances("hull"))},
+            "damage_pattern": {"em": pat[0], "thermal": pat[1], "kinetic": pat[2], "explosive": pat[3]},
+            "tank": {
+                "raw": {"passive_shield": passive, "shield_repair": shield_rep, "armor_repair": armor_rep, "hull_repair": hull_rep},
+                "effective": {"passive_shield": self.effectivify(pat, passive, "shield"), "shield_repair": self.effectivify(pat, shield_rep, "shield"),
+                              "armor_repair": self.effectivify(pat, armor_rep, "armor"), "hull_repair": self.effectivify(pat, hull_rep, "hull")},
+            },
+        });
+
+        // ---------------- modules table
+        let mut mrows = Vec::new();
+        for &m in mods {
+            let st = match self.items[m].state {
+                OFFLINE => "offline",
+                ONLINE => "online",
+                ACTIVE => "active",
+                _ => "overheated",
+            };
+            mrows.push(json!({"module_index": self.items[m].req_index, "type_id": self.items[m].t.id, "name": self.items[m].t.name,
+                "slot": self.items[m].slot.map(slot_name), "state": st, "cpu": self.g(m, "cpu"), "power": self.g(m, "power"),
+                "cycle_time_ms": self.cycle_avg(m, None), "cap_use_gj_s": self.cap_use(m)}));
+        }
+
+        // ---------------- capacitor (fit.simulateCap)
+        let cap = s("capacitorCapacity");
+        let rr = s("rechargeRate");
+        let mut drains = Vec::new();
+        let (mut used, mut added) = (0.0, 0.0);
+        let inj_group = |m: It| ds.group_name(self.items[m].t.group) == "Capacitor Booster";
+        for &m in mods {
+            if self.items[m].state < ACTIVE {
+                continue;
+            }
+            let need = self.g(m, "capacitorNeed");
+            if need == 0.0 {
+                continue;
+            }
+            let full = self.raw_cycle_time(m) + self.g(m, "moduleReactivationDelay");
+            if full > 0.0 {
+                let cu = self.cap_use(m);
+                if cu > 0.0 {
+                    used += cu;
+                } else {
+                    added -= cu;
+                }
+                drains.push(Drain {
+                    duration: full.trunc(),
+                    cap_need: need,
+                    clip_size: self.num_shots(m),
+                    disable_stagger: self.hardpoint(m) == 1,
+                    reload_time: self.reload_time(m),
+                    is_injector: inj_group(m),
+                });
+            }
+        }
+        for d in &self.extra_drains {
+            drains.push(Drain { duration: d.0.trunc(), cap_need: d.1, clip_size: d.2, disable_stagger: false, reload_time: d.3, is_injector: false });
+            if d.1 > 0.0 {
+                used += d.1 / (d.0 / 1000.0);
+            } else {
+                added += -d.1 / (d.0 / 1000.0);
+            }
+        }
+        let peak = self.cap_recharge_at(0.25, cap, rr / 1000.0);
+        let recharge = added + peak;
+        let mut capj = json!({"capacity": cap, "recharge_time_s": rr / 1000.0, "peak_recharge_gj_s": peak,
+            "use_gj_s": used, "injected_gj_s": added, "delta_gj_s": recharge - used});
+        if drains.is_empty() {
+            capj["stable"] = json!(true);
+            capj["stable_percent"] = json!(100.0);
+            capj["sim_iterations"] = json!(0);
+        } else {
+            let t_max = req.options.cap_sim.max_time_s.map(|x| x * 1000.0).unwrap_or(6.0 * 3600.0 * 1000.0);
+            let r = capsim::run(&drains, cap, rr, cap, t_max, self.factor_reload, true);
+            let st = (r.cap_stable_low + r.cap_stable_high) / (2.0 * cap);
+            let stable = st > 0.0;
+            capj["stable"] = json!(stable);
+            if stable {
+                capj["stable_percent"] = json!((st * 100.0).min(100.0));
+            } else {
+                capj["depletes_in_s"] = json!(r.t / 1000.0);
+            }
+            capj["eve_stable_percent"] = json!(r.cap_stable_eve * 100.0);
+            capj["sim_iterations"] = json!(r.iterations);
+        }
+
+        // ---------------- navigation
+        let speed_limit = s("speedLimit");
+        let mut vmax = s("maxVelocity");
+        if speed_limit != 0.0 && vmax > speed_limit {
+            vmax = speed_limit;
+        }
+        let agility = s("agility");
+        let mass = s("mass");
+        let base_warp = if s("baseWarpSpeed") != 0.0 { s("baseWarpSpeed") } else { 1.0 };
+        let wm = if s("warpSpeedMultiplier") != 0.0 { s("warpSpeedMultiplier") } else { 1.0 };
+        let wneed = s("warpCapacitorNeed");
+        let navigation = json!({
+            "max_velocity": vmax, "align_time_s": -(0.25f64.ln()) * agility * mass / 1e6, "mass": mass, "agility": agility,
+            "signature_radius": s("signatureRadius"), "warp_speed_au_s": base_warp * wm,
+            "max_warp_distance_au": if wneed != 0.0 { cap / (mass * wneed) } else { 0.0 },
+            "warp_scramble_status": s("warpScrambleStatus"),
+        });
+
+        // ---------------- targeting
+        let mt = ex("maxTargetsLockedFromSkills").min(s("maxLockedTargets"));
+        let max_targets = float_unerr(mt).ceil();
+        let mut best = ("", -1.0f64);
+        for (n, a) in [("magnetometric", "scanMagnetometricStrength"), ("ladar", "scanLadarStrength"), ("radar", "scanRadarStrength"), ("gravimetric", "scanGravimetricStrength")] {
+            let v = s(a);
+            if v > best.1 {
+                best = (n, v);
+            } else if v == best.1 {
+                best = ("multispectral", v);
+            }
+        }
+        let sig = s("signatureRadius");
+        let scan_res = s("scanResolution");
+        let lt = |r: f64| -> Option<f64> {
+            if scan_res > 0.0 && r > 0.0 {
+                let v = 40000.0 / scan_res / (r + (r * r + 1.0).sqrt()).ln().powi(2);
+                Some(v.max(0.0))
+            } else {
+                None
+            }
+        };
+        let targeting = json!({
+            "max_targets": max_targets, "max_range_m": s("maxTargetRange"), "scan_resolution": scan_res,
+            "sensor_strength": best.1, "sensor_type": best.0,
+            "probe_size": if best.1 != 0.0 { Some((sig / best.1).max(1.08)) } else { None },
+            "lock_time_s": {"sig_25m": lt(25.0), "sig_40m": lt(40.0), "sig_125m": lt(125.0), "sig_400m": lt(400.0),
+                            "sig_target_profile": tp.signature_radius.and_then(lt)},
+        });
+        let drones_j = json!({
+            "active": self.drones.iter().map(|&d| self.items[d].amount_active).sum::<u32>(),
+            "max_active": ex_or(self, "maxActiveDrones"),
+            "control_range_m": ex("droneControlRange"),
+        });
+
+        let st = self.items[ship].t;
+        let mut out = Map::new();
+        out.insert("meta".into(), json!({"schema_version": 1, "engine": concat!("eve-dogma-e ", env!("CARGO_PKG_VERSION"), " (pyfa port)"),
+            "sde_build": ds.build, "dataset_sha256": ds.sha256}));
+        out.insert("ship".into(), json!({"type_id": st.id, "name": st.name, "group": ds.group_name(st.group)}));
+        out.insert("resources".into(), resources);
+        out.insert("modules".into(), Value::Array(mrows));
+        out.insert("offense".into(), offense);
+        out.insert("defense".into(), defense);
+        out.insert("capacitor".into(), capj);
+        out.insert("navigation".into(), navigation);
+        out.insert("targeting".into(), targeting);
+        out.insert("drones".into(), drones_j);
+        out.insert("violations".into(), Value::Array(if req.options.validate { self.violations(cpu_used, pg_used, calib, bw) } else { vec![] }));
+        out.insert("warnings".into(), json!(self.warnings));
+        if let Some(inc) = &req.options.include_attributes {
+            out.insert("attributes".into(), self.dump_attributes(inc));
+        }
+        Value::Object(out)
+    }
+
+    /// Fit.__getAppliedRr for shield (0), armor (1), hull (2)
+    fn applied_rr(&self, kind: usize) -> f64 {
+        let list: Vec<(f64, f64)> = self.rr.iter().filter(|r| r.0 == kind).map(|r| (r.1, r.2)).collect();
+        let total: f64 = list.iter().map(|(a, c)| a / c.trunc()).sum();
+        let mut out = 0.0;
+        for (a, c) in &list {
+            let rrps = a / c.trunc();
+            let m = 7000.0 + rrps * 20.0;
+            let mult = 1.0 - (((rrps + m) / (total + m)) - 1.0).powi(2);
+            out += mult * a / c;
+        }
+        out
+    }
+
+    fn violations(&self, cpu: f64, pg: f64, calib: f64, bw: f64) -> Vec<Value> {
+        let mut v = Vec::new();
+        let ship = self.ship;
+        let s = |n: &str| self.g(ship, n);
+        let mut push = |code: &str, msg: String, idx: Option<usize>| v.push(json!({"code": code, "message": msg, "module_index": idx}));
+        if cpu > s("cpuOutput") + 1e-9 {
+            push("CPU_OVERLOAD", format!("CPU {cpu} > {}", s("cpuOutput")), None);
+        }
+        if pg > s("powerOutput") + 1e-9 {
+            push("POWER_OVERLOAD", format!("powergrid {pg} > {}", s("powerOutput")), None);
+        }
+        if calib > s("upgradeCapacity") + 1e-9 {
+            push("CALIBRATION_OVERLOAD", format!("calibration {calib} > {}", s("upgradeCapacity")), None);
+        }
+        if bw > s("droneBandwidth") + 1e-9 {
+            push("DRONE_BANDWIDTH", format!("drone bandwidth {bw} > {}", s("droneBandwidth")), None);
+        }
+        for (sl, a) in [(SlotReq::High, "hiSlots"), (SlotReq::Mid, "medSlots"), (SlotReq::Low, "lowSlots"), (SlotReq::Rig, "rigSlots"), (SlotReq::Subsystem, "maxSubSystems"), (SlotReq::Service, "serviceSlots")] {
+            let n = self.modules.iter().filter(|&&m| self.items[m].slot == Some(sl)).count() as f64;
+            if n > s(a) {
+                push("SLOTS_EXCEEDED", format!("{} {} slots used, {} available", n, slot_name(sl), s(a)), None);
+            }
+        }
+        let tur = self.modules.iter().filter(|&&m| self.hardpoint(m) == 1).count() as f64;
+        let lau = self.modules.iter().filter(|&&m| self.hardpoint(m) == 2).count() as f64;
+        if tur > s("turretSlotsLeft") {
+            push("TURRET_HARDPOINTS", format!("{tur} turrets, {} hardpoints", s("turretSlotsLeft")), None);
+        }
+        if lau > s("launcherSlotsLeft") {
+            push("LAUNCHER_HARDPOINTS", format!("{lau} launchers, {} hardpoints", s("launcherSlotsLeft")), None);
+        }
+        for &m in &self.modules {
+            for (sk, lvl) in &self.items[m].t.req_skills {
+                if self.skill_level(*sk) < *lvl as f64 {
+                    push("MISSING_SKILL", format!("{} requires skill {} level {}", self.items[m].t.name, sk, lvl), Some(self.items[m].req_index));
+                    break;
+                }
+            }
+        }
+        v
+    }
+
+    fn dump_attributes(&self, inc: &str) -> Value {
+        let ds = self.ds;
+        let want: Option<Vec<u32>> = if inc == "all" { None } else { Some(inc.split(',').map(|n| ds.attr_id(n.trim())).filter(|&x| x != 0).collect()) };
+        let dump = |it: It| -> Value {
+            let mut m = Map::new();
+            let mut ids: Vec<u32> = self.items[it].t.attrs.iter().map(|x| x.0).collect();
+            for k in self.items[it].mad.entries.keys() {
+                ids.push(*k);
+            }
+            ids.sort();
+            ids.dedup();
+            for a in ids {
+                if let Some(w) = &want {
+                    if !w.contains(&a) {
+                        continue;
+                    }
+                }
+                if let (Some(info), Some(v)) = (ds.attrs.get(&a), self.attr_opt(it, a)) {
+                    m.insert(info.name.clone(), json!(v));
+                }
+            }
+            Value::Object(m)
+        };
+        let modules: Vec<Value> = self
+            .modules
+            .iter()
+            .map(|&m| {
+                let c = self.items[m].charge;
+                json!({"module_index": self.items[m].req_index, "type_id": self.items[m].t.id, "attributes": dump(m),
+                       "charge": if c != NONE { Some(dump(c)) } else { None }})
+            })
+            .collect();
+        let drones: Vec<Value> = self.drones.iter().map(|&d| json!({"drone_index": self.items[d].req_index, "attributes": dump(d)})).collect();
+        json!({"ship": dump(self.ship), "modules": modules, "drones": drones})
+    }
+}
+
+fn ex_or(f: &Fit, n: &str) -> f64 {
+    // Pyfa keeps maxActiveDrones in the ship's extra attributes (character skills add to it)
+    let s = f.ship;
+    f.g(s, n)
+}
+
+pub fn slot_name(s: SlotReq) -> &'static str {
+    match s {
+        SlotReq::High => "high",
+        SlotReq::Mid => "mid",
+        SlotReq::Low => "low",
+        SlotReq::Rig => "rig",
+        SlotReq::Subsystem => "subsystem",
+        SlotReq::Service => "service",
+    }
+}
+
+#[allow(dead_code)]
+fn unused(_: &Ids) {}
