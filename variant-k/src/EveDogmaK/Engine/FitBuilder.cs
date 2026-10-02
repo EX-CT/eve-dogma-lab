@@ -77,12 +77,15 @@ public static class FitBuilder
         var extra = new List<int>();
         foreach (var id in explicitLevels.Keys) if (Array.BinarySearch(published, id) < 0) extra.Add(id);
         extra.Sort();
+        var relevance = new SkillRelevance(ds, req);
         int p = 0, q = 0;
         while (p < published.Length || q < extra.Count)
         {
             int s = q >= extra.Count || (p < published.Length && published[p] < extra[q]) ? published[p++] : extra[q++];
             int l = explicitLevels.TryGetValue(s, out var lv) ? lv : def;
             if (ds.Type(s) == null) continue;
+            // perf: a skill whose modifiers can reach nothing in this fit is not instantiated (same results)
+            if (!relevance.IsRelevant(s)) continue;
             int idx = NewItem(fit, s, ItemKind.Skill, ItemLocation.Character, "/character/skills");
             fit.SetBase(idx, KnownIds.SkillLevel, Math.Clamp(l, 0, 5));
         }
@@ -329,5 +332,67 @@ public static class FitBuilder
                 case 6306: return Slot.Service;
             }
         return null;
+    }
+}
+
+/// <summary>
+/// Which skills can affect this request (same rule as the reference's skill pruning): a skill is kept when an item of
+/// the request requires it, or when any of its modifiers could reach something present. Unknown shapes count as relevant.
+/// </summary>
+internal sealed class SkillRelevance
+{
+    private readonly Dataset _ds;
+    private readonly HashSet<int> _required = new(), _groups = new();
+
+    public SkillRelevance(Dataset ds, FitRequest req)
+    {
+        _ds = ds;
+        Add(req.ShipTypeId);
+        if (req.ModeTypeId is int mode) Add(mode);
+        foreach (var m in req.Modules)
+        {
+            Add(m.TypeId);
+            if (m.ChargeTypeId is int c) Add(c);
+            if (m.Mutation != null) Add(m.Mutation.BaseTypeId);
+        }
+        foreach (var d in req.Drones)
+        {
+            Add(d.TypeId);
+            if (d.Mutation != null) Add(d.Mutation.BaseTypeId);
+        }
+        foreach (var f in req.Fighters) Add(f.TypeId);
+        foreach (var i in req.Implants) Add(i);
+        foreach (var b in req.Boosters) Add(b.TypeId);
+        foreach (var c in req.Cargo) Add(c.TypeId);
+    }
+
+    private void Add(int typeId)
+    {
+        if (_ds.Type(typeId) is not { } t) return;
+        _groups.Add(t.Group);
+        foreach (var s in t.RequiredSkills) _required.Add(s);
+    }
+
+    public bool IsRelevant(int skill)
+    {
+        if (_required.Contains(skill)) return true;
+        if (_ds.Type(skill) is not { } t) return false;
+        foreach (var eref in t.Effects)
+        {
+            if (eref.Id == KnownIds.SkillEffect) continue;
+            if (_ds.Effect(eref.Id) is not { } e) continue;
+            if (e.Modifiers.Length == 0) return true; // hand-written / special effect
+            foreach (var m in e.Modifiers)
+            {
+                bool hit = m.Func switch
+                {
+                    ModFunc.LocationGroup => _groups.Contains(m.Filter) || (_ds.Groups.TryGetValue(m.Filter, out var g) ? g.Category == 16 : true),
+                    ModFunc.LocationRequiredSkill or ModFunc.OwnerRequiredSkill => _required.Contains(m.Filter == 0 ? skill : m.Filter),
+                    _ => true,
+                };
+                if (hit) return true;
+            }
+        }
+        return false;
     }
 }
