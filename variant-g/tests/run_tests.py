@@ -127,6 +127,26 @@ def main():
         n_ok += got == exp and r.stderr == exp_err
     check(n_ok == n_all, f"EFT import {n_ok}/{n_all} identical to reference")
     print(f"eft import: {n_ok}/{n_all} identical to reference")
+
+    # 8. EFT export vs Pyfa's exporter (bench >= 1.4.1: expected_extra/eft_export.jsonl), in process
+    exp_f = bench / "expected_extra" / "eft_export.jsonl"
+    if exp_f.exists():
+        from evedogma_g import eft as _eft
+        n_ok = n_all = 0
+        for line in open(exp_f):
+            e = json.loads(line)
+            n_all += 1
+            try:
+                t = _eft.export(ds, e["fit"], e["name"])
+                # accepted data divergence (bench tools/check_eft_export.py): T3C maxSubSystems 5 (SDE) vs 4 (Pyfa)
+                ok = t == e["text"] or t.replace("\n[Empty Subsystem slot]", "", 1) == e["text"]
+            except Exception:  # noqa: BLE001
+                ok = False
+            n_ok += ok
+            if not ok and n_all - n_ok <= 3:
+                print("  eft export mismatch:", e.get("file"))
+        check(n_ok == n_all, f"EFT export {n_ok}/{n_all} identical to Pyfa")
+        print(f"eft export: {n_ok}/{n_all} identical to Pyfa")
     print("FAILED" if FAILS else "ALL OK", len(FAILS))
     sys.exit(1 if FAILS else 0)
 

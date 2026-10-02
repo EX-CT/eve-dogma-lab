@@ -4,6 +4,7 @@ parse(ds, text) -> FitRequest dict (serialised like the reference: every field p
 export(ds, req, name) -> EFT text
 Errors raise EftError (CLI: message on stderr, exit 2; RPC: {"error": {"code": "EFT_PARSE", ...}})."""
 import decimal
+import math
 
 from .request import RequestError, parse as parse_request
 
@@ -257,26 +258,76 @@ def parse(ds, text):
     return req
 
 
+def py_float(v):
+    """Python repr of Pyfa's floatUnerr(v) (7 significant digits), as Pyfa prints mutated attribute values"""
+    if v != v:
+        return "NaN"
+    if v != 0.0 and math.isfinite(v):
+        rf = 7 - int(math.ceil(math.log10(abs(v))))
+        if rf >= 0:
+            v = float(f"{v:.{rf}f}")
+        else:
+            p = 10.0 ** (-rf)
+            x = v / p
+            v = (math.floor(x + 0.5) if x >= 0 else -math.floor(-x + 0.5)) * p
+    return repr(float(v))
+
+
+# Pyfa's drone market-group order (service/port/eft.py DRONE_ORDER)
+_DRONE_ORDER = {}
+for _k, _mgs in enumerate(((837, 1531), (3881,), (838, 1532), (3882,), (839, 359), (3883,), (911, 1533), (843, 1586),
+                           (841, 1029), (842, 1030), (158, 358), (1643, 1646))):
+    for _mg in _mgs:
+        _DRONE_ORDER[_mg] = _k
+_FIGHTER_ORDER = ("Light Fighter", "Structure Light Fighter", "Heavy Fighter", "Structure Heavy Fighter",
+                  "Support Fighter", "Structure Support Fighter")
+
+
 def export(ds, req, name="EXCT fit"):
-    """req: a FitRequest dict (raw JSON); validated with the normal request parser first"""
+    """EFT text exactly like Pyfa's exportEft (all options on, after Pyfa's GUI fill()): header, blank line,
+    sections joined by two blank lines (racks LOW/MED/HIGH/RIG/SUBSYSTEM/SERVICE with [Empty X slot] fillers;
+    drones + fighters; implants + boosters; cargo; mutations), sub-sections by one blank line, no final newline.
+    No T3D mode line (Pyfa writes none). req: a FitRequest dict (raw JSON), validated by the request parser."""
     r = parse_request(req)  # raises RequestError (BAD_REQUEST)
 
     def n(tid):
         ti = ds.tidx(tid)
         return ds.t_name[ti] if ti >= 0 else str(tid)
 
-    out = [f"[{n(r['ship']['type_id'])}, {name}]\n"]
+    def tattr(tid, an):
+        ti = ds.tidx(tid)
+        if ti < 0:
+            return 0.0
+        v = ds.type_attr(ti, ds.a(an))
+        return 0.0 if v is None else v
+
+    def group_name(tid):
+        ti = ds.tidx(tid)
+        return ds.group_name.get(int(ds.t_group[ti])) if ti >= 0 else None
+
+    # slot totals after modifiers (subsystems, structure rigs, ...)
+    totals = None
+    try:
+        from .calc import _batch
+        _b, vals, fits = _batch(ds, [r])
+        if fits and not isinstance(fits[0], RequestError):
+            totals = (vals, fits[0].ship)
+    except RequestError:
+        totals = None
+
+    def total(an):
+        if totals is None:
+            return 0
+        return int(totals[0].get(totals[1], ds.a(an)))
+
     muts = []
-
-    def tag(m):
-        if m is None:
-            return ""
-        muts.append(m)
-        return f" [{len(muts)}]"
-
+    sections = []
+    racks = []
     raw_mods = req.get("modules") or []
-    for slot in SLOT_ORDER:
-        any_ = False
+    for slot, label, ta in (("low", "Low", "lowSlots"), ("mid", "Med", "medSlots"), ("high", "High", "hiSlots"),
+                            ("rig", "Rig", "rigSlots"), ("subsystem", "Subsystem", "maxSubSystems"),
+                            ("service", "Service", "serviceSlots")):
+        lines = []
         for k, m in enumerate(r["modules"]):
             s = m["slot"]
             if s is None:
@@ -284,52 +335,110 @@ def export(ds, req, name="EXCT fit"):
                 s = infer_slot(ds, ti) if ti >= 0 else None
             if s != slot:
                 continue
-            any_ = True
             mu = m["mutation"]
-            out.append(n(mu["base_type_id"]) if mu is not None else n(m["type_id"]))
+            line = n(mu["base_type_id"]) if mu is not None else n(m["type_id"])
+            mtag = ""
+            if mu is not None and mu.get("mutaplasmid_type_id") is not None:
+                muts.append(mu)
+                mtag = f" [{len(muts)}]"
             if m["charge_type_id"] is not None:
-                out.append(f", {n(m['charge_type_id'])}")
+                line += f", {n(m['charge_type_id'])}"
             if raw_mods[k].get("state") == "offline":
-                out.append(" /OFFLINE")
-            out.append(tag(mu))
-            out.append("\n")
-        if any_:
-            out.append("\n")
-    for d in r["drones"]:
-        mu = d["mutation"]
-        nm = mu["base_type_id"] if mu is not None else d["type_id"]
-        out.append(f"{n(nm)} x{d['quantity']}{tag(mu)}\n")
+                line += " /offline"
+            lines.append(line + mtag)
+        free = total(ta) - len(lines)
+        lines += [f"[Empty {label} slot]"] * max(free, 0)
+        if lines:
+            racks.append("\n".join(lines))
+    if racks:
+        sections.append("\n\n".join(racks))
+
+    minion = []
+
+    def dbase(d):
+        return d["mutation"]["base_type_id"] if d["mutation"] is not None else d["type_id"]
+
+    def dmut(d):
+        return d["mutation"] is not None and d["mutation"].get("mutaplasmid_type_id") is not None
+
+    def dkey(d):
+        bti = ds.tidx(dbase(d))
+        mg = ds.t_mgroup.get(bti) if bti >= 0 else None
+        if dmut(d):
+            ti = ds.tidx(d["type_id"])
+            full = ds.t_name[ti] if ti >= 0 else ""
+        else:
+            full = n(d["type_id"])
+        return (_DRONE_ORDER.get(mg, 12), dmut(d), full)
+
+    dl = []
+    for d in sorted(r["drones"], key=dkey):
+        mtag = ""
+        if dmut(d):
+            muts.append(d["mutation"])
+            mtag = f" [{len(muts)}]"
+        dl.append(f"{n(dbase(d))} x{d['quantity']}{mtag}")
+    if dl:
+        minion.append("\n".join(dl))
     raw_f = req.get("fighters") or []
+    fl = []
+    fdata = []
     for k, f in enumerate(r["fighters"]):
         q = raw_f[k].get("quantity") if isinstance(raw_f[k], dict) else None
-        out.append(f"{n(f['type_id'])} x{q if q is not None else 1}\n")
-    if r["implants"] or r["boosters"]:
-        out.append("\n")
-        for i in r["implants"]:
-            out.append(f"{n(i)}\n")
-        for b in r["boosters"]:
-            out.append(f"{n(b['type_id'])}\n")
-    if r["cargo"]:
-        out.append("\n")
-        for c in r["cargo"]:
-            out.append(f"{n(c['type_id'])} x{c['quantity']}\n")
+        fdata.append((f["type_id"], q))
+
+    def fkey(x):
+        g = group_name(x[0]) or ""
+        return (_FIGHTER_ORDER.index(g) if g in _FIGHTER_ORDER else len(_FIGHTER_ORDER), n(x[0]))
+
+    for tid, q in sorted(fdata, key=fkey):
+        mx = int(tattr(tid, "fighterSquadronMaxSize"))
+        mx = max(mx, 0)
+        qq = (mx if q >= mx else q) if q is not None else mx
+        fl.append(f"{n(tid)} x{qq}")
+    if fl:
+        minion.append("\n".join(fl))
+    if minion:
+        sections.append("\n\n".join(minion))
+
+    charsec = []
+    imps = sorted(r["implants"], key=lambda i: tattr(i, "implantness"))
+    if imps:
+        charsec.append("\n".join(n(i) for i in imps))
+    boos = sorted((b["type_id"] for b in r["boosters"]), key=lambda i: tattr(i, "boosterness"))
+    if boos:
+        charsec.append("\n".join(n(i) for i in boos))
+    if charsec:
+        sections.append("\n\n".join(charsec))
+
+    def ckey(c):
+        ti = ds.tidx(c["type_id"])
+        if ti < 0:
+            return ("", "", n(c["type_id"]))
+        g = int(ds.t_group[ti])
+        if g not in ds.group_name:
+            return ("", "", n(c["type_id"]))
+        return (ds.cat_name.get(ds.group_cat.get(g, 0), ""), ds.group_name.get(g) or "", n(c["type_id"]))
+
+    cargo = sorted(r["cargo"], key=ckey)
+    if cargo:
+        sections.append("\n".join(f"{n(c['type_id'])} x{c['quantity']}" for c in cargo))
+
     if muts:
-        out.append("\n")
+        blocks = []
         for k, m in enumerate(muts):
-            out.append(f"[{k + 1}] {n(m['base_type_id'])}\n")
-            if m.get("mutaplasmid_type_id") is not None:
-                out.append(f"  {n(m['mutaplasmid_type_id'])}\n")
             kv = []
-            for a in sorted(m.get("attributes") or {}):
-                v = m["attributes"][a]
+            for a_, v in (m.get("attributes") or {}).items():
                 try:
-                    an = ds.attr_name.get(int(a), a)
+                    an = ds.attr_name.get(int(a_), a_)
                 except ValueError:
-                    an = a
-                kv.append(f"{an} {fmt_f64(float(v))}")
-            if kv:
-                out.append("  " + ", ".join(kv) + "\n")
-    return "".join(out)
+                    an = a_
+                kv.append((an, float(v)))
+            kv.sort(key=lambda x: x[0].encode())
+            attrs = ", ".join(f"{a_} {py_float(v)}" for a_, v in kv)
+            blocks.append(f"[{k + 1}] {n(m['base_type_id'])}\n  {n(m['mutaplasmid_type_id'])}\n  {attrs}")
+        sections.append("\n".join(blocks))
+    return f"[{n(r['ship']['type_id'])}, {name}]\n\n" + "\n\n\n".join(sections)
 
 
 __all__ = ["EftError", "parse", "export", "RequestError"]

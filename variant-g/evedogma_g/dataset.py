@@ -13,7 +13,7 @@ import pickle
 
 import numpy as np
 
-CACHE_VERSION = 6
+CACHE_VERSION = 8
 ATTR_BITS = 14  # attribute ids < 16384 (max in SDE 3569502: 6465)
 ATTR_MASK = (1 << ATTR_BITS) - 1
 
@@ -28,7 +28,7 @@ EFFECT_SKILL_EFFECT = 132
 # demand (saves ~15 ms of every cold start); small ones are plain objects in the pickle
 _LAZY_SEQ = ("t_effects", "t_reqskills")  # list indexed by dense type index
 _LAZY_MAP = ("eff_info", "muta")  # dict with int keys
-_LAZY_WHOLE = ("names_zh", "type_by_name")  # only used by name lookups / the type and search commands
+_LAZY_WHOLE = ("names_zh", "type_by_name", "t_meta", "t_mgroup", "group_cat", "cat_name")  # only used by name lookups, search, EFT export
 
 
 def _pack_entries(values):
@@ -250,6 +250,8 @@ def _build(path):
     # ---- groups / types
     groups = {int(k): v for k, v in d["groups"].items()}
     group_name = {k: (v.get("name") or "") for k, v in groups.items()}
+    group_cat = {k: int(v.get("category") or 0) for k, v in groups.items()}
+    cat_name = {int(k): (v.get("name") or "") for k, v in (d.get("categories") or {}).items()}
     types = {int(k): v for k, v in d["types"].items()}
     tids = sorted(types)
     n_t = len(tids)
@@ -265,8 +267,14 @@ def _build(path):
     REQ = [182, 183, 184, 1285, 1289, 1290]
     SLOT_EFF = {12: "high", 13: "mid", 11: "low", 2663: "rig", 3772: "subsystem", 6306: "service"}
     type_by_name = {}
+    t_meta = {}  # dense type index -> meta_level (search results)
+    t_mgroup = {}  # dense type index -> market group (EFT export drone order)
     for ti, tid in enumerate(tids):
         t = types[tid]
+        if t.get("meta_level") is not None:
+            t_meta[ti] = int(t["meta_level"])
+        if t.get("market_group") is not None:
+            t_mgroup[ti] = int(t["market_group"])
         t_group[ti] = t["group"]
         t_cat[ti] = t["category"]
         t_pub[ti] = bool(t.get("published"))
@@ -350,7 +358,8 @@ def _build(path):
         "t_effects": t_effects, "t_raw_fields": t_raw_fields, "t_reqskills": t_reqskills, "t_slot": t_slot,
         "t_attr_ptr": t_attr_ptr, "t_attr_ids": t_attr_ids, "t_attr_vals": t_attr_vals, "ta_key": ta_key,
         "tm": tm, "tm_ptr": np.array(m_ptr, np.int64), "published_skills": published_skills,
-        "modes_1306": modes_1306, "dbuffs": dbuffs, "muta": muta, "type_by_name": type_by_name,
+        "modes_1306": modes_1306, "dbuffs": dbuffs, "muta": muta, "type_by_name": type_by_name, "t_meta": t_meta, "t_mgroup": t_mgroup, "group_cat": group_cat,
+        "cat_name": cat_name,
         "sec_types": sec_types, "names_zh": (d.get("names") or {}).get("zh", {}),
     }
 
