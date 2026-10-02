@@ -3,6 +3,7 @@ package dogma
 import (
 	"fmt"
 	"math"
+	"sort"
 )
 
 type obj = map[string]any
@@ -882,13 +883,6 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 			}
 		}
 	}
-	have := map[uint32]float64{}
-	for i := range f.Items {
-		if f.Items[i].Kind == KSkill {
-			lv, _ := f.Items[i].overlay.get(attrSkillLevel)
-			have[f.Items[i].TypeID] = lv
-		}
-	}
 	type miss struct {
 		s    uint32
 		need float64
@@ -904,12 +898,12 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 		}
 		t := it.T
 		for k := 1; k <= 6; k++ {
-			sv, _ := t.Attr(ds.AttrID(fmt.Sprintf("requiredSkill%d", k)))
+			sv, _ := t.Attr(ds.AttrID(reqSkillNames[k-1][0]))
 			s := uint32(sv)
 			if s == 0 {
 				continue
 			}
-			need, ok := t.Attr(ds.AttrID(fmt.Sprintf("requiredSkill%dLevel", k)))
+			need, ok := t.Attr(ds.AttrID(reqSkillNames[k-1][1]))
 			if !ok {
 				need = 1
 			}
@@ -919,7 +913,7 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 					dup = true
 				}
 			}
-			if have[s] < need && !dup {
+			if f.skillLevel(s) < need && !dup {
 				missing = append(missing, miss{s, need, it.TypeID})
 			}
 		}
@@ -932,4 +926,20 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 		push("MISSING_SKILL", fmt.Sprintf("%s %v required by %s", sn, m.need, ds.Types[m.by].Name), -1)
 	}
 	return v
+}
+
+var reqSkillNames = [6][2]string{{"requiredSkill1", "requiredSkill1Level"}, {"requiredSkill2", "requiredSkill2Level"},
+	{"requiredSkill3", "requiredSkill3Level"}, {"requiredSkill4", "requiredSkill4Level"},
+	{"requiredSkill5", "requiredSkill5Level"}, {"requiredSkill6", "requiredSkill6Level"}}
+
+// skillLevel returns the character's level of skill s (0 if absent). Skill items are contiguous and
+// sorted by type id (see Build).
+func (f *Fit) skillLevel(s uint32) float64 {
+	sk := f.Items[f.skillLo:f.skillHi]
+	i := sort.Search(len(sk), func(i int) bool { return sk[i].TypeID >= s })
+	if i < len(sk) && sk[i].TypeID == s {
+		lv, _ := sk[i].overlay.get(attrSkillLevel)
+		return lv
+	}
+	return 0
 }

@@ -78,3 +78,22 @@ func BenchmarkLoadDataset(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkAllCasesJSON: end-to-end like the CLI (request bytes -> response bytes) for every case.
+func BenchmarkAllCasesJSON(b *testing.B) {
+	ds := testDataset(b)
+	files, _ := filepath.Glob("../testdata/requests/*.json")
+	var raws [][]byte
+	for _, f := range files {
+		r, _ := os.ReadFile(f)
+		raws = append(raws, r)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, r := range raws {
+			CalcJSON(ds, r)
+		}
+	}
+	b.ReportMetric(float64(b.Elapsed().Microseconds())/float64(b.N*len(raws)), "us/fit")
+}

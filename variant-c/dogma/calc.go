@@ -11,6 +11,11 @@ const EngineName = "eve-dogma-go 0.1.0 (variant-c)"
 
 // Calc computes full fit statistics for one request (pure function).
 func Calc(ds *Dataset, req *FitRequest) map[string]any {
+	return Tidy(calcRaw(ds, req)).(obj)
+}
+
+// calcRaw computes the stats tree without rounding (CalcJSON rounds while encoding).
+func calcRaw(ds *Dataset, req *FitRequest) obj {
 	f, err := Build(ds, req)
 	if err != nil {
 		if e, ok := err.(*EngineError); ok {
@@ -18,7 +23,7 @@ func Calc(ds *Dataset, req *FitRequest) map[string]any {
 		}
 		return obj{"error": obj{"code": "INTERNAL", "message": err.Error(), "path": ""}}
 	}
-	return Tidy(f.ComputeStats(req, EngineName)).(obj)
+	return f.ComputeStats(req, EngineName)
 }
 
 // CalcJSON: JSON request in, JSON stats out.
@@ -28,13 +33,16 @@ func CalcJSON(ds *Dataset, request []byte) []byte {
 	if err := json.Unmarshal(request, &req); err != nil {
 		v = obj{"error": obj{"code": "BAD_REQUEST", "message": err.Error(), "path": ""}}
 	} else {
-		v = Calc(ds, &req)
+		v = calcRaw(ds, &req)
 	}
-	return Marshal(v)
+	return appendJSON(nil, v, true)
 }
 
 // Marshal encodes without HTML escaping (keys sorted by encoding/json).
-func Marshal(v any) []byte {
+func Marshal(v any) []byte { return appendJSON(nil, v, false) }
+
+// marshalStd is the reference encoding/json path (tests compare the fast encoder against it).
+func marshalStd(v any) []byte {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)

@@ -159,6 +159,8 @@ type Fit struct {
 
 	TrackDeps bool
 	rdeps     map[uint64][]uint64
+
+	skillLo, skillHi int // Items[skillLo:skillHi] are the character's skills, sorted by type id
 }
 
 // ProjSpecial is a projected effect that does not modify attributes but feeds tank or capacitor stats
@@ -364,6 +366,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		sort.Slice(skillIDs, func(i, j int) bool { return skillIDs[i] < skillIDs[j] })
 	}
 	// one backing array for all skill-level overlays (avoids 2 allocations per skill)
+	f.skillLo = len(f.Items)
 	lvIDs := make([]uint32, len(skillIDs))
 	lvVals := make([]float64, len(skillIDs))
 	for k, s := range skillIDs {
@@ -382,6 +385,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		f.Items[idx].overlay = attrSet{lvIDs[k : k+1 : k+1], lvVals[k : k+1 : k+1]}
 		f.Items[idx].Owned = false
 	}
+	f.skillHi = len(f.Items)
 	// tactical destroyer default mode
 	var modeID *uint32
 	if req.Ship.ModeTypeID != nil {

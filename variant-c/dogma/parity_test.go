@@ -1,6 +1,7 @@
 package dogma
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -233,5 +234,23 @@ func TestEFTRoundtripMutations(t *testing.T) {
 	}
 	if string(Marshal(req.Modules)) != string(Marshal(req2.Modules)) || string(Marshal(req.Drones)) != string(Marshal(req2.Drones)) {
 		t.Fatalf("roundtrip mismatch\n%s", out)
+	}
+}
+
+// TestFastEncoder: the reflection-free encoder must produce byte-identical output to Tidy + encoding/json.
+func TestFastEncoder(t *testing.T) {
+	ds := testDataset(t)
+	_, reqs := loadRequests(t)
+	for i, r := range reqs {
+		want := marshalStd(Tidy(calcRaw(ds, r)))
+		got := appendJSON(nil, calcRaw(ds, r), true)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("request %d: fast encoder differs\n got %.300s\nwant %.300s", i, got, want)
+		}
+	}
+	for _, s := range []string{"a<b>&c", "q\"\\\n\t\r\b\f\x01\x7f", "\u2028\u2029é漢", "bad\xffutf8"} {
+		if got, want := appendJSON(nil, obj{"s": s, "f": []any{1e-7, 1e21, -0.0, 123.456, 5e-324}}, false), marshalStd(obj{"s": s, "f": []any{1e-7, 1e21, -0.0, 123.456, 5e-324}}); !bytes.Equal(got, want) {
+			t.Fatalf("string %q: got %s want %s", s, got, want)
+		}
 	}
 }
