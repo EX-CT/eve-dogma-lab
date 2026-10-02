@@ -66,4 +66,13 @@ FitRequest ─▶ eos::fit::build ─▶ calculate (early/normal/late) ─▶ pr
 - Python `round(x, n)` (used by `floatUnerr`, cpu/power rounding, capSim) has an exact fast path: `round(x·10ⁿ)/10ⁿ`
   when x·10ⁿ is not within its rounding error of a .5 tie (Clinger fast path), else the decimal formatter. A test
   checks 32 M random cases bit-for-bit against format+parse.
-- The parsed dataset is cached as bincode (cold start ~20 ms instead of ~160 ms).
+- The parsed dataset is cached as bincode. The cache layout is `[len][Dataset][len][type index][type records]`: the
+  type index (sorted ids, groups, offsets) is decoded eagerly, each `TypeInfo` lazily (`OnceLock` per type) straight
+  from the cache buffer (no copy), and the name index is built only when EFT/T3D-mode lookups need it. One-shot
+  `calc` also skips freeing the dataset. Cold start + calc ≈7–8 ms (was ~160 ms without a cache, ~14 ms eager).
+- mimalloc is the global allocator.
+- Hot paths use dense tables instead of hash maps: effect metadata (`MetaTable`, a `Vec<u16>` index into
+  `effects::META`), attribute metadata for ids < 8192 (`AttrLite` in `mad.rs`), and static attribute-id arrays for
+  resonances/cycle-time lookups. capSim uses an index-arena binary heap with the same `heapq` ordering, so event
+  order (and therefore every float) is unchanged.
+- Every perf change is checked by byte-comparing batch output for the whole corpus against a saved reference.

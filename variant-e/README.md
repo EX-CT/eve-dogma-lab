@@ -32,9 +32,9 @@ python3 tools/pyfa2rs.py ../../ref/pyfa/eos/effects.py ../../data/dataset-356950
 
 | cases | values | ms/fit (warm) | batch fits/s | cold start + calc | EFT export vs Pyfa |
 |---|---|---|---|---|---|
-| 306/306 | 19,621/19,621 (100 %) | 0.216 | 2993 | 12 ms | 306/306 |
+| 306/306 | 19,621/19,621 (100 %) | 0.135 | 3896 | 8 ms (10.6 ms incl. startup probe) | 306/306 |
 
-Cold start uses a bincode cache of the parsed dataset (`$EVE_DOGMA_E_CACHE`, else `$XDG_CACHE_HOME/eve-dogma-e` or `~/.cache/eve-dogma-e`). The cache is keyed by a hash of the dataset bytes and rebuilt automatically when it is missing.
+Cold start uses a bincode cache of the parsed dataset (`$EVE_DOGMA_E_CACHE`, else `$XDG_CACHE_HOME/eve-dogma-e` or `~/.cache/eve-dogma-e`). The cache is keyed by a hash of the dataset bytes and rebuilt automatically when it is missing. Type records stay serialised in the cache and are decoded lazily on first use, so a one-fit `calc` only decodes the types it touches.
 
 Contract rulings applied: explicit `fleet.buffs` override booster fits and the fit's own bursts per buff id (aggregated min/max by the buff's aggregate mode); projected `amount` = that many copies (also for projected fits); `use_gj_s` per contract 1.4.2 (identical to A on the corpus).
 
