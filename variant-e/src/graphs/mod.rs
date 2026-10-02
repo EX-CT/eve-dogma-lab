@@ -1,6 +1,7 @@
 //! Graphs (EXCT CONTRACT-GRAPHS 0.1): Pyfa's graph subsystem re-implemented on top of the engine.
 //! One GraphRequest in -> one GraphResult out; every sample point is evaluated exactly (Pyfa `getPoint`).
 //! GPL-3.0-or-later.
+pub mod common;
 pub mod simple;
 pub mod ewar;
 pub mod rr;

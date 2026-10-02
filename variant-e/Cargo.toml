@@ -28,3 +28,10 @@ lto = "fat"
 codegen-units = 1
 panic = "unwind"
 debug = false
+
+# quick iteration builds (not used by the bench): cargo build --profile fastdev
+[profile.fastdev]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
