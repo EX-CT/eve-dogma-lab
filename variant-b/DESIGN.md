@@ -76,7 +76,9 @@ booster fits, projected fits, remote reps/neuts) is re-expressed in the compile/
 
 * `cargo test --release`: Pyfa oracle parity (`tests/oracle/pyfa_expected.json`, same corpus as the bench).
 * `tools/diff_vs_a.py A_BIN B_BIN DATASET CASES`: **full-output differential test** against A on every bench case —
-  every field of FitStats, not only the Pyfa-checked metrics. Current: 249/249 byte-identical (except `meta.engine`).
+  every field of FitStats, not only the Pyfa-checked metrics. Current: 326/326 byte-identical vs A@fc66eaf (except `meta.engine`), also on a factor_reload-flipped variant corpus.
+* `tools/ir_corpus.sh`: callgrind instructions for `batch --threads 1` over the whole corpus (`/tmp/corpus.jsonl`) —
+  the number every perf commit quotes (326 cases: 621M at bench 1.7 start of session -> 550M).
 * `tools/ir.sh CASE`: deterministic cost metric (callgrind instructions per calc) for optimisation work, immune to
   the noisy shared box.
 * `eve-dogma-vb bench-phases CASE -n N`: per-phase timing (build, register, compile, staged, stats, capsim) and graph
@@ -97,23 +99,36 @@ booster fits, projected fits, remote reps/neuts) is re-expressed in the compile/
 ## Not done / next
 
 * Multi-lane plan reuse (`sweep`: evaluate K skill/override variants of one fit on one compiled graph).
-* The capacitor simulator dominates some fits (e.g. 1 ms of the Vexor's 1.3 ms); it is Pyfa-exact event simulation
-  shared with A and was not optimised.
+* Capacitor simulation: `capsim::simulate_fast` (packed u128 heap keys, static per-stream data, exact exp memo,
+  in-place top update like A 1db626a) with `simulate_ref` (the plain Pyfa port) as fallback on NaN / overflow /
+  `VB_CAPSIM_REF`. Still ~12% of corpus instructions (long simulations, e.g. 5000-iteration weather fits).
+* JSON output is still built as a `serde_json::Value` tree (~20% of per-fit cost: BTreeMap inserts, drops,
+  serialisation); a direct sorted-key writer is the largest remaining single-fit win.
 * WASM build (no threads) is straightforward: no native deps besides zlib-rs/sha2 (both pure Rust).
 
 ## Cold start: dataset snapshot cache
-`data::load_path` hashes the raw `.json.gz` bytes (SHA-256) and looks for
-`<cache>/ds-v1-<hash>.bin` (bincode). Hit: deserialize (~10 ms) instead of
-gunzip + JSON parse + index build (~65-85 ms). Miss: normal load, then write the
-snapshot atomically (tmp + rename). Cache dir: `$EVE_DOGMA_CACHE`, else
-`$XDG_CACHE_HOME/eve-dogma-vb`, else `~/.cache/eve-dogma-vb`, else tmp.
-`EVE_DOGMA_NO_CACHE=1` disables it. Keyed by content hash, so a changed
-dataset can never serve stale data. `VB_LOAD_TIMING=1` prints load phases.
+`data::load_path` keys a cache file on SHA-256 of (absolute path, size, mtime, inode, device) of the dataset — no
+content read on a hit — and memory-maps `<cache>/<key>-v<crate>-<SNAPSHOT_VERSION>.bin`. Miss: gunzip + JSON parse +
+index build, then the snapshot is written atomically (tmp + rename). Cache dir: `$EVE_DOGMA_CACHE`, else
+`$XDG_CACHE_HOME/eve-dogma-vb`, else `~/.cache/eve-dogma-vb`, else tmp. `EVE_DOGMA_NO_CACHE=1` disables it;
+`VB_LOAD_TIMING=1` prints load phases.
 
-### Snapshot format v7 (in-place tables)
-File = magic `EVEDVB04` + 8-aligned, length-prefixed sections: bincode(eager part: groups, categories, attrs,
-skills, skills_foldable), bincode(names: zh + type_by_name, decoded on first use), then lazily read tables for
-types / effects / dbuffs / mutaplasmids (u32 header arrays used in place from the mmap: sorted ids, aux = group,
-entry offsets, dense id -> pos index; each entry bincode-decoded on first `get`, published with a CAS into a
-zero-initialised slot array) and two name indexes (FNV-style hash, open addressing) for attr/effect name -> id.
-Cache key = SHA-256 of (absolute path, size, mtime, inode, device) of the dataset file — no content read on a hit.
+### Snapshot format v10 (everything lazy or in place)
+File = magic `EVEDVB04` + 13 8-aligned, length-prefixed sections:
+
+| # | content | access |
+|---|---|---|
+| 0 | bincode: build, release date, sha256, categories, skills, skills_foldable | eager (tiny) |
+| 1 | bincode Names (zh names, type_by_name) | borrowed from the mapping, decoded on first use |
+| 2–5 | types / effects / dbuffs / mutaplasmids | `LazyTable` |
+| 6–7 | attr / effect name -> id | `NameIndex` (open addressing, read in place) |
+| 8 | bincode PreparedCore (published skills, T3D modes, validate attr ids) | eager (small) |
+| 9 | skill folds with all 12 (structure, level) probe values precomputed | `LazyTable<Option<SkillFold>>` |
+| 10–11 | groups / attributes | `LazyTable` |
+| 12 | dense `AttrMeta` (`repr(C)`, 24-byte records) | read in place (bool bytes checked at load) |
+
+`LazyTable`: u32 header arrays used in place (sorted ids, aux = group for types, entry offsets, dense id -> pos
+index); each entry is bincode-decoded on first `get` and published with a CAS into a zeroed slot array. No
+start-up walk over entries: lookups re-check ids and entry bytes are cut with bounds-checked slices, so a corrupt
+file can only panic, never read out of bounds. Effect: a cold `calc` of a Rifter is ~3.6M instructions in total
+(was 9.5M with v7, ~90 ms wall before the cache existed); remaining cold time is process start + page faults.
