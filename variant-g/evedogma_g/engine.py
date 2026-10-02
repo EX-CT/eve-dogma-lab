@@ -98,6 +98,25 @@ DAMAGE_EFFECTS = frozenset((
     "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching"))
 
 
+def _sec_set(ds, src):
+    c = ds.__dict__.setdefault("_sec_sets", {})
+    if src not in c:
+        c[src] = frozenset(ds.sec_types[src].tolist())
+    return c[src]
+
+
+def _sec_hits(ds, src, tis):
+    """np.isin(tis, sec_types[src]), memoised on the skill list (identical for most fits)"""
+    c = ds.__dict__.setdefault("_sec_hits", {})
+    k = (src, tis.tobytes())
+    h = c.get(k)
+    if h is None:
+        if len(c) > 64:
+            c.clear()
+        h = c[k] = np.isin(tis, ds.sec_types[src])
+    return h
+
+
 class BaseOverrides(dict):
     """(item, attr) -> base value, with a per-item index"""
 
@@ -144,6 +163,7 @@ class Batch:
         # item columns (Python lists while building, NumPy after finish_items)
         self._cols = {k: [] for k in ("fit", "ti", "kind", "loc", "owned", "state", "parent", "charge")}
         self.meta = []  # per item dict (slot, req_index, quantity, ...) - None for skills
+        self.meta_items = []  # indices of the items with a meta dict (all but skills), ascending
         self.skill_blocks = []  # (fit, first item index, type idx array, level array)
         self.n_items = 0
         self.overrides = BaseOverrides()  # (item, attr) -> base value
@@ -171,6 +191,7 @@ class Batch:
                           "effects": ds.t_effects[ti], "fighter_abilities": None, "side_effects": (),
                           "spool": None, "distance": None, "group": int(ds.t_group[ti]), "category": int(ds.t_cat[ti])})
         fit.items.append(idx)
+        self.meta_items.append(idx)
         return idx
 
     def _set_state(self, i, st):
@@ -233,6 +254,8 @@ class Batch:
             # roll back partial items of this fit
             self.n_items = n_items0
             del self.meta[n_meta0:]
+            while self.meta_items and self.meta_items[-1] >= n_items0:
+                self.meta_items.pop()
             for k, v in self._cols.items():
                 del v[cols_len0[k]:]
             self.overrides.drop_items_from(n_items0)
@@ -421,15 +444,16 @@ class Batch:
         src_id, dst_id = ds.a(src), ds.a("securityModifier")
         sec_types = ds.sec_types.get(src)
         if sec_types is not None and len(sec_types):
+            sec_set = _sec_set(ds, src)
             for i in fit.items:
                 ti = self.meta[i]["ti"]
                 key = (i, src_id)
                 if key in self.overrides:
                     self.overrides[(i, dst_id)] = self.overrides[key]
-                elif np.any(sec_types == ti):
+                elif ti in sec_set:
                     self.overrides[(i, dst_id)] = ds.type_attr(ti, src_id)
             tis = self.skill_blocks[-1][2]
-            hit = np.isin(tis, sec_types)
+            hit = _sec_hits(ds, src, tis)
             for k in np.nonzero(hit)[0].tolist():
                 self.overrides[(fit.skill_first + k, dst_id)] = ds.type_attr(int(tis[k]), src_id)
         for o in req["overrides"]:
@@ -482,10 +506,9 @@ class Batch:
         vals += [items[s], items[c], items[s], items[c]]
         # required skills (skills' own requirements are never used as targets)
         rs_item, rs_skill = [], []
-        for i, m in enumerate(self.meta):
-            if m is None:
-                continue
-            req = self.custom_reqskills.get(i) or self.ds.t_reqskills[m["ti"]]
+        meta = self.meta
+        for i in self.meta_items:
+            req = self.custom_reqskills.get(i) or self.ds.t_reqskills[meta[i]["ti"]]
             for sk in req:
                 rs_item.append(i)
                 rs_skill.append(sk)
@@ -535,7 +558,7 @@ class Batch:
         # booster side effects only when selected; fighter abilities only when enabled
         fuc = tm["fuc"][rows]
         if fuc.any():
-            allowed = {(i, e) for i, m in enumerate(self.meta) if m is not None for e in m["side_effects"]}
+            allowed = {(i, e) for i in self.meta_items for e in self.meta[i]["side_effects"]}
             idx = np.nonzero(fuc)[0]
             ok = np.array([(int(src[j]), int(eff[j])) in allowed for j in idx], bool)
             keep[idx[~ok]] = False
@@ -1087,7 +1110,10 @@ class Values:
         return d
 
     def get(self, item, attr):
-        v = self.item_dict(item).get(attr)
+        d = self._items.get(item)
+        if d is None:
+            d = self.item_dict(item)
+        v = d.get(attr)
         return v if v is not None else self.ds.attr_default(attr)
 
     def has(self, item, attr):

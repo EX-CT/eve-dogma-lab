@@ -45,17 +45,44 @@ def djson(d):
     return {"em": d[0], "thermal": d[1], "kinetic": d[2], "explosive": d[3], "total": d[0] + d[1] + d[2] + d[3]}
 
 
-def tidy(v):
-    if isinstance(v, float):
-        if math.isfinite(v):
-            r = _rnd(v * 1e6) / 1e6
-            return float(r)
+def tidy(v, _floor=math.floor, _isfinite=math.isfinite):
+    """round every float to 6 decimals (half away from zero), recursively"""
+    t = type(v)
+    if t is dict:
+        return {k: tidy(x) for k, x in v.items()}
+    if t is list:
+        return [tidy(x) for x in v]
+    if t is float or isinstance(v, float):
+        if _isfinite(v):
+            x = v * 1e6
+            return float((_floor(x + 0.5) if x >= 0 else -_floor(-x + 0.5)) / 1e6)
         return v
     if isinstance(v, dict):
         return {k: tidy(x) for k, x in v.items()}
     if isinstance(v, list):
         return [tidy(x) for x in v]
     return v
+
+
+def _effect_names(ds, m):
+    """frozenset of the effect names of an item (cached per effects list)"""
+    cache = ds.__dict__.setdefault("_effn_cache", {})
+    effs = m["effects"]
+    k = id(effs)
+    hit = cache.get(k)
+    if hit is None or hit[0] is not effs:
+        en = ds.effect_name
+        hit = cache[k] = (effs, frozenset(en.get(e) for e, _ in effs))
+    return hit[1]
+
+
+def _cycle_attrs(ds):
+    c = ds.__dict__.get("_cycle_attrs")
+    if c is None:
+        c = ds.__dict__["_cycle_attrs"] = [a for a in (ds.a(n) for n in (
+            "durationHighisGood", "durationSensorDampeningBurstProjector", "durationTargetIlluminationBurstProjector",
+            "durationECMJammerBurstProjector", "durationWeaponDisruptionBurstProjector")) if a]
+    return c
 
 
 class FitStats:
@@ -65,19 +92,15 @@ class FitStats:
 
     # helpers
     def g(self, i, name):
-        return self.v.get(i, self.ds.a(name))
+        return self.v.get(i, self.ds.attr_by_name.get(name, 0))
 
     def has_eff(self, i, names):
-        en = self.ds.effect_name
-        return any(en.get(e) in names for e, _ in self.meta[i]["effects"])
+        return not _effect_names(self.ds, self.meta[i]).isdisjoint(names)
 
     def raw_cycle_ms(self, i):
         v = max(self.g(i, "speed"), self.g(i, "duration"))
-        for n in ("durationHighisGood", "durationSensorDampeningBurstProjector", "durationTargetIlluminationBurstProjector",
-                  "durationECMJammerBurstProjector", "durationWeaponDisruptionBurstProjector"):
-            a = self.ds.a(n)
-            if a:
-                v = max(v, self.v.get(i, a))
+        for a in _cycle_attrs(self.ds):
+            v = max(v, self.v.get(i, a))
         return v
 
     def num_charges(self, i):
