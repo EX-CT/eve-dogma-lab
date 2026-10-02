@@ -42,6 +42,22 @@ class Heap {
     }
     a[i] = e;
   }
+  /** replace the minimum by e (= pop + push of e, one sift) */
+  replaceTop(e: Ev): void {
+    const a = this.a;
+    const n = a.length;
+    let i = 0;
+    for (;;) {
+      const l = 2 * i + 1;
+      if (l >= n) break;
+      const r = l + 1;
+      const m = r < n && less(a[r], a[l]) ? r : l;
+      if (!less(a[m], e)) break;
+      a[i] = a[m];
+      i = m;
+    }
+    a[i] = e;
+  }
   pop(): Ev | undefined {
     const a = this.a;
     const n0 = a.length;
@@ -121,11 +137,15 @@ export function simulate(capacity: number, rechargeMs: number, drains: Drain[], 
     inj.seq = seq++;
     heap.push(inj);
   };
+  // The event stays at the heap top while processed (re-armed with one sift, replaceTop) unless it leaves the heap
+  // (break / awaiting) or other events are pushed meanwhile (fire). The order is a strict total order (seq), so the
+  // processing sequence is identical to pop-then-push.
   for (;;) {
-    const ev = heap.pop();
-    if (!ev) break;
+    if (heap.a.length === 0) break;
+    const ev = heap.a[0];
+    let atTop = true;
     const tNow = ev.t;
-    if (tNow >= tMaxMs) { lastEv = ev; break; }
+    if (tNow >= tMaxMs) { heap.pop(); lastEv = ev; break; }
     if (tNow > tLast && capMax > 0 && tau > 0) {
       const x = Math.sqrt(Math.max(cap / capMax, 0));
       const y = 1 + (x - 1) * Math.exp((tLast - tNow) / tau);
@@ -135,7 +155,7 @@ export function simulate(capacity: number, rechargeMs: number, drains: Drain[], 
       if (cap < capLowestPre) capLowestPre = cap;
       if (tNow === tWrap) {
         const k = key(awaiting);
-        if (cap >= capWrap && k === awaitingWrap) { lastEv = ev; break; }
+        if (cap >= capWrap && k === awaitingWrap) { heap.pop(); lastEv = ev; break; }
         capWrap = rnd(cap * 10) / 10;
         awaitingWrap = k;
         tWrap += per;
@@ -143,9 +163,10 @@ export function simulate(capacity: number, rechargeMs: number, drains: Drain[], 
     }
     tLast = tNow;
     iterations++;
-    if (iterations > 5_000_000) { lastEv = ev; break; }
-    if (ev.inj && cap - ev.capNeed > capMax) { awaiting.push(ev); continue; }
+    if (iterations > 5_000_000) { heap.pop(); lastEv = ev; break; }
+    if (ev.inj && cap - ev.capNeed > capMax) { heap.pop(); awaiting.push(ev); continue; }
     if (ev.capNeed > cap && cap < capMax) {
+      if (awaiting.length > 0) { heap.pop(); atTop = false; }
       while (awaiting.length > 0 && ev.capNeed > cap && capMax > cap) {
         const need = Math.min(ev.capNeed - cap, capMax - cap);
         let pick = -1;
@@ -157,9 +178,10 @@ export function simulate(capacity: number, rechargeMs: number, drains: Drain[], 
     }
     cap = Math.min(cap - ev.capNeed, capMax);
     if (cap < capLowest) {
-      if (cap < 0) { ranOut = true; lastEv = ev; break; }
+      if (cap < 0) { if (atTop) heap.pop(); ranOut = true; lastEv = ev; break; }
       capLowest = cap;
     }
+    if (atTop && awaiting.length > 0 && cap < capMax) { heap.pop(); atTop = false; }
     while (awaiting.length > 0 && cap < capMax) {
       const need = capMax - cap;
       let pick = -1;
@@ -171,7 +193,8 @@ export function simulate(capacity: number, rechargeMs: number, drains: Drain[], 
     ev.shot++;
     if (ev.clip > 0 && ev.shot % ev.clip === 0) { ev.shot = 0; ev.t += ev.reload; }
     ev.seq = seq++;
-    heap.push(ev);
+    if (atTop) heap.replaceTop(ev);
+    else heap.push(ev);
   }
   const all = heap.a.slice();
   if (lastEv) all.push(lastEv);
