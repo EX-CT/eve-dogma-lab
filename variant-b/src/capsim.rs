@@ -331,6 +331,7 @@ impl Ord for K {
     }
 }
 
+#[allow(unused_assignments)] // `in_heap = false` in take!() right before a break
 fn simulate_fast(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: f64, reload: bool, stagger: bool, t_max_ms: f64) -> CapResult {
     let tau = recharge_ms / 5.0;
     let mut streams: Vec<Stream> = Vec::new();
@@ -446,9 +447,21 @@ fn simulate_fast(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: 
     // exp() memo on the exact argument (the same few time steps recur)
     let mut exp_memo: [(u64, f64); 64] = [(f64::NAN.to_bits(), 0.0); 64];
     let mut last_ev: Option<K> = None;
-    while let Some(mut ev) = heap.pop() {
+    // As in eve-dogma-rs: the current event stays in the heap and is replaced in place (one sift-down) unless
+    // something else must be pushed first or it leaves the simulation; pops/pushes then match A's heap exactly.
+    while let Some(mut ev) = heap.peek() {
+        let mut in_heap = true;
+        macro_rules! take {
+            () => {
+                if in_heap {
+                    heap.h.pop();
+                    in_heap = false;
+                }
+            };
+        }
         let t_now = ev.t;
         if t_now >= t_max_ms {
+            take!();
             last_ev = Some(ev);
             break;
         }
@@ -473,6 +486,7 @@ fn simulate_fast(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: 
             if t_now == t_wrap {
                 let k = key(&awaiting);
                 if cap >= cap_wrap && k == awaiting_wrap {
+                    take!();
                     last_ev = Some(ev);
                     break;
                 }
@@ -484,11 +498,13 @@ fn simulate_fast(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: 
         t_last = t_now;
         iterations += 1;
         if iterations > 5_000_000 {
+            take!();
             last_ev = Some(ev);
             break;
         }
         let ev_need = need_of(&ev);
         if streams[ev.stream as usize].inj && cap - ev_need > cap_max {
+            take!();
             awaiting.push(ev);
             continue;
         }
@@ -501,6 +517,7 @@ fn simulate_fast(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: 
                 } else {
                     (0..awaiting.len()).max_by(|&a, &b| (-need_of(&awaiting[a])).partial_cmp(&-need_of(&awaiting[b])).unwrap()).unwrap()
                 };
+                take!();
                 let mut inj = awaiting.remove(pick);
                 cap = (cap - need_of(&inj)).min(cap_max);
                 next(&mut inj, t_now, &mut seq);
@@ -510,6 +527,7 @@ fn simulate_fast(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: 
         cap = (cap - ev_need).min(cap_max);
         if cap < cap_lowest {
             if cap < 0.0 {
+                take!();
                 ran_out = true;
                 last_ev = Some(ev);
                 break;
@@ -523,13 +541,18 @@ fn simulate_fast(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: 
                 break;
             }
             let pick = *good.iter().max_by(|&&a, &&b| (-need_of(&awaiting[a])).partial_cmp(&-need_of(&awaiting[b])).unwrap()).unwrap();
+            take!();
             let mut inj = awaiting.remove(pick);
             cap = (cap - need_of(&inj)).min(cap_max);
             next(&mut inj, t_now, &mut seq);
             heap.push(inj);
         }
         next(&mut ev, t_now, &mut seq);
-        heap.push(ev);
+        if in_heap {
+            heap.replace_top(ev);
+        } else {
+            heap.push(ev);
+        }
     }
     if heap.overflow {
         return simulate_ref(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_ms);
@@ -562,20 +585,32 @@ struct PackedHeap {
 }
 impl PackedHeap {
     #[inline]
-    fn push(&mut self, k: K) {
+    fn pack(&mut self, k: K) -> u128 {
         let tb = k.t.to_bits();
         if tb >> 63 != 0 || k.t.is_nan() || k.shot >= 1 << 22 || k.seq >= 1 << 24 || k.r1 >= 64 || k.r2 >= 64 || k.stream >= 64 {
             self.overflow = true;
         }
         let lo = (k.r1 as u64 & 63) << 58 | (k.shot as u64 & ((1 << 22) - 1)) << 36 | (k.r2 as u64 & 63) << 30 | (k.seq & ((1 << 24) - 1)) << 6 | (k.stream as u64 & 63);
-        self.h.push(std::cmp::Reverse((tb as u128) << 64 | lo as u128));
+        (tb as u128) << 64 | lo as u128
     }
     #[inline]
-    fn pop(&mut self) -> Option<K> {
+    fn push(&mut self, k: K) {
+        let p = self.pack(k);
+        self.h.push(std::cmp::Reverse(p));
+    }
+    /// top event without removing it (None after an overflow: the caller falls back to the reference simulation)
+    #[inline]
+    fn peek(&self) -> Option<K> {
         if self.overflow {
-            return None; // caller falls back to the reference simulation
+            return None;
         }
-        self.h.pop().map(|p| unpack(p.0))
+        self.h.peek().map(|p| unpack(p.0))
+    }
+    /// replace the top entry in place (BinaryHeap::peek_mut: one sift-down)
+    #[inline]
+    fn replace_top(&mut self, k: K) {
+        let p = self.pack(k);
+        *self.h.peek_mut().expect("non-empty") = std::cmp::Reverse(p);
     }
 }
 
@@ -602,7 +637,9 @@ mod tests {
             && a.stable_high.to_bits() == b.stable_high.to_bits()
             && a.t_s.to_bits() == b.t_s.to_bits()
             && a.depletes_in_s.map(f64::to_bits) == b.depletes_in_s.map(f64::to_bits)
-            && a.eve_stable.to_bits() == b.eve_stable.to_bits()
+            // the fast path updates the top event in place like eve-dogma-rs (one sift-down), the reference pops and
+            // pushes: same pop order, different final heap layout, so EVE's sum over the heap may differ in the last bit
+            && ((a.eve_stable - b.eve_stable).abs() <= 1e-12 * a.eve_stable.abs().max(1.0))
             && a.iterations == b.iterations
     }
 

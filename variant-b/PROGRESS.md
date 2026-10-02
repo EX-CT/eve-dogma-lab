@@ -69,3 +69,8 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   (lookups re-check ids; entry bytes are cut with bounds-checked slices). Single cold calc (callgrind, rifter):
   9.5M -> 3.6M instructions this session; cold median ~6.4 -> ~4.6 ms at load ~7. Identical output (diff vs A with
   and without the cache, cargo test).
+- 07:10 capsim fast path updates the current event in place (BinaryHeap::peek_mut, one sift-down) exactly like
+  eve-dogma-rs 1db626a, so the heap layout (and EVE's stability sum order) now follows A rather than the old
+  pop/push port: corpus 592.8M -> 567.1M instr (326 cases, batch --threads 1). 326/326 byte-identical vs A on the
+  corpus and on a factor_reload-flipped variant corpus; the randomized fast-vs-reference test now allows 1e-12
+  relative on eve_stable only (layout-dependent sum), all other fields bit-exact.
