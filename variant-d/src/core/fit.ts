@@ -3,8 +3,8 @@ import { Dataset, Domain, Func } from './dataset.js';
 import { TargetIndex, resolveTargets } from './domains.js';
 import { AttrGraph, Item, Kind, Loc, Mod, SrcK } from './graph.js';
 import { EXEMPT_CATEGORIES, roundHalfAway } from './operators.js';
-import { ModuleReq, Mutation, NormRequest, SlotName, State, STATE_NAMES } from './request.js';
-import { localSpecial, projectedSpecial } from './specials.js';
+import { FitRequest, ModuleReq, Mutation, normalize, NormRequest, SlotName, State, STATE_NAMES } from './request.js';
+import { localSpecial, projectedSpecial, ProjSpecial, projectedFeed, PROJECTED_DAMAGE_EFFECTS } from './specials.js';
 import { rangeFactor } from '../stats/util.js';
 
 export const ATTR_SKILL_LEVEL = 280;
@@ -64,6 +64,8 @@ export class Fit extends AttrGraph {
   warnings: string[] = [];
   isStructure = false;
   index!: TargetIndex;
+  /** incoming remote reps / cap transfers / neuts from projected items (evaluated in stats) */
+  projSpecial: ProjSpecial[] = [];
 
   constructor(ds: Dataset) { super(ds); }
 
@@ -219,7 +221,15 @@ export class Fit extends AttrGraph {
           it.state = stateOf(p.module.state) ?? State.Active;
           it.distance = p.distance_m ?? null;
           it.reqIndex = i;
+          if (p.module.charge_type_id != null) {
+            const c = fit.newItem(p.module.charge_type_id, Kind.Charge, Loc.Nowhere, `/projected/${i}/module/charge_type_id`);
+            fit.items[c].parent = idx;
+            fit.items[c].owned = false;
+            fit.items[idx].charge = c;
+          }
         }
+      } else if (p.kind === 'fit') {
+        if (p.fit) fit.addProjectedFit(i, p.fit, amount, p.distance_m ?? null);
       } else if (p.kind === 'drone') {
         if (!p.drone) return;
         for (let k = 0; k < amount * Math.max(p.drone.quantity ?? 1, 1); k++) {
@@ -252,6 +262,48 @@ export class Fit extends AttrGraph {
     fit.registerAll(req);
     applyRah(fit, req);
     return fit;
+  }
+
+  /**
+   * Whole projected fit: compute the source fit on its own (skills, implants, fleet), then project each active
+   * module / active drone as a frozen item carrying the source-modified attribute values.
+   */
+  private addProjectedFit(i: number, srcReq: FitRequest, amount: number, distance: number | null): void {
+    let src: Fit;
+    try {
+      src = Fit.build(this.ds, normalize({ ...srcReq, projected: [] }));
+    } catch (e) {
+      this.warnings.push(`projected[${i}] fit: ${(e as Error).message}`);
+      return;
+    }
+    const frozen: [number, number, Map<number, number>][] = [];
+    for (const it of src.items) {
+      const copies = it.kind === Kind.Module && it.state >= State.Active ? 1 : it.kind === Kind.Drone ? it.activeCount : 0;
+      if (copies === 0) continue;
+      const vals = new Map<number, number>();
+      for (const a of src.attrKeys(it.idx)) vals.set(a, src.get(it.idx, a));
+      frozen.push([it.typeId, copies, vals]);
+    }
+    for (const [typeId, copies, vals] of frozen) {
+      for (let k = 0; k < copies * amount; k++) {
+        const idx = this.newItem(typeId, Kind.Projected, Loc.Nowhere, `/projected/${i}`);
+        const it = this.items[idx];
+        it.owned = false;
+        it.state = State.Active;
+        it.distance = distance;
+        it.reqIndex = i;
+        it.base = new Map(vals);
+      }
+    }
+  }
+
+  /** every attribute id present on an item (type, base overrides, modified cells) */
+  attrKeys(i: number): number[] {
+    const it = this.items[i];
+    const keys = new Set<number>(it.tattrs.keys());
+    if (it.base) for (const k of it.base.keys()) keys.add(k);
+    if (it.cells) for (const k of it.cells.keys()) keys.add(k);
+    return [...keys].sort((a, b) => a - b);
   }
 
   // ---------------------------------------------------------------- registration
@@ -350,8 +402,13 @@ export class Fit extends AttrGraph {
         continue;
       }
       const pm = projectedSpecial(e.name);
-      if (pm) for (const [t, s, op] of pm) push(ds.attrId(t), ds.attrId(s), op);
-      else this.warnings.push(`projected effect '${e.name}' not modelled yet`);
+      if (pm) {
+        for (const [t, s, op] of pm) push(ds.attrId(t), ds.attrId(s), op);
+        continue;
+      }
+      const feed = projectedFeed(this, i, e.name, resist);
+      if (feed !== null) this.projSpecial.push(...feed);
+      else if (!PROJECTED_DAMAGE_EFFECTS.has(e.name)) this.warnings.push(`projected effect '${e.name}' not modelled yet`);
     }
   }
 
@@ -367,18 +424,39 @@ export class Fit extends AttrGraph {
       const cur = agg.get(b.buff_id);
       agg.set(b.buff_id, cur === undefined ? b.value : info.aggregate === 'Minimum' ? Math.min(cur, b.value) : Math.max(cur, b.value));
     }
-    for (const id of [...agg.keys()].sort((a, b) => a - b)) this.applyBuff(id, { k: SrcK.Const, v: agg.get(id)! }, this.ship);
+    // Pyfa keeps, per buff id, the single strongest (by |value|) source among the fit's own bursts and the
+    // fleet booster fits; explicit fleet.buffs override both.
     const pairs: [number, number][] = [1, 2, 3, 4].map((k) => [ds.attrId(`warfareBuff${k}ID`), ds.attrId(`warfareBuff${k}Value`)]);
-    const explicit = new Set(req.fleet.buffs.map((b) => b.buff_id));
-    const n = this.items.length;
-    for (let i = 0; i < n; i++) {
-      if (this.items[i].kind !== Kind.Module || this.items[i].state < State.Active) continue;
-      for (const [ida, vala] of pairs) {
-        const id = this.has(i, ida) ? Math.trunc(this.get(i, ida)) : 0;
-        if (id === 0 || explicit.has(id)) continue;
-        this.applyBuff(id, { k: SrcK.Attr, item: i, attr: vala }, i);
+    const best = new Map<number, { v: number; s: SrcSpec; target: number }>();
+    const offer = (id: number, v: number, s: SrcSpec, target: number) => {
+      const old = best.get(id);
+      if (old === undefined || Math.abs(old.v) < Math.abs(v)) best.set(id, { v, s, target });
+    };
+    const scan = (f: Fit, local: boolean) => {
+      for (const it of f.items) {
+        if (it.kind !== Kind.Module || it.state < State.Active) continue;
+        for (const [ida, vala] of pairs) {
+          const id = f.has(it.idx, ida) ? Math.trunc(f.get(it.idx, ida)) : 0;
+          if (id === 0 || agg.has(id)) continue;
+          const v = f.get(it.idx, vala);
+          offer(id, v, local ? { k: SrcK.Attr, item: it.idx, attr: vala } : { k: SrcK.Const, v }, local ? it.idx : this.ship);
+        }
       }
+    };
+    scan(this, true);
+    req.fleet.booster_fits.forEach((bf, k) => {
+      try {
+        scan(Fit.build(ds, normalize({ ...bf, fleet: { ...(bf.fleet ?? {}), booster_fits: [] } })), false);
+      } catch (e) {
+        this.warnings.push(`fleet.booster_fits[${k}]: ${(e as Error).message}`);
+      }
+    });
+    for (const [id, v] of agg) best.set(id, { v, s: { k: SrcK.Const, v }, target: this.ship });
+    for (const id of [...best.keys()].sort((a, b) => a - b)) {
+      const b = best.get(id)!;
+      this.applyBuff(id, b.s, b.target);
     }
+    this.invalidate();
   }
 
   applyBuff(id: number, s: SrcSpec, sourceItem: number): void {

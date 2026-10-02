@@ -40,6 +40,17 @@ export function capacitor(c: StatsCtx): { json: Record<string, unknown>; modules
     }
     rows.push(row);
   }
+  // incoming neuts / nos / cap transfers (Pyfa fit.addDrain): no stagger, after the fit's own modules
+  const sigNow = c.g(ship, 'signatureRadius');
+  for (const ps of fit.projSpecial) {
+    if (ps.kind !== 'drain') continue;
+    let need = fit.get(ps.item, ps.amount) * ps.factor * ps.sign;
+    if (ps.resist !== 0) need *= fit.get(ship, ps.resist);
+    const sres = c.g(ps.item, 'energyNeutralizerSignatureResolution');
+    if (sres !== 0) need *= Math.min(sigNow / sres, 1);
+    const dur = fit.get(ps.item, ps.duration);
+    if (need !== 0 && dur > 0) drains.push({ duration: Math.trunc(dur), capNeed: need, clipSize: 0, reloadMs: 0, isInjector: false, disableStagger: false });
+  }
   const j: Record<string, unknown> = {
     capacity: cap, recharge_time_s: rr / 1000, peak_recharge_gj_s: peak, use_gj_s: used, injected_gj_s: added, delta_gj_s: peak + added - used,
   };

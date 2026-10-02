@@ -1,6 +1,6 @@
 import { Resists, Spool } from '../core/request.js';
 import { StatsCtx } from './ctx.js';
-import { Dmg, spoolup } from './util.js';
+import { Dmg, floatUnerr, spoolup } from './util.js';
 
 function weaponKind(c: StatsCtx, i: number): string {
   if (c.hasEffect(i, ['turretFitted'])) return 'turret';
@@ -54,7 +54,8 @@ export function offense(c: StatsCtx): object {
     } else if (kind === 'missile') {
       if (it.charge >= 0) {
         const ch = it.charge;
-        w.range_m = c.g(ch, 'maxVelocity') * (c.g(ch, 'explosionDelay') / 1000);
+        const r = missileRange(c, ch);
+        if (r !== null) w.range_m = r;
         w.explosion_radius = c.g(ch, 'aoeCloudSize');
         w.explosion_velocity = c.g(ch, 'aoeVelocity');
       }
@@ -115,4 +116,27 @@ export function offense(c: StatsCtx): object {
     },
     vs_target_profile: { dps: tDps.vs(tpRes), volley: tVol.vs(tpRes) },
   };
+}
+
+/**
+ * Pyfa missileMaxRangeData: flight time + ship radius bonus, acceleration phase, floor/ceil blend, FoF limit,
+ * centre-to-surface (eos/saveddata/module.py, LGPL).
+ */
+function missileRange(c: StatsCtx, ch: number): number | null {
+  const vel = c.g(ch, 'maxVelocity');
+  if (!(vel > 0)) return null;
+  const radius = c.g(c.fit.ship, 'radius');
+  const ft = floatUnerr(c.g(ch, 'explosionDelay') / 1000 + radius / vel);
+  const accelCap = (c.g(ch, 'mass') * c.g(ch, 'agility')) / 1e6;
+  const rangeAt = (t: number) => { const acc = Math.min(t, accelCap); return (vel / 2) * acc + vel * (t - acc); };
+  const lt = Math.floor(ft), ht = Math.ceil(ft);
+  let lr = rangeAt(lt), hr = rangeAt(ht);
+  if (c.hasEffect(ch, ['fofMissileLaunching'])) {
+    const lim = c.g(ch, 'maxFOFTargetRange');
+    if (lim > 0) { lr = Math.min(lr, lim); hr = Math.min(hr, lim); }
+  }
+  lr = Math.max(lr - radius, 0);
+  hr = Math.max(hr - radius, 0);
+  const hc = ft - lt;
+  return lr * (1 - hc) + hr * hc;
 }

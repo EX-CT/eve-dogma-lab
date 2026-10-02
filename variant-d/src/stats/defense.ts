@@ -30,6 +30,24 @@ export function defense(c: StatsCtx): object {
     }
     if (c.hasEffect(i, ['structureRepair'])) hullRep += c.g(i, 'structureDamageAmount') / dur;
   }
+  // incoming remote repairs (Pyfa __getAppliedRr diminishing-returns formula)
+  const lists: [number, number][][] = [[], [], []];
+  for (const ps of fit.projSpecial) {
+    if (ps.kind !== 'rep') continue;
+    const dur = fit.get(ps.item, c.A.duration) / 1000;
+    if (dur > 0) lists[ps.layer].push([fit.get(ps.item, ps.amount) * ps.mult * ps.factor, dur]);
+  }
+  const applied = (l: [number, number][]) => {
+    const total = l.reduce((s, [a, cy]) => s + a / Math.trunc(cy), 0);
+    return l.reduce((s, [a, cy]) => {
+      const rrps = a / Math.trunc(cy);
+      const m = 7000 + rrps * 20;
+      return s + ((1 - Math.pow((rrps + m) / (total + m) - 1, 2)) * a) / cy;
+    }, 0);
+  };
+  shieldRep += applied(lists[0]);
+  armorRep += applied(lists[1]);
+  hullRep += applied(lists[2]);
   const rrS = c.g(ship, 'shieldRechargeRate') / 1000;
   const passive = rrS > 0 ? (10 / rrS) * 0.5 * 0.5 * hpS : 0;
   return {
