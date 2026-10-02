@@ -19,6 +19,7 @@ that appends rows to the same tables.
 import math
 
 import numpy as np
+from array import array
 
 from .dataset import (ATTR_BITS, SPECIAL_AB, SPECIAL_F_AB, SPECIAL_F_EVASIVE, SPECIAL_F_MWD, SPECIAL_HARDPOINT,
                       SPECIAL_MJD, SPECIAL_MWD, SPECIAL_SLOT)
@@ -192,7 +193,9 @@ class Batch:
         self.ds = ds
         self.fits = []
         # item columns (Python lists while building, NumPy after finish_items)
-        self._cols = {k: [] for k in ("fit", "ti", "kind", "loc", "owned", "state", "parent", "charge")}
+        # (array.array: appends like a list, converts to NumPy through the buffer protocol without a per-element loop)
+        self._cols = {k: array(t) for k, t in (("fit", "q"), ("ti", "q"), ("kind", "b"), ("loc", "b"), ("owned", "b"),
+                                                ("state", "b"), ("parent", "q"), ("charge", "q"))}
         self.meta = []  # per item dict (slot, req_index, quantity, ...) - None for skills
         self.meta_items = []  # indices of the items with a meta dict (all but skills), ascending
         self.skill_blocks = []  # (fit, first item index, type idx array, level array)
@@ -335,9 +338,10 @@ class Batch:
         n = len(all_ids)
         self.skill_blocks.append((fit.index, first, tis, all_lv))
         c = self._cols
-        c["fit"].extend([fit.index] * n); c["ti"].extend(tis.tolist()); c["kind"].extend([SKILL] * n)
-        c["loc"].extend([L_CHAR] * n); c["owned"].extend([False] * n); c["state"].extend([ONLINE] * n)
-        c["parent"].extend([-1] * n); c["charge"].extend([-1] * n)
+        c["fit"].extend(array("q", (fit.index,)) * n); c["ti"].frombytes(tis.astype(np.int64).tobytes())
+        c["kind"].extend(array("b", (SKILL,)) * n); c["loc"].extend(array("b", (L_CHAR,)) * n)
+        c["owned"].extend(array("b", (0,)) * n); c["state"].extend(array("b", (ONLINE,)) * n)
+        c["parent"].extend(array("q", (-1,)) * n); c["charge"].extend(array("q", (-1,)) * n)
         self.meta.extend([None] * n)
         self.n_items += n
         fit.skill_levels = dict(zip(all_ids.tolist(), all_lv.tolist()))
@@ -508,14 +512,16 @@ class Batch:
     # ------------------------------------------------------------------ registration
     def finish_items(self):
         c = self._cols
-        self.it_fit = np.array(c["fit"], np.int64)
-        self.it_ti = np.array(c["ti"], np.int64)
-        self.it_kind = np.array(c["kind"], np.int8)
-        self.it_loc = np.array(c["loc"], np.int8)
-        self.it_owned = np.array(c["owned"], bool)
-        self.it_state = np.array(c["state"], np.int8)
-        self.it_parent = np.array(c["parent"], np.int64)
-        self.it_charge = np.array(c["charge"], np.int64)
+        def col(k, dt):
+            return np.frombuffer(c[k], dt).copy() if len(c[k]) else np.zeros(0, dt)
+        self.it_fit = col("fit", np.int64)
+        self.it_ti = col("ti", np.int64)
+        self.it_kind = col("kind", np.int8)
+        self.it_loc = col("loc", np.int8)
+        self.it_owned = col("owned", np.int8).astype(bool)
+        self.it_state = col("state", np.int8)
+        self.it_parent = col("parent", np.int64)
+        self.it_charge = col("charge", np.int64)
         ds = self.ds
         self.it_group = ds.t_group[self.it_ti].astype(np.int64)
         self.it_cat = ds.t_cat[self.it_ti].astype(np.int64)
@@ -927,15 +933,35 @@ class Evaluated:
         return pos, found
 
 
+def _small_table(rows):
+    cols = list(zip(*rows))
+    return {k: np.array(v, dtype=(bool if k in ("pen", "mul") else (np.float64 if k in ("const", "factor") else np.int64)))
+            for k, v in zip(MOD_COLS, cols)}
+
+
 def _mods_table(batch):
-    parts = list(batch.mods)
-    if batch.small:
-        cols = list(zip(*batch.small))
-        parts.append({k: np.array(v, dtype=(bool if k in ("pen", "mul") else (np.float64 if k in ("const", "factor") else np.int64)))
-                      for k, v in zip(MOD_COLS, cols)})
-    if not parts:
-        return {k: np.zeros(0, np.int64) for k in MOD_COLS}
-    return {k: np.concatenate([p[k] for p in parts]) for k in MOD_COLS}
+    """all modifier rows as one column table. batch.mods / batch.small only ever grow between evaluation
+    passes, so the table of the previous pass is extended instead of rebuilt (row order is unchanged:
+    all array parts, then all small rows)."""
+    nm, ns = len(batch.mods), len(batch.small)
+    hit = batch.__dict__.get("_mtab")
+    if hit is not None and hit[0] == nm and hit[1] == ns:
+        return hit[2]
+    if hit is not None and hit[0] == nm and 0 < hit[1] + nm and hit[1] <= ns:
+        # only small rows were added: append them
+        M = hit[2]
+        add = _small_table(batch.small[hit[1]:])
+        M = {k: np.concatenate([M[k], add[k]]) for k in MOD_COLS}
+    else:
+        parts = list(batch.mods)
+        if batch.small:
+            parts.append(_small_table(batch.small))
+        if not parts:
+            M = {k: np.zeros(0, np.int64) for k in MOD_COLS}
+        else:
+            M = {k: np.concatenate([p[k] for p in parts]) for k in MOD_COLS}
+    batch._mtab = (nm, ns, M)
+    return M
 
 
 def evaluate(batch, fit_mask=None):
@@ -1161,13 +1187,19 @@ def _resolve_base(batch, keys, node_item, node_attr, ov_keys, ov_vals, sk_keys, 
     p = np.minimum(np.searchsorted(ds.ta_key, tk), len(ds.ta_key) - 1)
     ok = ds.ta_key[p] == tk
     base[ok] = ds.t_attr_vals[p[ok]]
+    n = len(keys)
     for kk, vv in ((sk_keys, sk_vals), (ov_keys, ov_vals)):
-        if len(kk):
+        if len(kk) and n:
+            # look the (fewer) override keys up in the sorted node keys; the first of equal keys wins
             o = np.argsort(kk, kind="stable")
             ks, vs = kk[o], vv[o]
-            p = np.minimum(np.searchsorted(ks, keys), len(ks) - 1)
-            ok = ks[p] == keys
-            base[ok] = vs[p[ok]]
+            if len(ks) > 1:
+                first = np.ones(len(ks), bool)
+                first[1:] = ks[1:] != ks[:-1]
+                ks, vs = ks[first], vs[first]
+            p = np.minimum(np.searchsorted(keys, ks), n - 1)
+            ok = keys[p] == ks
+            base[p[ok]] = vs[ok]
     return base
 
 
