@@ -31,6 +31,39 @@ pub struct Mad<'a> {
     pub entries: FxHashMap<u32, Entry>,
 }
 
+/// dense per-attribute info for ids < DENSE (default, minAttributeID, maxAttributeID); larger ids use the map
+const DENSE: usize = 8192;
+#[derive(Clone, Copy)]
+struct AttrLite {
+    known: bool,
+    default: f64,
+    min_attr: Option<u32>,
+    max_attr: Option<u32>,
+}
+
+fn dense(ds: &Dataset) -> &'static [AttrLite] {
+    static T: std::sync::OnceLock<Vec<AttrLite>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut v = vec![AttrLite { known: false, default: 0.0, min_attr: None, max_attr: None }; DENSE];
+        for (&a, i) in &ds.attrs {
+            if (a as usize) < DENSE {
+                v[a as usize] = AttrLite { known: true, default: i.default, min_attr: i.min_attr, max_attr: i.max_attr };
+            }
+        }
+        v
+    })
+}
+
+#[inline]
+fn attr_lite(a: u32, ds: &Dataset) -> Option<AttrLite> {
+    if (a as usize) < DENSE {
+        let l = dense(ds)[a as usize];
+        if l.known { Some(l) } else { None }
+    } else {
+        ds.attrs.get(&a).map(|i| AttrLite { known: true, default: i.default, min_attr: i.min_attr, max_attr: i.max_attr })
+    }
+}
+
 const ROUND2: [u32; 4] = [50, 30, 48, 11]; // cpu, power, cpuOutput, powerOutput
 
 pub fn py_round2(v: f64) -> f64 {
@@ -61,7 +94,7 @@ impl<'a> Mad<'a> {
         if let Ok(i) = self.base.binary_search_by_key(&a, |x| x.0) {
             return Some(self.base[i].1);
         }
-        ds.attrs.get(&a).map(|x| x.default)
+        attr_lite(a, ds).map(|x| x.default)
     }
 
     pub fn in_original(&self, a: u32) -> bool {
@@ -95,7 +128,7 @@ impl<'a> Mad<'a> {
     }
 
     fn calculate(&self, a: u32, e: &Entry, ds: &Dataset) -> f64 {
-        let info = ds.attrs.get(&a);
+        let info = attr_lite(a, ds);
         let min_v = info.and_then(|i| i.min_attr).and_then(|m| self.get(m, ds));
         let max_v = info.and_then(|i| i.max_attr).and_then(|m| self.get(m, ds));
         let round = ROUND2.contains(&a);

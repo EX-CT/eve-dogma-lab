@@ -359,15 +359,9 @@ impl<'a> Fit<'a> {
             return;
         }
         let mut v = v;
+        // scale first (reads other state), then a single entry lookup for the write
         match op {
-            Op::PreAssign => {
-                let e = self.items[t].mad.entry(a);
-                e.pre_assign = Some(v);
-            }
-            Op::Force => {
-                let e = self.items[t].mad.entry(a);
-                e.forced = Some(v);
-            }
+            Op::PreAssign | Op::Force => {}
             Op::Increase => {
                 if o.skill != 0 {
                     v *= self.skill_level(o.skill);
@@ -375,12 +369,6 @@ impl<'a> Fit<'a> {
                 if o.kw {
                     let r = self.resistance();
                     v *= if r == 0.0 { 1.0 } else { r };
-                }
-                let e = self.items[t].mad.entry(a);
-                if o.post {
-                    e.post_inc += v;
-                } else {
-                    e.pre_inc += v;
                 }
             }
             Op::Multiply | Op::Boost => {
@@ -396,7 +384,20 @@ impl<'a> Fit<'a> {
                         v = (v - 1.0) * r + 1.0;
                     }
                 }
-                let e = self.items[t].mad.entry(a);
+            }
+        }
+        let e = self.items[t].mad.entry(a);
+        match op {
+            Op::PreAssign => e.pre_assign = Some(v),
+            Op::Force => e.forced = Some(v),
+            Op::Increase => {
+                if o.post {
+                    e.post_inc += v;
+                } else {
+                    e.pre_inc += v;
+                }
+            }
+            Op::Multiply | Op::Boost => {
                 if o.stack {
                     match e.pen.iter_mut().find(|x| x.0 == o.group) {
                         Some(g) => g.1.push(v),
@@ -407,7 +408,6 @@ impl<'a> Fit<'a> {
                 }
             }
         }
-        let e = self.items[t].mad.entry(a);
         e.placeholder = true;
         e.cache.set(None);
     }
