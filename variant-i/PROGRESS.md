@@ -34,3 +34,10 @@
   - one merged query for all skills' modifiers: +8% Ir, because per-skill memos verify cheaper than they recompute;
   - `--pool N`, an open-fit workspace with one session per hull: slower on the corpus, because per-session cold
     caches cost more than the diff against the previous same-hull fit saves. It is kept as an option with default 1.
+
+## 2026-10-03 ~06:10 CST — bench 1.7.0 (306 cases)
+- Ported from A aa46025: local special module handlers (superweapon/lance speed + warp status, EHE, entosis, MJFG,
+  local WDFG), doomsday sub-cycle DPS, Python round(v,2) for cpu/pg, TD drones. Result: 306/306, 19,621/19,621.
+- Perf: modifiers that target sets (location/group/skill) are now stored as deferred set references in `outgoing`, so
+  an item's outgoing modifiers depend only on the item. `incoming` expands them through the index. That gives -11% Ir
+  on the corpus (1.73G -> 1.54G for 295 fits) with byte-identical output.

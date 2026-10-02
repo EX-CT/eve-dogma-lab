@@ -327,42 +327,61 @@ fn penalized(ds: &Dataset, attr: u32, source_cat: u32) -> bool {
     !stackable && !EXEMPT_CATEGORIES.contains(&source_cat)
 }
 
-fn targets(db: &dyn Db, fit: FitIn, core: Core, src: u32, links: (Option<u32>, Option<u32>), func: Func, domain: Domain, extra: u32, out: &mut Vec<u32>) {
-    let set = |k: u8, e: u32, out: &mut Vec<u32>| out.extend_from_slice(target_set(db, fit, TKey::new(db, k, e)));
+/// A modifier's target: nothing, one slot, or an indexed target set (kind, filter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sel {
+    None,
+    One(u32),
+    Set(u8, u32),
+}
+
+fn selector(core: Core, src: u32, links: (Option<u32>, Option<u32>), func: Func, domain: Domain, extra: u32) -> Sel {
     match domain {
         Domain::Item => {
             if func == Func::Item {
-                out.push(src)
+                Sel::One(src)
+            } else {
+                Sel::None
             }
         }
-        Domain::Other => {
-            if let Some(c) = links.0 {
-                out.push(c)
-            } else if let Some(p) = links.1 {
-                out.push(p)
-            }
-        }
+        Domain::Other => match (links.0, links.1) {
+            (Some(c), _) => Sel::One(c),
+            (None, Some(p)) => Sel::One(p),
+            _ => Sel::None,
+        },
         Domain::Ship | Domain::Structure => {
             if domain == Domain::Structure && !core.is_structure {
-                return;
+                return Sel::None;
             }
             match func {
-                Func::Item => out.push(core.ship),
-                Func::Location => set(S_SHIP_ALL, 0, out),
-                Func::LocationGroup => set(S_SHIP_GROUP, extra, out),
-                Func::LocationRequiredSkill => set(S_SHIP_SKILL, extra, out),
-                Func::OwnerRequiredSkill => set(S_OWNED_SKILL, extra, out),
-                Func::EffectStopper => {}
+                Func::Item => Sel::One(core.ship),
+                Func::Location => Sel::Set(S_SHIP_ALL, 0),
+                Func::LocationGroup => Sel::Set(S_SHIP_GROUP, extra),
+                Func::LocationRequiredSkill => Sel::Set(S_SHIP_SKILL, extra),
+                Func::OwnerRequiredSkill => Sel::Set(S_OWNED_SKILL, extra),
+                Func::EffectStopper => Sel::None,
             }
         }
         Domain::Char => match func {
-            Func::Item => out.push(core.char),
-            Func::Location => set(S_CHAR_ALL, 0, out),
-            Func::LocationGroup => set(S_CHAR_GROUP, extra, out),
-            Func::LocationRequiredSkill | Func::OwnerRequiredSkill => set(S_CHAR_SKILL, extra, out),
-            Func::EffectStopper => {}
+            Func::Item => Sel::One(core.char),
+            Func::Location => Sel::Set(S_CHAR_ALL, 0),
+            Func::LocationGroup => Sel::Set(S_CHAR_GROUP, extra),
+            Func::LocationRequiredSkill | Func::OwnerRequiredSkill => Sel::Set(S_CHAR_SKILL, extra),
+            Func::EffectStopper => Sel::None,
         },
-        _ => {}
+        _ => Sel::None,
+    }
+}
+
+/// `Out.target` with this bit set is a deferred target set: bits 24..31 = set kind, 0..24 = filter.
+/// `outgoing` then depends only on the item (not on what else is fitted); `incoming` expands it.
+pub const SET_BIT: u32 = 0x8000_0000;
+
+fn targets(db: &dyn Db, fit: FitIn, core: Core, src: u32, links: (Option<u32>, Option<u32>), func: Func, domain: Domain, extra: u32, out: &mut Vec<u32>) {
+    match selector(core, src, links, func, domain, extra) {
+        Sel::None => {}
+        Sel::One(t) => out.push(t),
+        Sel::Set(k, e) => out.extend_from_slice(target_set(db, fit, TKey::new(db, k, e))),
     }
 }
 
@@ -430,6 +449,10 @@ fn outgoing_impl(db: &dyn Db, fit: FitIn, item: ItemIn) -> Vec<Out> {
                 continue;
             }
         }
+        // Pyfa 'active' handlers for SDE effects without modifiers (some are target-category in the SDE)
+        if e.mods.is_empty() && kind == Kind::Module && state >= State::Active && local_special(ds, &sp, i, ship, e.name.as_str(), src_cat, &mut out) {
+            continue;
+        }
         if !state_ok(e.category, state) {
             continue;
         }
@@ -488,15 +511,71 @@ fn outgoing_impl(db: &dyn Db, fit: FitIn, item: ItemIn) -> Vec<Out> {
                 continue;
             }
             let extra = if m.extra == 0 && matches!(m.func, Func::LocationRequiredSkill | Func::OwnerRequiredSkill) { sp.type_id } else { m.extra };
-            tg.clear();
-            targets(db, fit, ctx, i, lk, m.func, m.domain, extra, &mut tg);
             let cat = if eid == c.e_bastion && HULL_RESONANCES.contains(&m.modified) { 6 } else { src_cat };
-            for &t in &tg {
-                push(&mut out, t, m.modified, m.op, Src::Attr { item: i, attr: m.modifying }, cat);
+            let src = Src::Attr { item: i, attr: m.modifying };
+            match selector(ctx, i, lk, m.func, m.domain, extra) {
+                Sel::None => {}
+                Sel::One(t) => push(&mut out, t, m.modified, m.op, src, cat),
+                Sel::Set(k, e) if e < (1 << 24) => push(&mut out, SET_BIT | (k as u32) << 24 | e, m.modified, m.op, src, cat),
+                Sel::Set(k, e) => {
+                    tg.clear();
+                    tg.extend_from_slice(target_set(db, fit, TKey::new(db, k, e)));
+                    for &t in &tg {
+                        push(&mut out, t, m.modified, m.op, src, cat);
+                    }
+                }
             }
         }
     }
     out
+}
+
+/// Local module effects that have no modifierInfo in the SDE but a hand-written Pyfa handler (eos/effects.py,
+/// LGPL; re-expressed as in eve-dogma-rs). Returns true when handled. Source category 6 = no stacking penalty.
+fn local_special(ds: &Dataset, sp: &ItemSpec, i: u32, ship: u32, name: &str, src_cat: u32, out: &mut Vec<Out>) -> bool {
+    let a = |n: &str| ds.attr_id(n);
+    let mut push = |target: u32, attr: u32, op: i32, src: Src, cat: u32| {
+        out.push(Out { target, attr, m: AMod { op: op as i8, penalized: penalized(ds, attr, cat), src } });
+    };
+    let at = |n: &str| Src::Attr { item: i, attr: ds.attr_id(n) };
+    match name {
+        "superWeaponAmarr" | "superWeaponCaldari" | "superWeaponGallente" | "superWeaponMinmatar" | "doomsdaySlash" | "doomsdayBeamDOT"
+        | "doomsdayConeDOT" | "doomsdayHOG" | "debuffLance" => {
+            push(ship, a("maxVelocity"), 6, at("speedFactor"), src_cat);
+            push(ship, a("warpScrambleStatus"), 2, at("siegeModeWarpStatus"), src_cat);
+        }
+        "emergencyHullEnergizer" => {
+            for t in ["Em", "Thermal", "Kinetic", "Explosive"] {
+                push(ship, a(&format!("{}DamageResonance", t.to_lowercase())), 4, at(&format!("hull{t}DamageResonance")), src_cat);
+            }
+        }
+        "entosisLink" => {
+            push(ship, a("disallowAssistance"), 7, at("disallowAssistance"), 6);
+            for t in ["Gravimetric", "Magnetometric", "Radar", "Ladar"] {
+                push(ship, a(&format!("scan{t}Strength")), 6, at(&format!("scan{t}StrengthPercent")), src_cat);
+            }
+        }
+        "microJumpPortalDrive" | "microJumpPortalDriveCapital" => {
+            push(ship, a("signatureRadius"), 6, at("signatureRadiusBonusPercent"), src_cat);
+        }
+        "warpDisruptSphere" => {
+            push(ship, a("disallowAssistance"), 7, Src::Const(F(1.0)), 6);
+            if sp.charge.is_none() {
+                push(ship, 4, 6, at("massBonusPercentage"), 6);
+                push(ship, a("signatureRadius"), 6, at("signatureRadiusBonus"), 6);
+                // every fitted propulsion module (deferred ship-group target set; groups hold ship-located items only)
+                let mut groups: Vec<u32> = ds.groups.iter().filter(|(_, g)| g.name == "Propulsion Module").map(|(k, _)| *k).collect();
+                groups.sort_unstable();
+                for g in groups {
+                    let set = SET_BIT | (S_SHIP_GROUP as u32) << 24 | g;
+                    push(set, a("speedBoostFactor"), 6, at("speedBoostFactorBonus"), 6);
+                    push(set, a("speedFactor"), 6, at("speedFactorBonus"), 6);
+                }
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Effects of a projected item that take part in projection (category / state / fighter-ability filters).
@@ -705,10 +784,20 @@ pub type ModMap = FxHashMap<u32, Vec<AMod>>;
 pub fn incoming(db: &dyn Db, fit: FitIn) -> Arc<Vec<Arc<ModMap>>> {
     let slots = fit.slots(db);
     let mut maps: Vec<ModMap> = vec![ModMap::default(); slots.len()];
+    let idx = index(db, fit);
     for &s in fit.order(db) {
         let outs: &Arc<Vec<Out>> = outgoing(db, fit, slots[s as usize]);
         for o in outs.iter() {
-            maps[o.target as usize].entry(o.attr).or_default().push(o.m);
+            if o.target & SET_BIT != 0 {
+                let k = ((o.target >> 24) & 0x7f) as u8;
+                if let Some(v) = idx.sets.get(&(k, o.target & 0x00ff_ffff)) {
+                    for &t in v {
+                        maps[t as usize].entry(o.attr).or_default().push(o.m);
+                    }
+                }
+            } else {
+                maps[o.target as usize].entry(o.attr).or_default().push(o.m);
+            }
         }
     }
     let empty = Arc::new(ModMap::default());
@@ -1020,7 +1109,7 @@ pub fn attr_value<'db>(db: &'db dyn Db, fit: FitIn, k: AKey<'db>) -> F {
             val = val.min(value(db, fit, item, mx, layer));
         }
         if db.consts().rounded.contains(&attr_id) {
-            val = (val * 100.0).round() / 100.0;
+            val = crate::stats::py_round2(val);
         }
     }
     F(val)
