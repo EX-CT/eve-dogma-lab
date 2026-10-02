@@ -35,7 +35,7 @@ export interface TypeInfo {
   /** raw attribute object from the dataset (string keys) */
   rawAttrs: Record<string, number>;
   /** [effectId, isDefault] */
-  effects: [number, boolean][];
+  effects: [number, number][];
 }
 
 export interface GroupInfo { name: string; category: number }
@@ -129,14 +129,16 @@ export class Dataset {
       // prefer published types; among equals keep the lowest id (deterministic)
       if (prev === undefined || (t.published && !ds.types.get(prev)!.published)) ds.typeByNameMap.set(key, id);
       if (t.category === 16) ds.skills.push(id);
-      ds.types.set(id, {
-        id, name, group: t.group, category: t.category, published: !!t.published,
-        mass: t.mass ?? 0, volume: t.volume ?? 0, capacity: t.capacity ?? 0, radius: t.radius ?? 0,
-        marketGroup: t.market_group ?? null, metaGroup: t.meta_group ?? null, metaLevel: t.meta_level ?? null,
-        variationParent: t.variation_parent ?? null,
-        rawAttrs: t.attrs ?? {},
-        effects: (t.effects ?? []).map((e: number[]) => [e[0], e[1] !== 0] as [number, boolean]),
-      });
+      // reuse the parsed raw object in place (no per-type allocation)
+      t.id = id;
+      t.name = name;
+      t.published = !!t.published;
+      t.mass ??= 0; t.volume ??= 0; t.capacity ??= 0; t.radius ??= 0;
+      t.marketGroup = t.market_group ?? null; t.metaGroup = t.meta_group ?? null; t.metaLevel = t.meta_level ?? null;
+      t.variationParent = t.variation_parent ?? null;
+      t.rawAttrs = t.attrs ?? {};
+      t.effects ??= [];
+      ds.types.set(id, t as TypeInfo);
     }
     ds.publishedSkills = ds.skills.filter((s) => ds.types.get(s)!.published);
     for (const k in raw.dbuffs ?? {}) ds.dbuffs.set(+k, raw.dbuffs[k]);

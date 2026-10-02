@@ -70,7 +70,7 @@ export function typeInfo(ds: Dataset, key: string): object {
   return {
     type_id: t.id, name: t.name, name_zh: ds.namesZh.get(t.id) ?? null, group: ds.groups.get(t.group)?.name ?? null, group_id: t.group,
     category_id: t.category, published: t.published, mass: t.mass, volume: t.volume, capacity: t.capacity, slot: inferSlot(t.effects),
-    attributes, effects: t.effects.map(([e, d]) => ({ id: e, name: ds.effects.get(e)?.name ?? null, default: d })),
+    attributes, effects: t.effects.map(([e, d]) => ({ id: e, name: ds.effects.get(e)?.name ?? null, default: d !== 0 })),
   };
 }
 

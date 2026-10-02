@@ -62,7 +62,7 @@ export interface Item {
   tattrs: Map<number, number>;
   cells: Map<number, Cell> | null;
   reqSkills: number[];
-  effects: [number, boolean][];
+  effects: [number, number][];
   fighterAbilities: number[] | null;
   boosterSideEffects: number[];
   spool: Spool | null;

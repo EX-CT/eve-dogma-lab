@@ -41,7 +41,7 @@ function stateOk(category: number, state: State): boolean {
 }
 
 /** Slot from the type's slot effect (hiPower 12, medPower 13, loPower 11, rigSlot 2663, subSystem 3772, serviceSlot 6306). */
-export function inferSlot(effects: [number, boolean][]): SlotName | null {
+export function inferSlot(effects: [number, number][]): SlotName | null {
   for (const [e] of effects) {
     switch (e) {
       case 12: return 'high';
@@ -64,6 +64,10 @@ export class Fit extends AttrGraph {
   warnings: string[] = [];
   isStructure = false;
   index!: TargetIndex;
+  skillDefault = 0;
+  skillCustom = new Map<number, number>();
+  /** trained level of a skill as given by the request (0..5) */
+  skillLevel(s: number): number { return this.skillCustom.get(s) ?? (this.ds.types.get(s)?.published && this.ds.types.get(s)?.category === 16 ? this.skillDefault : 0); }
   /** incoming remote reps / cap transfers / neuts from projected items (evaluated in stats) */
   projSpecial: ProjSpecial[] = [];
 
@@ -142,25 +146,12 @@ export class Fit extends AttrGraph {
       const a = ds.attrId('pilotSecurityStatus');
       if (a !== 0) fit.setBase(fit.char, a, req.character.security_status);
     }
-    // skills: every published skill exists (untrained = level 0)
-    const def = req.character.skills.default_level ?? 0;
-    const custom = Object.entries(req.character.skills.levels);
-    let skillList: [number, number][];
-    if (custom.length === 0) skillList = ds.publishedSkills.map((s) => [s, def]);
-    else {
-      const levels = new Map<number, number>();
-      for (const s of ds.publishedSkills) levels.set(s, def);
-      for (const [k, v] of custom) {
-        const id = /^\d+$/.test(k) ? Number(k) : ds.typeByName(k);
-        if (id !== undefined) levels.set(id, v);
-      }
-      skillList = [...levels.entries()].sort((a, b) => a[0] - b[0]);
-    }
-    for (const [s, lvl] of skillList) {
-      if (!ds.types.has(s)) continue;
-      const idx = fit.newItem(s, Kind.Skill, Loc.Char, '/character/skills');
-      fit.setBase(idx, ATTR_SKILL_LEVEL, Math.min(lvl, 5));
-      fit.items[idx].owned = false;
+    // skills: every published skill exists (untrained = level 0); items are created after the rest of the fit
+    // (see addSkills) so that skills which cannot reach any item of this fit are never materialised
+    fit.skillDefault = Math.min(req.character.skills.default_level ?? 0, 5);
+    for (const [k, v] of Object.entries(req.character.skills.levels)) {
+      const id = /^\d+$/.test(k) ? Number(k) : ds.typeByName(k);
+      if (id !== undefined) fit.skillCustom.set(id, Math.min(v, 5));
     }
     // tactical destroyer mode: default to the lowest type id mode named after the ship
     let mode = req.ship.mode_type_id;
@@ -263,6 +254,7 @@ export class Fit extends AttrGraph {
     }
     for (const o of req.overrides) for (const it of fit.items) if (it.typeId === o.type_id) fit.setBase(it.idx, o.attribute_id, o.value);
     fit.index = new TargetIndex(fit);
+    fit.addSkills(req);
     fit.registerAll(req);
     applyRah(fit, req);
     return fit;
@@ -356,36 +348,57 @@ export class Fit extends AttrGraph {
         continue;
       }
       if (this.isStructure && (kind === Kind.Drone || kind === Kind.Implant || kind === Kind.Booster)) continue;
+      // A skill's attributes are only ever read through its own outgoing modifiers: if none of them reaches
+      // an item of this fit, the skill (incl. its self-modifiers) is irrelevant and is skipped.
       const state = this.effectiveState(i);
       const cat = it.category;
-      for (const [eid, isDefault] of it.effects) {
-        if (eid === EFFECT_SKILL_EFFECT) continue;
-        const e = ds.effects.get(eid);
-        if (!e) continue;
+      const plan = planFor(ds, it.typeId, it.effects, eBastion);
+      for (const pe of plan.effects) {
+        const eid = pe.eid;
+        const e = pe.e;
         if (this.isStructure && kind === Kind.Skill && !structureOk.has(eid) && !e.itemOnly) continue;
         if (e.fittingUsageChanceAttr !== null && !it.boosterSideEffects.includes(eid)) continue;
         if (kind === Kind.Fighter && e.category !== 0) {
-          const used = it.fighterAbilities !== null ? it.fighterAbilities.includes(eid) : isDefault;
+          const used = it.fighterAbilities !== null ? it.fighterAbilities.includes(eid) : pe.isDefault;
           if (!used) continue;
         }
         if (!stateOk(e.category, state)) continue;
-        if (e.special === undefined) e.special = localSpecial(e.name) ?? null;
-        const sp = e.special as SpecialHandler | null;
-        if (sp !== null) {
-          sp({ fit: this, item: i, cat });
+        if (pe.special !== null) {
+          pe.special({ fit: this, item: i, cat });
           continue;
         }
-        for (const m of e.mods) {
-          if (m.func === Func.EffectStopper || m.op === 9) continue;
-          if (m.domain === Domain.TargetId || m.domain === Domain.Target) continue;
-          // EXCT convention: skill filter 0 = the type owning the effect (skill self-bonuses)
-          const extra = m.extra === 0 && (m.func === Func.LocationRequiredSkill || m.func === Func.OwnerRequiredSkill) ? it.typeId : m.extra;
-          const c = eid === eBastion && HULL_RESONANCES.includes(m.modified) ? 6 : cat;
-          for (const t of this.targets(i, m.func, m.domain, extra)) this.pushAttr(t, m.modified, m.op, i, m.modifying, c);
+        for (const m of pe.mods) {
+          const c = m.bastion ? 6 : cat;
+          const ts = this.targets(i, m.func, m.domain, m.extra);
+          for (let k = 0; k < ts.length; k++) this.pushAttr(ts[k], m.modified, m.op, i, m.modifying, c);
         }
       }
     }
     this.registerBuffs(req);
+  }
+
+  private addSkills(req: NormRequest): void {
+    const ds = this.ds;
+    let list = ds.publishedSkills;
+    if (this.skillCustom.size) list = [...new Set([...list, ...this.skillCustom.keys()])].sort((a, b) => a - b);
+    const eBastion = ds.effectId('moduleBonusBastionModule');
+    for (const s of list) {
+      const t = ds.types.get(s);
+      if (!t) continue;
+      // A skill's attributes are only read through its own outgoing modifiers: skip it if none reaches the fit.
+      const plan = planFor(ds, s, t.effects, eBastion);
+      let reach = plan.hasSpecial;
+      for (let k = 0; !reach && k < plan.outgoing.length; k++) {
+        const m = plan.outgoing[k];
+        if (m.domain !== Domain.Other && resolveTargets(this, this.index, this.char, m.func, m.domain, m.extra, this.ship, this.char, this.isStructure).length > 0) reach = true;
+      }
+      if (!reach) continue;
+      const idx = this.newItem(s, Kind.Skill, Loc.Char, '/character/skills');
+      this.items[idx].owned = false;
+      this.setBase(idx, ATTR_SKILL_LEVEL, this.skillLevel(s));
+      for (const o of req.overrides) if (o.type_id === s) this.setBase(idx, o.attribute_id, o.value);
+      this.index.addCharItem(this.items[idx]);
+    }
   }
 
   private registerProjected(i: number): void {
@@ -481,7 +494,7 @@ export class Fit extends AttrGraph {
 }
 
 /** Pyfa default fighter abilities: standard attack on; others (except MWD/evasive/MJD) only before it in effect id order. */
-function defaultFighterAbilities(ds: Dataset, effects: [number, boolean][]): number[] {
+function defaultFighterAbilities(ds: Dataset, effects: [number, number][]): number[] {
   const ids = effects.map(([e]) => e).sort((a, b) => a - b);
   const on: number[] = [];
   let stdSeen = false;
@@ -553,4 +566,38 @@ function applyRah(fit: Fit, req: NormRequest): void {
     }
   }
   fit.invalidate();
+}
+
+// ------------------------------------------------------------------ compiled per-type registration plans
+interface PlanMod { func: Func; domain: Domain; modified: number; modifying: number; op: number; extra: number; bastion: boolean }
+interface PlanEffect { eid: number; e: import('./dataset.js').EffectInfo; isDefault: boolean; special: SpecialHandler | null; mods: PlanMod[] }
+interface Plan { effects: PlanEffect[]; outgoing: PlanMod[]; hasSpecial: boolean }
+/** memo keyed by the (immutable) effects array of a type, or of a mutated item */
+const PLANS = new WeakMap<[number, number][], Plan>();
+
+function planFor(ds: Dataset, typeId: number, effects: [number, number][], eBastion: number): Plan {
+  let p = PLANS.get(effects);
+  if (p) return p;
+  p = { effects: [], outgoing: [], hasSpecial: false };
+  for (const [eid, d] of effects) {
+    if (eid === EFFECT_SKILL_EFFECT) continue;
+    const e = ds.effects.get(eid);
+    if (!e) continue;
+    const special = localSpecial(e.name) ?? null;
+    if (special) p.hasSpecial = true;
+    const mods: PlanMod[] = [];
+    for (const m of e.mods) {
+      if (m.func === Func.EffectStopper || m.op === 9) continue;
+      if (m.domain === Domain.TargetId || m.domain === Domain.Target) continue;
+      // EXCT convention: skill filter 0 = the type owning the effect (skill self-bonuses)
+      const extra = m.extra === 0 && (m.func === Func.LocationRequiredSkill || m.func === Func.OwnerRequiredSkill) ? typeId : m.extra;
+      // Bastion hull resists are not stacking penalised in game (observed by Pyfa)
+      const pm = { func: m.func, domain: m.domain, modified: m.modified, modifying: m.modifying, op: m.op, extra, bastion: eid === eBastion && HULL_RESONANCES.includes(m.modified) };
+      mods.push(pm);
+      if (m.domain !== Domain.Item) p.outgoing.push(pm);
+    }
+    p.effects.push({ eid, e, isDefault: d !== 0, special, mods });
+  }
+  PLANS.set(effects, p);
+  return p;
 }

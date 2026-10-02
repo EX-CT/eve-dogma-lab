@@ -91,7 +91,7 @@ export function offense(c: StatsCtx): object {
       const eid = ds.effectId(eff);
       const found = it.effects.find(([e]) => e === eid);
       if (!found) continue;
-      const used = it.fighterAbilities !== null ? it.fighterAbilities.includes(eid) : found[1];
+      const used = it.fighterAbilities !== null ? it.fighterAbilities.includes(eid) : found[1] !== 0;
       if (!used) continue;
       let m = c.g(i, `${prefix}DamageMultiplier`);
       if (m === 0) m = 1;

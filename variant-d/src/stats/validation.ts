@@ -1,4 +1,3 @@
-import { ATTR_SKILL_LEVEL } from '../core/fit.js';
 import { Kind } from '../core/graph.js';
 import { SlotName, State } from '../core/request.js';
 import { StatsCtx } from './ctx.js';
@@ -71,8 +70,6 @@ export function validate(c: StatsCtx, used: ResourceTotals): object[] {
     }
   }
   // skills
-  const have = new Map<number, number>();
-  for (const it of fit.items) if (it.kind === Kind.Skill) have.set(it.typeId, fit.base(it.idx, ATTR_SKILL_LEVEL));
   const missing: [number, number, number][] = [];
   const checked = new Set([Kind.Ship, Kind.Module, Kind.Charge, Kind.Drone, Kind.Fighter, Kind.Implant, Kind.Booster]);
   for (const it of fit.items) {
@@ -81,7 +78,7 @@ export function validate(c: StatsCtx, used: ResourceTotals): object[] {
       const s = (raw(it.typeId, ds.attrId(`requiredSkill${k}`)) ?? 0) | 0;
       if (s === 0) continue;
       const need = raw(it.typeId, ds.attrId(`requiredSkill${k}Level`)) ?? 1;
-      if ((have.get(s) ?? 0) < need && !missing.some((m) => m[0] === s && m[1] >= need)) missing.push([s, need, it.typeId]);
+      if (fit.skillLevel(s) < need && !missing.some((m) => m[0] === s && m[1] >= need)) missing.push([s, need, it.typeId]);
     }
   }
   for (const [s, need, by] of missing) push('MISSING_SKILL', `${ds.types.get(s)?.name ?? '?'} ${need} required by ${ds.types.get(by)!.name}`, null);

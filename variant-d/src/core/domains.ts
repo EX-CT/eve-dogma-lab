@@ -17,6 +17,14 @@ export class TargetIndex {
   /** skill -> (owned or char-located) non-skill items that require it */
   skillChar = new Map<number, number[]>();
 
+  /** append a char-located item created after the index (skills); keeps ascending order */
+  addCharItem(it: { idx: number; group: number }): void {
+    this.charLoc.push(it.idx);
+    const l = this.charByGroup.get(it.group);
+    if (l) l.push(it.idx);
+    else this.charByGroup.set(it.group, [it.idx]);
+  }
+
   constructor(g: AttrGraph) {
     const push = (m: Map<number, number[]>, k: number, i: number) => {
       const l = m.get(k);

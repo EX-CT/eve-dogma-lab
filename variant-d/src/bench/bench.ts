@@ -16,13 +16,15 @@ const tw = performance.now();
 for (const [, r] of reqs) calc(ds, r);
 const warm = performance.now() - tw;
 const per: [string, number][] = [];
-const t1 = performance.now();
+// CPU time (user+system) is robust against other load on a shared box
+const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; };
+const t1 = cpu();
 for (const [f, r] of reqs) {
-  const s = performance.now();
+  const s = cpu();
   for (let i = 0; i < n; i++) calc(ds, r);
-  per.push([f, (performance.now() - s) / n]);
+  per.push([f, (cpu() - s) / n]);
 }
-const total = performance.now() - t1;
+const total = cpu() - t1;
 per.sort((a, b) => b[1] - a[1]);
 const med = [...per].sort((a, b) => a[1] - b[1])[per.length >> 1][1];
-console.log(JSON.stringify({ dataset_load_ms: loadMs, cases: reqs.length, first_pass_ms: warm, mean_ms: total / (n * reqs.length), median_ms: med, slowest: per.slice(0, 5) }, null, 1));
+console.log(JSON.stringify({ dataset_load_ms: loadMs, cases: reqs.length, first_pass_ms: warm, cpu_mean_ms: total / (n * reqs.length), cpu_median_ms: med, slowest: per.slice(0, 5) }, null, 1));
