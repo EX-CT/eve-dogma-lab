@@ -1,6 +1,6 @@
 //! eve-dogma-i CLI (variant I, salsa). Derived from EX-CT/eve-dogma-rs src/main.rs (LGPL-3.0-or-later).
 //! batch / serve-stdio keep one incremental salsa session across requests (`--fresh` disables reuse).
-use eve_dogma_salsa::{eft, Dataset, FitRequest, Session};
+use eve_dogma_salsa::{eft, Dataset, FitRequest, Session, Workspace};
 use std::sync::Arc;
 
 #[global_allocator]
@@ -21,7 +21,7 @@ Commands:
   meta                   dataset info
   bench [FILE] [-n N]    time N calculations of a request
 
-Options: --fresh  (batch/serve-stdio/bench) new database per request, no reuse\n\nDataset: --dataset PATH, or $EVE_DOGMA_DATASET, or ./dataset.json.gz";
+Options: --fresh  (batch/serve-stdio/bench) new database per request, no reuse\n         --pool N (batch/serve-stdio) open-fit workspace: one incremental session per hull, LRU N (default 1 = single session)\n\nDataset: --dataset PATH, or $EVE_DOGMA_DATASET, or ./dataset.json.gz";
 
 fn load(path: Option<String>) -> Arc<Dataset> {
     let p = path.or_else(|| std::env::var("EVE_DOGMA_DATASET").ok()).unwrap_or_else(|| "dataset.json.gz".into());
@@ -129,8 +129,8 @@ fn meta(ds: &Dataset) -> Value {
            "sde_release_date": ds.release_date, "dataset_sha256": ds.sha256, "types": ds.types.len(), "attributes": ds.attrs.len(), "effects": ds.effects.len()})
 }
 
-fn rpc(sess: &mut Session, line: &str, fresh: bool) -> Value {
-    let dsa = sess.db_ds();
+fn rpc(ws: &mut Workspace, line: &str, fresh: bool) -> Value {
+    let dsa = ws.ds();
     let ds: &Dataset = &dsa;
     let v: Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -142,9 +142,9 @@ fn rpc(sess: &mut Session, line: &str, fresh: bool) -> Value {
         "calc" => match serde_json::from_value::<FitRequest>(p) {
             Ok(r) => {
                 if fresh {
-                    sess.reset();
+                    ws.reset();
                 }
-                sess.calc(&r)
+                ws.calc(&r)
             }
             Err(e) => json!({"error": {"code": "BAD_REQUEST", "message": e.to_string()}}),
         },
@@ -155,7 +155,7 @@ fn rpc(sess: &mut Session, line: &str, fresh: bool) -> Value {
         "eft_export" => match serde_json::from_value::<FitRequest>(p.get("fit").cloned().unwrap_or(Value::Null)) {
             Ok(r) => {
                 let ids: Vec<u32> = ["lowSlots", "medSlots", "hiSlots", "rigSlots", "maxSubSystems", "serviceSlots"].iter().map(|a| ds.attr_id(a)).collect();
-                let vals: Option<Vec<f64>> = sess.view(&r).ok().map(|f| ids.iter().map(|&a| f.get(f.ship, a)).collect());
+                let vals: Option<Vec<f64>> = ws.session_for(r.ship.type_id).view(&r).ok().map(|f| ids.iter().map(|&a| f.get(f.ship, a)).collect());
                 let lookup = |a: u32| vals.as_ref().and_then(|v| ids.iter().position(|&x| x == a).map(|i| v[i]));
                 json!({"text": eft::export_with(ds, &r, p.get("name").and_then(|n| n.as_str()).unwrap_or("EXCT fit"), &lookup)})
             }
@@ -189,6 +189,15 @@ fn main() {
     };
     let fresh = args.iter().any(|a| a == "--fresh");
     args.retain(|a| a != "--fresh");
+    // open-fit workspace size: one incremental session per hull, LRU (1 = a single shared session)
+    let pool: usize = match args.iter().position(|a| a == "--pool") {
+        Some(p) => {
+            let v = args.get(p + 1).and_then(|x| x.parse().ok()).unwrap_or(1);
+            args.drain(p..(p + 2).min(args.len()));
+            v
+        }
+        None => 1,
+    };
     let cmd = args.first().cloned().unwrap_or_default();
     let out = std::io::stdout();
     let mut out = out.lock();
@@ -205,28 +214,28 @@ fn main() {
         }
         "batch" => {
             let ds = load(dataset);
-            let mut sess = Session::new(ds);
+            let mut ws = Workspace::new(ds, pool);
             for line in std::io::stdin().lock().lines() {
                 let line = line.unwrap();
                 if line.trim().is_empty() {
                     continue;
                 }
                 if fresh {
-                    sess.reset();
+                    ws.reset();
                 }
-                writeln!(out, "{}", eve_dogma_salsa::calc_json(&mut sess, &line)).unwrap();
+                writeln!(out, "{}", eve_dogma_salsa::calc_json_ws(&mut ws, &line)).unwrap();
             }
         }
         "serve-stdio" => {
             let ds = load(dataset);
             eprintln!("eve-dogma-i serve-stdio ready (sde {})", ds.build);
-            let mut sess = Session::new(ds);
+            let mut ws = Workspace::new(ds, pool);
             for line in std::io::stdin().lock().lines() {
                 let line = line.unwrap();
                 if line.trim().is_empty() {
                     continue;
                 }
-                writeln!(out, "{}", serde_json::to_string(&rpc(&mut sess, &line, fresh)).unwrap()).unwrap();
+                writeln!(out, "{}", serde_json::to_string(&rpc(&mut ws, &line, fresh)).unwrap()).unwrap();
                 out.flush().unwrap();
             }
         }

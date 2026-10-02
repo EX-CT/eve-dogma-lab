@@ -384,6 +384,10 @@ fn effective_state(db: &dyn Db, fit: FitIn, sp: &ItemSpec) -> State {
 /// Modifiers emitted by one item (its effects applied to their targets), in registration order.
 #[salsa::tracked(returns(ref))]
 pub fn outgoing(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<Vec<Out>> {
+    Arc::new(outgoing_impl(db, fit, item))
+}
+
+fn outgoing_impl(db: &dyn Db, fit: FitIn, item: ItemIn) -> Vec<Out> {
     let ds = db.ds();
     let c = db.consts();
     let sp = item.spec(db).clone();
@@ -396,10 +400,10 @@ pub fn outgoing(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<Vec<Out>> {
     let kind = sp.kind;
     if kind == Kind::Projected {
         projected(db, fit, &sp, i, &ctx, &mut out);
-        return Arc::new(out);
+        return out;
     }
     if ctx.is_structure && matches!(kind, Kind::Drone | Kind::Implant | Kind::Booster) {
-        return Arc::new(out);
+        return out;
     }
     let state = effective_state(db, fit, &sp);
     let src_cat = sp.category;
@@ -492,7 +496,7 @@ pub fn outgoing(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<Vec<Out>> {
             }
         }
     }
-    Arc::new(out)
+    out
 }
 
 /// Effects of a projected item that take part in projection (category / state / fighter-ability filters).
@@ -538,6 +542,8 @@ fn is_basic_projection(name: &str) -> bool {
         || name.starts_with("remoteSensorBoost")
         || name == "shipModuleTrackingDisruptor"
         || name == "shipModuleGuidanceDisruptor"
+        || name == "shipModuleRemoteTrackingComputer"
+        || name == "npcEntityWeaponDisruptor"
 }
 
 fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &mut Vec<Out>) {
@@ -589,16 +595,27 @@ fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &m
         } else if name.starts_with("remoteSensorDamp") || name == "structureModuleEffectRemoteSensorDampener" {
             push(out, c.max_target_range, 6, pj(c.max_target_range_bonus, 6));
             push(out, c.scan_res, 6, pj(c.scan_res_bonus, 6));
-        } else if name == "shipModuleTrackingDisruptor" || name == "shipModuleGuidanceDisruptor" {
-            // Pyfa Effect6424 / Effect6423: modify the target's gunnery modules / missile charges
-            if target_offense_ok {
-                let (skill, charges, pairs): (&str, bool, &[(&str, &str)]) = if name == "shipModuleTrackingDisruptor" {
+        } else if name == "shipModuleTrackingDisruptor" || name == "shipModuleGuidanceDisruptor" || name == "shipModuleRemoteTrackingComputer" || name == "npcEntityWeaponDisruptor" {
+            // Pyfa Effect6424 / Effect6423 / shipModuleRemoteTrackingComputer / Effect6694: modify the target's gunnery
+            // modules (TD, remote tracking computer, TD drones) / missile charges (GD)
+            let allowed = if name == "shipModuleRemoteTrackingComputer" {
+                ship_sp.base(ds.attr_id("disallowAssistance")).map(|a| a == 0.0).unwrap_or(true)
+            } else {
+                target_offense_ok
+            };
+            if allowed {
+                let (skill, charges, pairs): (&str, bool, &[(&str, &str)]) = if name != "shipModuleGuidanceDisruptor" {
                     ("Gunnery", false, &[("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"), ("falloffBonus", "falloff")])
                 } else {
                     ("Missile Launcher Operation", true, &[("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"), ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay")])
                 };
                 let sk = ds.type_by_name(skill).unwrap_or(0);
-                let tf = crate::stats::range_factor(pbase("maxRange"), pbase("falloffEffectiveness"), sp.distance, true);
+                let tf = if name == "npcEntityWeaponDisruptor" {
+                    // TD drones (Pyfa Effect6694): full strength inside maxRange, nothing beyond
+                    if pbase("maxRange") < sp.distance.unwrap_or(0.0) { 0.0 } else { 1.0 }
+                } else {
+                    crate::stats::range_factor(pbase("maxRange"), pbase("falloffEffectiveness"), sp.distance, true)
+                };
                 for it in index(db, fit).items.iter() {
                     let kind_ok = if charges { it.kind == Kind::Charge } else { it.kind == Kind::Module };
                     if it.loc == Loc::Ship && it.owned && kind_ok && it.req_skills.contains(&sk) {
@@ -622,7 +639,7 @@ fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &m
 
 pub const DAMAGE_EFFECTS: &[&str] = &["projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack",
     "missileLaunchingForEntity", "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari",
-    "superWeaponGallente", "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching"];
+    "superWeaponGallente", "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching", "ChainLightning", "salvageDroneEffect"];
 pub const PROJ_SPECIAL_EFFECTS: &[&str] = &["shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster", "shipModuleRemoteArmorRepairer",
     "ShipModuleRemoteArmorMutadaptiveRepairer", "shipModuleAncillaryRemoteArmorRepairer", "shipModuleRemoteHullRepairer",
     "npcEntityRemoteShieldBooster", "npcEntityRemoteArmorRepairer", "npcEntityRemoteHullRepairer", "shipModuleRemoteCapacitorTransmitter",
@@ -689,11 +706,13 @@ pub fn incoming(db: &dyn Db, fit: FitIn) -> Arc<Vec<Arc<ModMap>>> {
     let slots = fit.slots(db);
     let mut maps: Vec<ModMap> = vec![ModMap::default(); slots.len()];
     for &s in fit.order(db) {
-        for o in outgoing(db, fit, slots[s as usize]).iter() {
+        let outs: &Arc<Vec<Out>> = outgoing(db, fit, slots[s as usize]);
+        for o in outs.iter() {
             maps[o.target as usize].entry(o.attr).or_default().push(o.m);
         }
     }
-    Arc::new(maps.into_iter().map(Arc::new).collect())
+    let empty = Arc::new(ModMap::default());
+    Arc::new(maps.into_iter().map(|m| if m.is_empty() { empty.clone() } else { Arc::new(m) }).collect())
 }
 
 #[salsa::tracked(returns(ref))]

@@ -436,3 +436,45 @@ pub fn prof_report() -> String {
     format!("build {:.1}ms load {:.1}ms stats {:.1}ms", PROF[0].load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6,
         PROF[1].load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6, PROF[2].load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6)
 }
+
+/// A workspace of open fits: one incremental [`Session`] per ship hull (LRU, `cap` hulls). A request is
+/// diffed against the last fit of the same hull, like an editor with several fits open, instead of
+/// against whatever unrelated fit came before. `cap = 1` gives one shared session.
+pub struct Workspace {
+    ds: Arc<Dataset>,
+    cap: usize,
+    tick: u64,
+    sessions: Vec<(u32, u64, Session)>,
+}
+
+impl Workspace {
+    pub fn new(ds: Arc<Dataset>, cap: usize) -> Workspace {
+        Workspace { ds, cap: cap.max(1), tick: 0, sessions: Vec::new() }
+    }
+    pub fn ds(&self) -> Arc<Dataset> {
+        self.ds.clone()
+    }
+    pub fn reset(&mut self) {
+        self.sessions.clear();
+    }
+    pub fn session_for(&mut self, ship: u32) -> &mut Session {
+        self.tick += 1;
+        let key = if self.cap == 1 { 0 } else { ship };
+        let i = match self.sessions.iter().position(|s| s.0 == key) {
+            Some(i) => i,
+            None => {
+                if self.sessions.len() >= self.cap {
+                    let (lru, _) = self.sessions.iter().enumerate().min_by_key(|(_, s)| s.1).unwrap();
+                    self.sessions.swap_remove(lru);
+                }
+                self.sessions.push((key, 0, Session::new(self.ds.clone())));
+                self.sessions.len() - 1
+            }
+        };
+        self.sessions[i].1 = self.tick;
+        &mut self.sessions[i].2
+    }
+    pub fn calc(&mut self, req: &FitRequest) -> Value {
+        self.session_for(req.ship.type_id).calc(req)
+    }
+}

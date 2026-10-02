@@ -13,7 +13,7 @@ pub mod stats;
 
 pub use data::Dataset;
 pub use request::FitRequest;
-pub use session::Session;
+pub use session::{Session, Workspace};
 
 use serde_json::{json, Value};
 
@@ -21,6 +21,15 @@ use serde_json::{json, Value};
 pub fn calc_json(s: &mut Session, request_json: &str) -> String {
     let v: Value = match serde_json::from_str::<FitRequest>(request_json) {
         Ok(req) => s.calc(&req),
+        Err(e) => json!({"error": {"code": "BAD_REQUEST", "message": e.to_string(), "path": ""}}),
+    };
+    serde_json::to_string(&v).unwrap()
+}
+
+/// Same as [`calc_json`] on a [`Workspace`] (one session per hull).
+pub fn calc_json_ws(w: &mut Workspace, request_json: &str) -> String {
+    let v: Value = match serde_json::from_str::<FitRequest>(request_json) {
+        Ok(req) => w.calc(&req),
         Err(e) => json!({"error": {"code": "BAD_REQUEST", "message": e.to_string(), "path": ""}}),
     };
     serde_json::to_string(&v).unwrap()

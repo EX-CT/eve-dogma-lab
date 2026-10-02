@@ -21,3 +21,16 @@
   from ~157 ms to ~20 ms. The key covers the exact dataset bytes; disable with `EVE_I_NO_CACHE=1`, relocate with `EVE_I_CACHE_DIR`.
   Note that every per-process bench run after the first one hits the cache.
 - mimalloc as the global allocator.
+
+## 2026-10-03 ~06:40 CST — bench 1.6.0 + speed round 2
+- Ported projected Remote Tracking Computers (assistance-gated), npcEntityWeaponDisruptor (TD drones), and
+  ChainLightning/salvage counted as damage effects (A c53d333 + working tree): 297/297, 19,103/19,103.
+- Skill pruning as in A: a skill whose modifiers can reach nothing in the fit is not instantiated. The reach summary is
+  cached per skill. Output is byte-identical over the corpus.
+- Vendored salsa 0.28.2 with one patch (`vendor/salsa/src/active_query.rs`): query-stack frames that once held a very
+  wide query (~550 deps: index, plan, ...) memset their whole IndexSet table on every later drain (11% of all
+  instructions). Wide frames now hand over their set instead of draining it. About -7% Ir.
+- Tried without success (reverted or off by default):
+  - one merged query for all skills' modifiers: +8% Ir, because per-skill memos verify cheaper than they recompute;
+  - `--pool N`, an open-fit workspace with one session per hull: slower on the corpus, because per-session cold
+    caches cost more than the diff against the previous same-hull fit saves. It is kept as an option with default 1.

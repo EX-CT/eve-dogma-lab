@@ -24,3 +24,7 @@ lto = "fat"
 codegen-units = 1
 panic = "unwind"
 debug = false
+
+[patch.crates-io]
+# vendored salsa 0.28.2 with one perf patch (vendor/salsa/src/active_query.rs, "variant-i patch")
+salsa = { path = "vendor/salsa" }

@@ -3,7 +3,8 @@
 //! with stable identities (`ItemKey`) so that the salsa database can diff two requests item by item.
 use crate::data::{Dataset, TypeInfo};
 use crate::request::{FitRequest, ModuleReq, Slot, State};
-use rustc_hash::FxHashMap;
+use crate::data::Func;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
 /// requiredSkill1..6
@@ -99,6 +100,100 @@ pub struct SpecCache {
     types: FxHashMap<u32, Arc<ItemSpec>>,
     skills: FxHashMap<(u32, u8), Arc<ItemSpec>>,
     modes: Option<Vec<(u32, String)>>,
+    /// per skill: conditions under which one of its modifiers can reach an item (see `skill_relevant`)
+    reach: FxHashMap<u32, Arc<Reach>>,
+}
+
+/// When can a skill's modifiers reach something? `always`, or any listed group present / skill required.
+#[derive(Default)]
+pub struct Reach {
+    always: bool,
+    groups: Vec<u32>,
+    skills: Vec<u32>,
+}
+
+const EFFECT_SKILL_EFFECT: u32 = 132;
+
+fn reach_of(ds: &Dataset, s: u32) -> Reach {
+    let mut r = Reach::default();
+    let Some(t) = ds.types.get(&s) else { return r };
+    for (eid, _) in &t.effects {
+        if *eid == EFFECT_SKILL_EFFECT {
+            continue;
+        }
+        let Some(e) = ds.effects.get(eid) else { continue };
+        if e.mods.is_empty() {
+            r.always = true; // hand-written / special effect
+            return r;
+        }
+        for m in &e.mods {
+            match m.func {
+                Func::Item | Func::Location | Func::EffectStopper => {
+                    r.always = true;
+                    return r;
+                }
+                Func::LocationGroup => {
+                    if ds.groups.get(&m.extra).map(|g| g.category == 16).unwrap_or(true) {
+                        r.always = true;
+                        return r;
+                    }
+                    r.groups.push(m.extra);
+                }
+                Func::LocationRequiredSkill | Func::OwnerRequiredSkill => r.skills.push(if m.extra == 0 { s } else { m.extra }),
+            }
+        }
+    }
+    r
+}
+
+/// Skills required by any item of the request and the groups present (for skill pruning, as Variant A).
+fn fit_skill_context(ds: &Dataset, req: &FitRequest) -> (FxHashSet<u32>, FxHashSet<u32>) {
+    let mut need = FxHashSet::default();
+    let mut groups = FxHashSet::default();
+    let mut add = |tid: u32| {
+        if let Some(t) = ds.types.get(&tid) {
+            groups.insert(t.group);
+            for a in REQ_SKILL_ATTRS {
+                if let Some(v) = t.attr(a) {
+                    if v != 0.0 {
+                        need.insert(v as u32);
+                    }
+                }
+            }
+        }
+    };
+    add(req.ship.type_id);
+    if let Some(m) = req.ship.mode_type_id {
+        add(m);
+    }
+    for m in &req.modules {
+        add(m.type_id);
+        if let Some(c) = m.charge_type_id {
+            add(c);
+        }
+        if let Some(mu) = &m.mutation {
+            add(mu.base_type_id);
+        }
+    }
+    for d in &req.drones {
+        add(d.type_id);
+        if let Some(mu) = &d.mutation {
+            add(mu.base_type_id);
+        }
+    }
+    for f in &req.fighters {
+        add(f.type_id);
+    }
+    for i in &req.implants {
+        add(*i);
+    }
+    for b in &req.boosters {
+        add(b.type_id);
+    }
+    for c in &req.cargo {
+        add(c.type_id);
+    }
+    (need, groups)
 }
 
 struct B<'a> {
@@ -298,9 +393,17 @@ pub fn build(ds: &Dataset, cache: &mut SpecCache, req: &FitRequest, proj_fit: &m
     }
     let mut lv: Vec<(u32, u8)> = levels.into_iter().collect();
     lv.sort();
+    let (need, groups) = fit_skill_context(ds, req);
     for (s, l) in lv {
         if !ds.types.contains_key(&s) {
             continue;
+        }
+        // perf (as Variant A): a skill whose modifiers can reach nothing in this fit is not instantiated
+        if !need.contains(&s) {
+            let r = b.cache.reach.entry(s).or_insert_with(|| Arc::new(reach_of(ds, s)));
+            if !(r.always || r.groups.iter().any(|g| groups.contains(g)) || r.skills.iter().any(|k| need.contains(k))) {
+                continue;
+            }
         }
         let lvl = l.min(5);
         let sp = match b.cache.skills.get(&(s, lvl)) {
