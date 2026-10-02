@@ -52,6 +52,7 @@ export function dumpAttrs(fit: Fit, i: number): Record<string, number> {
   const it = fit.items[i];
   const keys = new Set<number>(it.tattrs.keys());
   if (it.base) for (const k of it.base.keys()) keys.add(k);
+  if (it.ovA >= 0) keys.add(it.ovA);
   if (it.cells) for (const k of it.cells.keys()) keys.add(k);
   const out: Record<string, number> = {};
   for (const k of [...keys].sort((a, b) => a - b)) out[fit.ds.attrs.get(k)?.name ?? String(k)] = fit.get(i, k);

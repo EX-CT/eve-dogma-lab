@@ -55,6 +55,9 @@ export interface Item {
   activeCount: number;
   /** base values that differ from the type (mutations, overrides, skill level, security modifier) */
   base: Map<number, number> | null;
+  /** single inline base override (fast path: skill level etc.); -1 = unused */
+  ovA: number;
+  ovV: number;
   /** type attribute map (shared, immutable) */
   tattrs: Map<number, number>;
   cells: Map<number, Cell> | null;
@@ -82,6 +85,7 @@ export class AttrGraph {
   // ------------------------------------------------------------------ base values
   base(i: number, a: number): number {
     const it = this.items[i];
+    if (it.ovA === a) return it.ovV;
     if (it.base !== null) {
       const v = it.base.get(a);
       if (v !== undefined) return v;
@@ -92,13 +96,18 @@ export class AttrGraph {
 
   has(i: number, a: number): boolean {
     const it = this.items[i];
-    return (it.base !== null && it.base.has(a)) || it.tattrs.has(a) || (it.cells !== null && it.cells.has(a));
+    return it.ovA === a || (it.base !== null && it.base.has(a)) || it.tattrs.has(a) || (it.cells !== null && it.cells.has(a));
   }
 
   setBase(i: number, a: number, v: number): void {
     const it = this.items[i];
-    if (it.base === null) it.base = new Map();
-    it.base.set(a, v);
+    if (it.ovA === a || it.ovA === -1) {
+      it.ovA = a;
+      it.ovV = v;
+    } else {
+      if (it.base === null) it.base = new Map();
+      it.base.set(a, v);
+    }
     if (it.cells !== null) {
       const c = it.cells.get(a);
       if (c) c.base = v;

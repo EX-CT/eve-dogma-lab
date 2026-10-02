@@ -22,6 +22,10 @@ export interface EffectInfo {
   durationAttr: number | null; dischargeAttr: number | null; rangeAttr: number | null; falloffAttr: number | null;
   trackingAttr: number | null; resistanceAttr: number | null; fittingUsageChanceAttr: number | null;
   isOffensive: boolean; isAssistance: boolean; mods: Modifier[];
+  /** memo: resolved local special handler (undefined = not resolved yet, null = none) */
+  special?: unknown;
+  /** memo: every modifier has domain Item */
+  itemOnly: boolean;
 }
 
 export interface TypeInfo {
@@ -64,6 +68,18 @@ export class Dataset {
   private typeByNameMap = new Map<string, number>();
   private typeAttrCache = new Map<number, Map<number, number>>();
   private reqSkillCache = new Map<number, number[]>();
+  private modeCache = new Map<number, number | null>();
+
+  /** T3D default mode: lowest type id in group 1306 whose name starts with the ship name (memoised) */
+  defaultMode(shipId: number): number | null {
+    let m = this.modeCache.get(shipId);
+    if (m !== undefined) return m;
+    const shipName = this.types.get(shipId)!.name.toLowerCase();
+    m = null;
+    for (const [id, t] of this.types) if (t.group === 1306 && t.name.toLowerCase().startsWith(shipName) && (m === null || id < m)) m = id;
+    this.modeCache.set(shipId, m);
+    return m;
+  }
 
   /** Build from the parsed dataset JSON. `sha256` is the hex digest of the (uncompressed) JSON bytes. */
   static fromJson(raw: any, sha256 = ''): Dataset {
@@ -98,7 +114,10 @@ export class Dataset {
           domain: (m[1] >= 0 && m[1] <= 6 ? m[1] : 7) as Domain,
           modified: m[2], modifying: m[3], op: m[4], extra: m[5],
         })),
+        itemOnly: false,
       });
+      const ei = ds.effects.get(id)!;
+      ei.itemOnly = ei.mods.every((m) => m.domain === Domain.Item);
     }
     for (const k in raw.groups) ds.groups.set(+k, { name: raw.groups[k].name ?? '', category: raw.groups[k].category });
     const ids = Object.keys(raw.types).map(Number).sort((a, b) => a - b);

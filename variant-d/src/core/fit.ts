@@ -4,7 +4,7 @@ import { TargetIndex, resolveTargets } from './domains.js';
 import { AttrGraph, Item, Kind, Loc, Mod, SrcK } from './graph.js';
 import { EXEMPT_CATEGORIES, roundHalfAway } from './operators.js';
 import { FitRequest, ModuleReq, Mutation, normalize, NormRequest, SlotName, State, STATE_NAMES } from './request.js';
-import { localSpecial, projectedSpecial, ProjSpecial, projectedFeed, PROJECTED_DAMAGE_EFFECTS } from './specials.js';
+import { SpecialHandler, localSpecial, projectedSpecial, ProjSpecial, projectedFeed, PROJECTED_DAMAGE_EFFECTS } from './specials.js';
 import { rangeFactor } from '../stats/util.js';
 
 export const ATTR_SKILL_LEVEL = 280;
@@ -77,7 +77,7 @@ export class Fit extends AttrGraph {
       idx: this.items.length, typeId, group: t.group, category: t.category, kind, state: State.Online, loc,
       owned: kind === Kind.Module || kind === Kind.Charge || kind === Kind.Drone || kind === Kind.Fighter || kind === Kind.Ship,
       parent: -1, charge: -1, slot: null, reqIndex: null, quantity: 1, activeCount: 0,
-      base: null, tattrs: this.ds.typeAttrs(typeId), cells: null,
+      base: null, ovA: -1, ovV: 0, tattrs: this.ds.typeAttrs(typeId), cells: null,
       reqSkills: this.ds.requiredSkills(typeId), effects: t.effects,
       fighterAbilities: null, boosterSideEffects: [], spool: null, distance: null,
     };
@@ -144,24 +144,28 @@ export class Fit extends AttrGraph {
     }
     // skills: every published skill exists (untrained = level 0)
     const def = req.character.skills.default_level ?? 0;
-    const levels = new Map<number, number>();
-    for (const s of ds.publishedSkills) levels.set(s, def);
-    for (const [k, v] of Object.entries(req.character.skills.levels)) {
-      const id = /^\d+$/.test(k) ? Number(k) : ds.typeByName(k);
-      if (id !== undefined) levels.set(id, v);
+    const custom = Object.entries(req.character.skills.levels);
+    let skillList: [number, number][];
+    if (custom.length === 0) skillList = ds.publishedSkills.map((s) => [s, def]);
+    else {
+      const levels = new Map<number, number>();
+      for (const s of ds.publishedSkills) levels.set(s, def);
+      for (const [k, v] of custom) {
+        const id = /^\d+$/.test(k) ? Number(k) : ds.typeByName(k);
+        if (id !== undefined) levels.set(id, v);
+      }
+      skillList = [...levels.entries()].sort((a, b) => a[0] - b[0]);
     }
-    for (const s of [...levels.keys()].sort((a, b) => a - b)) {
+    for (const [s, lvl] of skillList) {
       if (!ds.types.has(s)) continue;
       const idx = fit.newItem(s, Kind.Skill, Loc.Char, '/character/skills');
-      fit.setBase(idx, ATTR_SKILL_LEVEL, Math.min(levels.get(s)!, 5));
+      fit.setBase(idx, ATTR_SKILL_LEVEL, Math.min(lvl, 5));
       fit.items[idx].owned = false;
     }
     // tactical destroyer mode: default to the lowest type id mode named after the ship
     let mode = req.ship.mode_type_id;
     if (mode == null) {
-      const shipName = ds.types.get(req.ship.type_id)!.name.toLowerCase();
-      let best: number | null = null;
-      for (const [id, t] of ds.types) if (t.group === 1306 && t.name.toLowerCase().startsWith(shipName) && (best === null || id < best)) best = id;
+      const best = ds.defaultMode(req.ship.type_id);
       if (best !== null) {
         fit.warnings.push(`no tactical mode given; defaulted to type ${best}`);
         mode = best;
@@ -293,6 +297,7 @@ export class Fit extends AttrGraph {
         it.distance = distance;
         it.reqIndex = i;
         it.base = new Map(vals);
+        it.ovA = -1;
       }
     }
   }
@@ -318,7 +323,9 @@ export class Fit extends AttrGraph {
   }
   /** modifier whose value is attribute `srcAttr` of item `srcItem` */
   pushAttr(target: number, attr: number, op: number, srcItem: number, srcAttr: number, sourceCat: number): void {
-    this.push(target, attr, op, { k: SrcK.Attr, item: srcItem, attr: srcAttr }, srcItem, sourceCat);
+    const info = this.ds.attrs.get(attr);
+    const pen = info !== undefined && !info.stackable && !EXEMPT_CATEGORIES.has(sourceCat);
+    this.addMod(target, attr, { op, pen, k: SrcK.Attr, item: srcItem, attr: srcAttr, v: 0, a2: 0, a3: -1, mul: false, src: srcItem });
   }
 
   targets(src: number, func: Func, domain: Domain, extra: number): readonly number[] {
@@ -355,15 +362,16 @@ export class Fit extends AttrGraph {
         if (eid === EFFECT_SKILL_EFFECT) continue;
         const e = ds.effects.get(eid);
         if (!e) continue;
-        if (this.isStructure && kind === Kind.Skill && !structureOk.has(eid) && !e.mods.every((m) => m.domain === Domain.Item)) continue;
+        if (this.isStructure && kind === Kind.Skill && !structureOk.has(eid) && !e.itemOnly) continue;
         if (e.fittingUsageChanceAttr !== null && !it.boosterSideEffects.includes(eid)) continue;
         if (kind === Kind.Fighter && e.category !== 0) {
           const used = it.fighterAbilities !== null ? it.fighterAbilities.includes(eid) : isDefault;
           if (!used) continue;
         }
         if (!stateOk(e.category, state)) continue;
-        const sp = localSpecial(e.name);
-        if (sp) {
+        if (e.special === undefined) e.special = localSpecial(e.name) ?? null;
+        const sp = e.special as SpecialHandler | null;
+        if (sp !== null) {
           sp({ fit: this, item: i, cat });
           continue;
         }
