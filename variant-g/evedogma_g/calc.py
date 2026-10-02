@@ -1,4 +1,5 @@
 """Public API: calc_many(ds, requests) evaluates many FitRequests as one NumPy batch."""
+import gc
 import json
 
 from . import capsim, engine
@@ -83,6 +84,18 @@ def _batch(ds, parsed):
 
 def calc_many(ds, reqs):
     """reqs: list of parsed-JSON request objects (dicts) -> list of response dicts (same order)"""
+    # a batch builds many short-lived containers but its garbage cycles are few: the cyclic GC is paused for the
+    # batch (~6 % of batch time) and resumes afterwards, so cycles are still collected between batches
+    was = gc.isenabled()
+    gc.disable()
+    try:
+        return _calc_many(ds, reqs)
+    finally:
+        if was:
+            gc.enable()
+
+
+def _calc_many(ds, reqs):
     parsed = []
     for r in reqs:
         try:

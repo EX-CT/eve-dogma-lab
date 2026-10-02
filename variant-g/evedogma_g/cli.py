@@ -1,4 +1,5 @@
 """eve-dogma-g CLI (contract v1): calc | batch | serve-stdio | meta | type | search"""
+import gc
 import json
 import os
 import sys
@@ -23,7 +24,10 @@ def _load(path):
     from . import dataset
     p = path or os.environ.get("EVE_DOGMA_DATASET") or "dataset.json.gz"
     try:
-        return dataset.load(p)
+        ds = dataset.load(p)
+        gc.freeze()  # start-up objects (modules, dataset) never become garbage: keep them out of GC passes
+        gc.enable()
+        return ds
     except (OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(3)

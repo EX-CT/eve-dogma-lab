@@ -1,9 +1,11 @@
 """Event-driven capacitor simulation (same algorithm as Pyfa eos capSim / the reference engine)."""
 import heapq
 import math
+import os
 
 FAST_PATH = True  # tests switch this off to check the NumPy fast path against the plain event loop
-MEMO = True  # tests switch this off when they compare implementations
+# tests switch this off when they compare implementations; EVE_DOGMA_G_NO_MEMO=1 disables it for measurements
+MEMO = not os.environ.get("EVE_DOGMA_G_NO_MEMO")
 
 
 _MEMO = {}
