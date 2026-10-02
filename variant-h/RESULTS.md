@@ -4,8 +4,8 @@
 
 Bench **1.8.0+0969967** (frozen for the 10:20 CST evaluation; 326 cases, 21 051 Pyfa-expected values, adding abyssal
 weather / AoE cloud beacons, incursion system effects, burst projectors and Standup weapon disruptors). Official run in the
-shared bench checkout at 07:28 CST on commit 65e1eda (bench 1.8.0+33db85a, corpus unchanged since 0969967);
-earlier runs: 07:01 CST on ab420d1 and 06:19 CST on b430abe, both 326/326. Scorecards are committed in [`scorecards/`](scorecards/):
+shared bench checkout at 07:57 CST on commit 9fbeb2a (bench 1.8.0+33db85a, corpus unchanged since 0969967);
+earlier runs: 07:28 CST on 65e1eda, 07:01 CST on ab420d1 and 06:19 CST on b430abe, both 326/326. Scorecards are committed in [`scorecards/`](scorecards/):
 [`bench-1.8.0.md`](scorecards/bench-1.8.0.md) and [`bench-1.7.0.md`](scorecards/bench-1.7.0.md), each with a `.json`.
 
 | | cases | values |
@@ -15,17 +15,24 @@ earlier runs: 07:01 CST on ab420d1 and 06:19 CST on b430abe, both 326/326. Score
 | vs Pyfa (bench 1.6.0, 05:51 CST) | 297/297 | 19103/19103 |
 | eft export column (EFT export vs Pyfa `exportEft` after `fill()`, informational) | **326/326** | |
 
-| perf (bench harness, shared box under load) | H @ 1.8.0 07:28 (65e1eda) | H @ 1.8.0 07:01 (ab420d1) | H @ 1.8.0 06:19 | H @ 1.7.0 06:12 | H @ 1.6.0 05:51 | A @ 1.6.0 05:42 |
-|---|---|---|---|---|---|---|
-| ms/fit (exct_rifter latency) | **0.381** | 0.506¹ | 0.281 | 0.255 | 0.308 | 0.432 |
-| batch throughput, fits/s | **1934** | 2885 | 2662 | 3033 | 2863 | 1777 |
-| cold ms (one process per case, median) | **6.7** | 5.2 | 4.8 | 6.2 | 8.9 | 138 |
-| startup + one calc, ms | **20.2** | 7.9 | 6.2 | 6.0 | 7.8 | |
-| deterministic | yes | yes | yes | yes | yes | yes |
+| perf (bench harness, shared box under load) | H @ 1.8.0 07:57 (9fbeb2a) | H @ 1.8.0 07:28 (65e1eda) | H @ 1.8.0 07:01 (ab420d1) | H @ 1.8.0 06:19 | H @ 1.7.0 06:12 | H @ 1.6.0 05:51 | A @ 1.6.0 05:42 |
+|---|---|---|---|---|---|---|---|
+| ms/fit (exct_rifter latency) | **0.237** | 0.381 | 0.506¹ | 0.281 | 0.255 | 0.308 | 0.432 |
+| batch throughput, fits/s | **2469** | 1934 | 2885 | 2662 | 3033 | 2863 | 1777 |
+| cold ms (one process per case, median) | **5.0** | 6.7 | 5.2 | 4.8 | 6.2 | 8.9 | 138 |
+| startup + one calc, ms | **7.3** | 20.2 | 7.9 | 6.2 | 6.0 | 7.8 | |
+| deterministic | yes | yes | yes | yes | yes | yes | yes |
 
 ¹ Load average was 7.4 during that run. Timed back to back under the same load, ab420d1 does 2887 fits/s
 (0.346 ms/fit including startup), against 2528 fits/s for the earlier reference build, so the latency figure is
-load noise, not a regression. The 07:28 run had a load average of about 8.
+load noise, not a regression. The 07:28 run had a load average of about 8; so did the 07:57 run.
+
+9fbeb2a is a speed-only change (841edda + 9fbeb2a): a fast path in `LazyTable` lookups, pre-sized ship/character
+attribute maps and calc memo, a typed request parse on the first attempt, skill levels built from the pre-sorted
+published-skill list without a per-request sort, and request type ids collected by a serde `Serializer` instead of a
+`serde_json::Value` round-trip. Outputs are byte-identical to de77832 on 13 039 requests, malformed ones included.
+Instructions per 500 Rifter calcs (callgrind, including startup) dropped from 1188.5M to 1026.1M (−14 %); back-to-back
+A/B under the same load: latency median 0.257 → 0.212 ms, batch throughput 2749 → 3241 fits/s.
 
 The 1.7.0 → 1.8.0 throughput difference is within run-to-run noise on the loaded box: the new code paths only run for
 fits that have beacons or projected bursts.
