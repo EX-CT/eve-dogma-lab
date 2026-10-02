@@ -7,7 +7,7 @@ package dogma
 func (ds *Dataset) skillTemplate() [][]amod {
 	ds.tplOnce.Do(func() {
 		f := &Fit{DS: ds, Ship: 0, Char: 1, reg: make([]attrMods, int(ds.maxAttr)+1), noPool: true}
-		ch := ds.Types[1373]
+		ch := ds.typ(1373)
 		if ch == nil {
 			return
 		}

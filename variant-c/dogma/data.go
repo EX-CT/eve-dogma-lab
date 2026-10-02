@@ -205,6 +205,11 @@ type Dataset struct {
 	ids             wellKnown
 
 	maxAttr uint32 // largest attribute id (dense per-fit registry size)
+	// dense id-indexed views of Attrs/Effects/Types/Groups for the hot paths (nil = absent)
+	attrD   []*AttrInfo
+	effectD []*EffectInfo
+	typeD   []*TypeInfo
+	groupD  []*GroupInfo
 	tplOnce sync.Once
 	tpl     [][]amod
 }
@@ -447,6 +452,7 @@ func LoadBytes(b []byte) (*Dataset, error) {
 	for k, v := range raw.Names["zh"] {
 		ds.NamesZh[u32(k)] = v
 	}
+	ds.attrD, ds.effectD, ds.typeD, ds.groupD = dense(ds.Attrs), dense(ds.Effects), dense(ds.Types), dense(ds.Groups)
 	ds.ids = newWellKnown(ds)
 	return ds, nil
 }
@@ -481,7 +487,7 @@ func (ds *Dataset) TypeByName(name string) (uint32, bool) {
 }
 
 func (ds *Dataset) AttrDefault(id uint32) float64 {
-	if a := ds.Attrs[id]; a != nil {
+	if a := ds.attr(id); a != nil {
 		return a.Default
 	}
 	return 0
@@ -631,3 +637,28 @@ func buildType(id uint32, t *rawType) *TypeInfo {
 	ti.Slot = inferSlot(ti)
 	return ti
 }
+
+func dense[T any](m map[uint32]*T) []*T {
+	n := uint32(0)
+	for k := range m {
+		n = max(n, k+1)
+	}
+	d := make([]*T, n)
+	for k, v := range m {
+		d[k] = v
+	}
+	return d
+}
+
+func at[T any](d []*T, id uint32) *T {
+	if int(id) < len(d) {
+		return d[id]
+	}
+	return nil
+}
+
+// attr / effect / typ / group: dense lookups equivalent to the maps (nil when absent).
+func (ds *Dataset) attr(id uint32) *AttrInfo     { return at(ds.attrD, id) }
+func (ds *Dataset) effect(id uint32) *EffectInfo { return at(ds.effectD, id) }
+func (ds *Dataset) typ(id uint32) *TypeInfo      { return at(ds.typeD, id) }
+func (ds *Dataset) group(id uint32) *GroupInfo   { return at(ds.groupD, id) }

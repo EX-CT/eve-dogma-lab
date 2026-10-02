@@ -242,7 +242,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		fbayUsed += f.Get(i, 161) * float64(f.Items[i].Quantity)
 	}
 	for _, c := range req.Cargo {
-		if t := ds.Types[c.TypeID]; t != nil {
+		if t := ds.typ(c.TypeID); t != nil {
 			cargoUsed += t.Volume * float64(c.Quantity)
 		}
 	}
@@ -551,7 +551,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		it := &f.Items[i]
 		capNeed := f.Get(i, w.capNeed)
 		isInj := false
-		if gi := ds.Groups[it.Group]; gi != nil && gi.Name == "Capacitor Booster" {
+		if gi := ds.group(it.Group); gi != nil && gi.Name == "Capacitor Booster" {
 			isInj = true
 			capNeed = 0
 			if it.Charge >= 0 {
@@ -693,7 +693,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 
 	st := f.Items[ship].T
 	var grp any
-	if gi := ds.Groups[st.Group]; gi != nil {
+	if gi := ds.group(st.Group); gi != nil {
 		grp = gi.Name
 	}
 	out := obj{
@@ -736,7 +736,7 @@ func (f *Fit) DumpAttrs(i int) obj {
 	m := obj{}
 	for _, a := range f.AttrIDs(i) {
 		name := fmt.Sprint(a)
-		if ai := f.DS.Attrs[a]; ai != nil {
+		if ai := f.DS.attr(a); ai != nil {
 			name = ai.Name
 		}
 		m[name] = f.Get(i, a)
@@ -929,10 +929,10 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 	}
 	for _, m := range missing {
 		sn := "?"
-		if t := ds.Types[m.s]; t != nil {
+		if t := ds.typ(m.s); t != nil {
 			sn = t.Name
 		}
-		push("MISSING_SKILL", fmt.Sprintf("%s %v required by %s", sn, m.need, ds.Types[m.by].Name), -1)
+		push("MISSING_SKILL", fmt.Sprintf("%s %v required by %s", sn, m.need, ds.typ(m.by).Name), -1)
 	}
 	return v
 }
@@ -993,7 +993,7 @@ func (f *Fit) sustainableTank(tank obj, stable, factorReload bool, modules []int
 					continue
 				}
 				gname := ""
-				if gi := ds.Groups[f.Items[i].Group]; gi != nil {
+				if gi := ds.group(f.Items[i].Group); gi != nil {
 					gname = gi.Name
 				}
 				l, attr, ok := spec(gname)

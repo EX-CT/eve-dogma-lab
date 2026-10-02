@@ -207,7 +207,7 @@ func stateOK(cat uint8, s State) bool {
 func nodeKey(item int, attr uint32) uint64 { return uint64(item)<<32 | uint64(attr) }
 
 func (f *Fit) newItem(typeID uint32, kind Kind, loc Loc, path string) (int, error) {
-	t := f.DS.Types[typeID]
+	t := f.DS.typ(typeID)
 	if t == nil {
 		return 0, &EngineError{"UNKNOWN_TYPE", fmt.Sprintf("unknown type_id %d", typeID), path}
 	}
@@ -227,7 +227,7 @@ func (f *Fit) setOverlay(i int, attr uint32, v float64) { f.Items[i].overlay.set
 func (f *Fit) applyMutation(idx int, m *Mutation) {
 	ds := f.DS
 	it := &f.Items[idx]
-	if base := ds.Types[m.BaseTypeID]; base != nil {
+	if base := ds.typ(m.BaseTypeID); base != nil {
 		own := it.T
 		for k, a := range base.raw.ids {
 			it.overlay.set(a, base.raw.vals[k])
@@ -253,7 +253,7 @@ func (f *Fit) applyMutation(idx int, m *Mutation) {
 	if m.MutaplasmidTypeID != nil {
 		muta = ds.Mutaplasmids[*m.MutaplasmidTypeID]
 	}
-	baseT := ds.Types[m.BaseTypeID]
+	baseT := ds.typ(m.BaseTypeID)
 	keys := make([]string, 0, len(m.Attributes))
 	for k := range m.Attributes {
 		keys = append(keys, k)
@@ -378,7 +378,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 	}
 	lvIDs, lvVals := f.lvIDs[:len(skillIDs)], f.lvVals[:len(skillIDs)]
 	for k, s := range skillIDs {
-		if ds.Types[s] == nil {
+		if ds.typ(s) == nil {
 			continue
 		}
 		l, ok := extra[s]
@@ -398,10 +398,10 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 	var modeID *uint32
 	if req.Ship.ModeTypeID != nil {
 		modeID = req.Ship.ModeTypeID
-	} else if st := ds.Types[req.Ship.TypeID]; st != nil {
+	} else if st := ds.typ(req.Ship.TypeID); st != nil {
 		sn := strings.ToLower(st.Name)
 		for _, id := range ds.TypesInGroup(1306) {
-			if strings.HasPrefix(strings.ToLower(ds.Types[id].Name), sn) {
+			if strings.HasPrefix(strings.ToLower(ds.typ(id).Name), sn) {
 				m := id
 				modeID = &m
 				f.Warnings = append(f.Warnings, fmt.Sprintf("no tactical mode given; defaulted to type %d", m))
@@ -642,7 +642,7 @@ func defaultFighterAbilities(ds *Dataset, effs []TypeEffect) []uint32 {
 	on := []uint32{}
 	stdSeen := false
 	for _, e := range ids {
-		ei := ds.Effects[e]
+		ei := ds.effect(e)
 		if ei == nil || !strings.HasPrefix(ei.Name, "fighterAbility") {
 			continue
 		}
@@ -661,7 +661,7 @@ func defaultFighterAbilities(ds *Dataset, effs []TypeEffect) []uint32 {
 
 func (f *Fit) push(k bucketKind, x uint32, attr uint32, m amod, sourceCat uint32) {
 	stackable := true
-	if a := f.DS.Attrs[attr]; a != nil {
+	if a := f.DS.attr(attr); a != nil {
 		stackable = a.Stackable
 	}
 	m.pen = !stackable && !exemptCategory(sourceCat)
@@ -793,7 +793,7 @@ func (f *Fit) registerItem(i int) {
 		if eid == effectSkillEffect {
 			continue
 		}
-		e := ds.Effects[eid]
+		e := ds.effect(eid)
 		if e == nil {
 			continue
 		}
@@ -869,7 +869,7 @@ func (f *Fit) registerProjected(i int) {
 	srcCat := it.Category
 	ship := uint32(f.Ship)
 	for _, te := range it.Effects {
-		e := ds.Effects[te.ID]
+		e := ds.effect(te.ID)
 		if e == nil || (e.Category != 2 && e.Category != 3) || it.State < Active {
 			continue
 		}
@@ -1348,7 +1348,7 @@ func (f *Fit) Get(i int, attr uint32) float64 {
 	}
 	f.stack = append(f.stack, key)
 	val := f.fold(attr, base, ms)
-	info := f.DS.Attrs[attr]
+	info := f.DS.attr(attr)
 	if info != nil {
 		if info.MinAttr != 0 {
 			val = math.Max(val, f.Get(i, info.MinAttr))
@@ -1427,7 +1427,7 @@ func (f *Fit) fold(attr uint32, val float64, ms []*amod) float64 {
 		}
 	}
 	hig := true
-	if a := f.DS.Attrs[attr]; a != nil {
+	if a := f.DS.attr(attr); a != nil {
 		hig = a.HighIsGood
 	}
 	var posB, negB [foldBuf]float64
