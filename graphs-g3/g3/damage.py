@@ -453,6 +453,12 @@ class Target:
     def _variant(self, ignore_scram):
         if not ignore_scram or self.fit is None:
             return self.fit
+        v = getattr(self, "_unscram", None)
+        if v is None:
+            v = self._unscram = self._build_variant()
+        return v
+
+    def _build_variant(self):
         req = dict(self.fit_req)
         mods = []
         for m in req.get("modules") or []:
