@@ -144,6 +144,17 @@ impl<'a> Mad<'a> {
         self.calculate(a, &e, ds)
     }
 
+    /// value the attribute would have with `preAssign(a, v)` added (Pyfa graph helper trick)
+    pub fn get_preassigned(&self, a: u32, v: f64, ds: &Dataset) -> f64 {
+        let mut e = match self.entries.get(&a) {
+            Some(e) => e.clone(),
+            None => Entry { mult: 1.0, ..Default::default() },
+        };
+        e.pre_assign = Some(v);
+        e.placeholder = true;
+        self.calculate(a, &e, ds)
+    }
+
     fn calculate(&self, a: u32, e: &Entry, ds: &Dataset) -> f64 {
         let info = attr_lite(a, ds);
         let min_v = info.and_then(|i| i.min_attr).and_then(|m| self.get(m, ds));

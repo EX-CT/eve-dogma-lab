@@ -755,8 +755,8 @@ pub fn proj_data(fit: &Fit) -> Proj {
     p
 }
 
-struct Ctx<'r> {
-    req: &'r GraphRequest,
+pub(crate) struct Ctx<'r> {
+    pub(crate) req: &'r GraphRequest,
 }
 impl Ctx<'_> {
     fn lock(&self, fit: &Fit, d: Option<f64>) -> bool {
@@ -780,7 +780,7 @@ fn scram_active(c: &Ctx, src: &Fit, p: &Proj, d: Option<f64>) -> bool {
     }
 }
 
-fn tackled_speed(c: &Ctx, src: &Fit, tgt: &Target, p: &Proj, cur: f64, d: Option<f64>) -> f64 {
+pub(crate) fn tackled_speed(c: &Ctx, src: &Fit, tgt: &Target, p: &Proj, cur: f64, d: Option<f64>) -> f64 {
     if tgt.immune {
         return cur;
     }
@@ -841,7 +841,7 @@ fn tackled_speed(c: &Ctx, src: &Fit, tgt: &Target, p: &Proj, cur: f64, d: Option
     float_unerr(cur_t)
 }
 
-fn sig_mult(c: &Ctx, src: &Fit, tgt: &Target, p: &Proj, tgt_speed: f64, d: Option<f64>) -> f64 {
+pub(crate) fn sig_mult(c: &Ctx, src: &Fit, tgt: &Target, p: &Proj, tgt_speed: f64, d: Option<f64>) -> f64 {
     if tgt.immune {
         return 1.0;
     }
