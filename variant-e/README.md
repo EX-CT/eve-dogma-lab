@@ -28,11 +28,11 @@ Errors come back as JSON `{"error":{"code","message","path"}}` (exit code 2 for 
 python3 tools/pyfa2rs.py ../../ref/pyfa/eos/effects.py ../../data/dataset-3569502.json.gz src/generated/effects.rs
 ```
 
-## Results (eve-dogma-bench 1.7.0+a5bb40e, 306-case Pyfa-oracle corpus, official `bench.py --only E`)
+## Results (eve-dogma-bench 1.8.0+0969967, 326-case Pyfa-oracle corpus, official `bench.py --only E`)
 
 | cases | values | ms/fit (warm) | batch fits/s | cold start + calc | EFT export vs Pyfa |
 |---|---|---|---|---|---|
-| 306/306 | 19,621/19,621 (100 %) | 0.135 | 3896 | 8 ms (10.6 ms incl. startup probe) | 306/306 |
+| 326/326 | 21,051/21,051 (100 %) | 0.227 | 2961 | 8.3 ms | 326/326 |
 
 Cold start uses a bincode cache of the parsed dataset (`$EVE_DOGMA_E_CACHE`, else `$XDG_CACHE_HOME/eve-dogma-e` or `~/.cache/eve-dogma-e`). The cache is keyed by a hash of the dataset bytes and rebuilt automatically when it is missing. Type records stay serialised in the cache and are decoded lazily on first use, so a one-fit `calc` only decodes the types it touches.
 
