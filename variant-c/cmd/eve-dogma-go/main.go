@@ -530,8 +530,15 @@ func serveHTTP(ds *dogma.Dataset, addr string) {
 	// POST /v1/batch: JSONL requests -> JSONL responses (same order), computed on all cores
 	mux.HandleFunc("POST /v1/batch", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
+		// read the whole body first: net/http stops reading the request once the response is being written
+		// (HTTP/1.1 is not full duplex by default), which used to truncate large batches
+		in, err := io.ReadAll(io.LimitReader(r.Body, 256<<20))
+		if err != nil {
+			writeJSON(w, 400, dogma.Marshal(errObj("BAD_REQUEST", err.Error())))
+			return
+		}
 		bw := bufio.NewWriterSize(w, 64<<10)
-		batch(ds, io.LimitReader(r.Body, 256<<20), bw, runtime.NumCPU())
+		batch(ds, bytes.NewReader(in), bw, runtime.NumCPU())
 	})
 	fmt.Fprintf(os.Stderr, "eve-dogma-go serve-http on %s (sde %d)\n", addr, ds.Build)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
