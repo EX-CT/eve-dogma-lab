@@ -2,6 +2,7 @@ package dogma
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -247,7 +248,72 @@ func ParseEFT(ds *Dataset, text string) (*FitRequest, error) {
 	return req, nil
 }
 
-// ExportEFT renders a FitRequest as EFT text (with mutation blocks).
+// pyFloat is Python repr() of Pyfa's floatUnerr(v) (7 significant digits), as Pyfa prints mutated values.
+func pyFloat(v float64) string {
+	if v != 0 && !math.IsInf(v, 0) && !math.IsNaN(v) {
+		rf := 7 - int(math.Ceil(math.Log10(math.Abs(v))))
+		if rf >= 0 {
+			v, _ = strconv.ParseFloat(strconv.FormatFloat(v, 'f', rf, 64), 64)
+		} else {
+			p := math.Pow(10, float64(-rf))
+			v = math.Round(v/p) * p
+		}
+	}
+	if math.IsInf(v, 1) {
+		return "inf"
+	} else if math.IsInf(v, -1) {
+		return "-inf"
+	}
+	a := math.Abs(v)
+	if a != 0 && (a < 1e-4 || a >= 1e16) {
+		return strconv.FormatFloat(v, 'e', -1, 64) // Go and Python agree: 1e-05, 1.5e+16
+	}
+	if v == math.Trunc(v) {
+		return strconv.FormatFloat(v, 'f', 1, 64)
+	}
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// droneOrder is Pyfa's DRONE_ORDER (service/port/eft.py) by market group id.
+func droneOrder(mg *uint32) int {
+	if mg == nil {
+		return 12
+	}
+	switch *mg {
+	case 837, 1531:
+		return 0
+	case 3881:
+		return 1
+	case 838, 1532:
+		return 2
+	case 3882:
+		return 3
+	case 839, 359:
+		return 4
+	case 3883:
+		return 5
+	case 911, 1533:
+		return 6
+	case 843, 1586:
+		return 7
+	case 841, 1029:
+		return 8
+	case 842, 1030:
+		return 9
+	case 158, 358:
+		return 10
+	case 1643, 1646:
+		return 11
+	}
+	return 12
+}
+
+var fighterOrder = []string{"Light Fighter", "Structure Light Fighter", "Heavy Fighter", "Structure Heavy Fighter", "Support Fighter", "Structure Support Fighter"}
+
+// ExportEFT renders a FitRequest byte-for-byte like Pyfa's exportEft (all options on, after the GUI's
+// fill()): header, blank line, sections joined by two blank lines (racks low/med/high/rig/subsystem/
+// service with [Empty X slot] fillers; drones+fighters; implants+boosters; cargo; mutation details),
+// sub-sections by one blank line, no trailing newline, no T3D mode line (contract v1.4.1).
 func ExportEFT(ds *Dataset, req *FitRequest, name string) string {
 	n := func(id uint32) string {
 		if t := ds.Types[id]; t != nil {
@@ -255,100 +321,245 @@ func ExportEFT(ds *Dataset, req *FitRequest, name string) string {
 		}
 		return strconv.FormatUint(uint64(id), 10)
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "[%s, %s]\n", n(req.Ship.TypeID), name)
-	var muts []*Mutation
-	tag := func(m *Mutation) string {
-		if m == nil {
-			return ""
+	attr := func(id uint32, a string) float64 {
+		if t := ds.Types[id]; t != nil {
+			v, _ := t.Attr(ds.AttrID(a))
+			return v
 		}
-		muts = append(muts, m)
-		return fmt.Sprintf(" [%d]", len(muts))
+		return 0
 	}
-	for _, slot := range []Slot{SlotLow, SlotMid, SlotHigh, SlotRig, SlotSubsystem, SlotService} {
-		any := false
-		for k := range req.Modules {
-			m := &req.Modules[k]
+	groupOf := func(id uint32) *GroupInfo {
+		if t := ds.Types[id]; t != nil {
+			return ds.Groups[t.Group]
+		}
+		return nil
+	}
+	// slot totals after modifiers (subsystems, structure rigs, ...)
+	var totals [6]int64
+	slotAttrs := [6]string{"lowSlots", "medSlots", "hiSlots", "rigSlots", "maxSubSystems", "serviceSlots"}
+	if f, err := Build(ds, req); err == nil {
+		for k, a := range slotAttrs {
+			totals[k] = int64(f.Get(f.Ship, ds.AttrID(a)))
+		}
+		f.Release()
+	}
+	var muts []*Mutation
+	var sections []string
+
+	var racks []string
+	for k, sl := range []struct {
+		s     Slot
+		label string
+	}{{SlotLow, "Low"}, {SlotMid, "Med"}, {SlotHigh, "High"}, {SlotRig, "Rig"}, {SlotSubsystem, "Subsystem"}, {SlotService, "Service"}} {
+		var lines []string
+		for mi := range req.Modules {
+			m := &req.Modules[mi]
 			s := SlotNone
 			if m.Slot != nil {
 				s = *m.Slot
 			} else if t := ds.Types[m.TypeID]; t != nil {
 				s = t.Slot
 			}
-			if s != slot {
+			if s != sl.s {
 				continue
 			}
-			any = true
+			l := n(m.TypeID)
 			if m.Mutation != nil {
-				b.WriteString(n(m.Mutation.BaseTypeID))
-			} else {
-				b.WriteString(n(m.TypeID))
+				l = n(m.Mutation.BaseTypeID)
+			}
+			mtag := ""
+			if m.Mutation != nil && m.Mutation.MutaplasmidTypeID != nil {
+				muts = append(muts, m.Mutation)
+				mtag = fmt.Sprintf(" [%d]", len(muts))
 			}
 			if m.ChargeTypeID != nil {
-				b.WriteString(", " + n(*m.ChargeTypeID))
+				l += ", " + n(*m.ChargeTypeID)
 			}
 			if m.State != nil && *m.State == Offline {
-				b.WriteString(" /OFFLINE")
+				l += " /offline"
 			}
-			b.WriteString(tag(m.Mutation) + "\n")
+			lines = append(lines, l+mtag)
 		}
-		if any {
-			b.WriteString("\n")
+		for free := totals[k] - int64(len(lines)); free > 0; free-- {
+			lines = append(lines, "[Empty "+sl.label+" slot]")
+		}
+		if len(lines) > 0 {
+			racks = append(racks, strings.Join(lines, "\n"))
 		}
 	}
-	for _, d := range req.Drones {
-		nm := d.TypeID
+	if len(racks) > 0 {
+		sections = append(sections, strings.Join(racks, "\n\n"))
+	}
+
+	var minion []string
+	type dk struct {
+		d     *DroneReq
+		order int
+		mut   bool
+		full  string
+	}
+	drones := make([]dk, 0, len(req.Drones))
+	for i := range req.Drones {
+		d := &req.Drones[i]
+		base := d.TypeID
 		if d.Mutation != nil {
-			nm = d.Mutation.BaseTypeID
+			base = d.Mutation.BaseTypeID
 		}
-		fmt.Fprintf(&b, "%s x%d%s\n", n(nm), d.Quantity, tag(d.Mutation))
+		var mg *uint32
+		if t := ds.Types[base]; t != nil {
+			mg = t.MarketGroup
+		}
+		mut := d.Mutation != nil && d.Mutation.MutaplasmidTypeID != nil
+		full := n(d.TypeID)
+		if mut {
+			full = ""
+			if t := ds.Types[d.TypeID]; t != nil {
+				full = t.Name
+			}
+		}
+		drones = append(drones, dk{d, droneOrder(mg), mut, full})
 	}
-	for _, f := range req.Fighters {
-		q := uint32(1)
-		if f.Quantity != nil {
+	sort.SliceStable(drones, func(a, b int) bool {
+		x, y := drones[a], drones[b]
+		if x.order != y.order {
+			return x.order < y.order
+		}
+		if x.mut != y.mut {
+			return !x.mut
+		}
+		return x.full < y.full
+	})
+	var dl []string
+	for _, x := range drones {
+		d := x.d
+		base := d.TypeID
+		if d.Mutation != nil {
+			base = d.Mutation.BaseTypeID
+		}
+		mtag := ""
+		if x.mut {
+			muts = append(muts, d.Mutation)
+			mtag = fmt.Sprintf(" [%d]", len(muts))
+		}
+		dl = append(dl, fmt.Sprintf("%s x%d%s", n(base), d.Quantity, mtag))
+	}
+	if len(dl) > 0 {
+		minion = append(minion, strings.Join(dl, "\n"))
+	}
+	fighters := make([]FighterReq, len(req.Fighters))
+	copy(fighters, req.Fighters)
+	fpos := func(f FighterReq) int {
+		g := ""
+		if gi := groupOf(f.TypeID); gi != nil {
+			g = gi.Name
+		}
+		for i, x := range fighterOrder {
+			if x == g {
+				return i
+			}
+		}
+		return len(fighterOrder)
+	}
+	sort.SliceStable(fighters, func(a, b int) bool {
+		pa, pb := fpos(fighters[a]), fpos(fighters[b])
+		if pa != pb {
+			return pa < pb
+		}
+		return n(fighters[a].TypeID) < n(fighters[b].TypeID)
+	})
+	var fl []string
+	for _, f := range fighters {
+		mx := uint32(attr(f.TypeID, "fighterSquadronMaxSize"))
+		q := mx
+		if f.Quantity != nil && *f.Quantity < mx {
 			q = *f.Quantity
 		}
-		fmt.Fprintf(&b, "%s x%d\n", n(f.TypeID), q)
+		fl = append(fl, fmt.Sprintf("%s x%d", n(f.TypeID), q))
 	}
-	if len(req.Implants) > 0 || len(req.Boosters) > 0 {
-		b.WriteString("\n")
-		for _, i := range req.Implants {
-			b.WriteString(n(i) + "\n")
-		}
-		for _, x := range req.Boosters {
-			b.WriteString(n(x.TypeID) + "\n")
-		}
+	if len(fl) > 0 {
+		minion = append(minion, strings.Join(fl, "\n"))
 	}
-	if len(req.Cargo) > 0 {
-		b.WriteString("\n")
-		for _, c := range req.Cargo {
-			fmt.Fprintf(&b, "%s x%d\n", n(c.TypeID), c.Quantity)
-		}
+	if len(minion) > 0 {
+		sections = append(sections, strings.Join(minion, "\n\n"))
 	}
+
+	var charsec []string
+	imps := append([]uint32(nil), req.Implants...)
+	sort.SliceStable(imps, func(a, b int) bool { return attr(imps[a], "implantness") < attr(imps[b], "implantness") })
+	if len(imps) > 0 {
+		var l []string
+		for _, i := range imps {
+			l = append(l, n(i))
+		}
+		charsec = append(charsec, strings.Join(l, "\n"))
+	}
+	boos := make([]uint32, 0, len(req.Boosters))
+	for _, b := range req.Boosters {
+		boos = append(boos, b.TypeID)
+	}
+	sort.SliceStable(boos, func(a, b int) bool { return attr(boos[a], "boosterness") < attr(boos[b], "boosterness") })
+	if len(boos) > 0 {
+		var l []string
+		for _, i := range boos {
+			l = append(l, n(i))
+		}
+		charsec = append(charsec, strings.Join(l, "\n"))
+	}
+	if len(charsec) > 0 {
+		sections = append(sections, strings.Join(charsec, "\n\n"))
+	}
+
+	cargo := append([]CargoReq(nil), req.Cargo...)
+	ckey := func(c CargoReq) [3]string {
+		var k [3]string
+		if g := groupOf(c.TypeID); g != nil {
+			k[0], k[1] = ds.Categories[g.Category], g.Name
+		}
+		k[2] = n(c.TypeID)
+		return k
+	}
+	sort.SliceStable(cargo, func(a, b int) bool {
+		x, y := ckey(cargo[a]), ckey(cargo[b])
+		for i := range x {
+			if x[i] != y[i] {
+				return x[i] < y[i]
+			}
+		}
+		return false
+	})
+	if len(cargo) > 0 {
+		var l []string
+		for _, c := range cargo {
+			l = append(l, fmt.Sprintf("%s x%d", n(c.TypeID), c.Quantity))
+		}
+		sections = append(sections, strings.Join(l, "\n"))
+	}
+
 	if len(muts) > 0 {
-		b.WriteString("\n")
+		var blocks []string
 		for k, m := range muts {
-			fmt.Fprintf(&b, "[%d] %s\n", k+1, n(m.BaseTypeID))
-			if m.MutaplasmidTypeID != nil {
-				fmt.Fprintf(&b, "  %s\n", n(*m.MutaplasmidTypeID))
+			type kv struct {
+				a string
+				v float64
 			}
-			keys := make([]string, 0, len(m.Attributes))
-			for a := range m.Attributes {
-				keys = append(keys, a)
-			}
-			sort.Strings(keys)
-			var kv []string
-			for _, a := range keys {
+			var kvs []kv
+			for a, v := range m.Attributes {
 				an := a
-				if ai := ds.Attrs[u32(a)]; ai != nil {
-					an = ai.Name
+				if id, err := strconv.ParseUint(a, 10, 32); err == nil {
+					if ai := ds.Attrs[uint32(id)]; ai != nil {
+						an = ai.Name
+					}
 				}
-				kv = append(kv, fmt.Sprintf("%s %s", an, strconv.FormatFloat(m.Attributes[a], 'g', -1, 64)))
+				kvs = append(kvs, kv{an, v})
 			}
-			if len(kv) > 0 {
-				fmt.Fprintf(&b, "  %s\n", strings.Join(kv, ", "))
+			sort.SliceStable(kvs, func(i, j int) bool { return kvs[i].a < kvs[j].a })
+			parts := make([]string, len(kvs))
+			for i, x := range kvs {
+				parts[i] = x.a + " " + pyFloat(x.v)
 			}
+			blocks = append(blocks, fmt.Sprintf("[%d] %s\n  %s\n  %s", k+1, n(m.BaseTypeID), n(*m.MutaplasmidTypeID), strings.Join(parts, ", ")))
 		}
+		sections = append(sections, strings.Join(blocks, "\n"))
 	}
-	return b.String()
+	return fmt.Sprintf("[%s, %s]\n\n%s", n(req.Ship.TypeID), name, strings.Join(sections, "\n\n\n"))
 }

@@ -23,7 +23,7 @@ import (
 // Location: $EVE_DOGMA_CACHE_DIR, else <user cache dir>/eve-dogma-go.
 
 const cacheMagic = "EXCTDGC\x00"
-const cacheVersion = 1
+const cacheVersion = 2 // 2: categories
 
 // LoadPathCached loads a dataset file, using (and refreshing) the binary cache when enabled.
 func LoadPathCached(path string) (*Dataset, error) {
@@ -215,6 +215,12 @@ func encodeCache(ds *Dataset, key [32]byte) []byte {
 		w.u32(k)
 		w.str(ds.NamesZh[k])
 	}
+	ks = sortedKeys(ds.Categories)
+	w.u32(uint32(len(ks)))
+	for _, k := range ks {
+		w.u32(k)
+		w.str(ds.Categories[k])
+	}
 	db, _ := json.Marshal(ds.Dbuffs)
 	mb, _ := json.Marshal(ds.Mutaplasmids)
 	w.blob(db)
@@ -386,6 +392,12 @@ func decodeCache(b []byte, key [32]byte) (*Dataset, error) {
 	for i := 0; i < n; i++ {
 		id := r.u32()
 		ds.NamesZh[id] = r.str()
+	}
+	n = r.count(8)
+	ds.Categories = make(map[uint32]string, n)
+	for i := 0; i < n; i++ {
+		id := r.u32()
+		ds.Categories[id] = r.str()
 	}
 	db, mb := r.blob(), r.blob()
 	if r.err || r.off != len(body) {

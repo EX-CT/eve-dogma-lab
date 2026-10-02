@@ -232,7 +232,16 @@ func TestEFTRoundtripMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(Marshal(req.Modules)) != string(Marshal(req2.Modules)) || string(Marshal(req.Drones)) != string(Marshal(req2.Drones)) {
+	// Pyfa's exporter sorts drones (market group, mutated last), so compare drones as multisets
+	dkey := func(ds []DroneReq) string {
+		v := make([]string, len(ds))
+		for i := range ds {
+			v[i] = string(Marshal(ds[i]))
+		}
+		sort.Strings(v)
+		return strings.Join(v, "|")
+	}
+	if string(Marshal(req.Modules)) != string(Marshal(req2.Modules)) || dkey(req.Drones) != dkey(req2.Drones) {
 		t.Fatalf("roundtrip mismatch\n%s", out)
 	}
 }

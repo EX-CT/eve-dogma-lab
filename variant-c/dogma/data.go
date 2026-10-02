@@ -190,6 +190,7 @@ type Dataset struct {
 	SHA256       string
 	Types        map[uint32]*TypeInfo
 	Groups       map[uint32]*GroupInfo
+	Categories   map[uint32]string // category id -> English name
 	Attrs        map[uint32]*AttrInfo
 	Effects      map[uint32]*EffectInfo
 	Dbuffs       map[uint32]*DbuffInfo
@@ -258,6 +259,9 @@ type rawDs struct {
 	Dbuffs       map[string]*DbuffInfo        `json:"dbuffs"`
 	Mutaplasmids map[string]*MutaInfo         `json:"mutaplasmids"`
 	Names        map[string]map[string]string `json:"names"`
+	Categories   map[string]struct {
+		Name *string `json:"name"`
+	} `json:"categories"`
 }
 
 type rawType struct {
@@ -413,6 +417,14 @@ func LoadBytes(b []byte) (*Dataset, error) {
 				Modifying: uint32(m[3]), Op: int32(m[4]), Extra: uint32(m[5])})
 		}
 		ds.Effects[id] = ei
+	}
+	ds.Categories = make(map[uint32]string, len(raw.Categories))
+	for k, c := range raw.Categories {
+		if c.Name != nil {
+			ds.Categories[u32(k)] = *c.Name
+		} else {
+			ds.Categories[u32(k)] = ""
+		}
 	}
 	for k, g := range raw.Groups {
 		gi := &GroupInfo{Category: g.Category}

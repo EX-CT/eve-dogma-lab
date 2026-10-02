@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,42 +65,74 @@ func readInput(args []string) []byte {
 	return b
 }
 
-func search(ds *dogma.Dataset, q string, limit int) []any {
-	ql := strings.ToLower(q)
+// Interim search spec (contract v1.4.1): published types of the scored categories; case-insensitive match on the
+// English or Chinese name; rank exact > prefix > substring, ties by type id ascending; default limit 20.
+var searchCategories = []struct {
+	kind string
+	cat  uint32
+}{{"ship", 6}, {"module", 7}, {"charge", 8}, {"drone", 18}, {"fighter", 87}, {"implant", 20}, {"subsystem", 32}, {"skill", 16}}
+
+func searchKind(ds *dogma.Dataset, t *dogma.TypeInfo) string {
+	if t.Category == 20 {
+		if g := ds.Groups[t.Group]; g != nil && strings.Contains(g.Name, "Booster") {
+			return "booster"
+		}
+		return "implant"
+	}
+	for _, c := range searchCategories {
+		if c.cat == t.Category {
+			return c.kind
+		}
+	}
+	return ""
+}
+
+var matchNames = [...]string{"exact", "prefix", "substring"}
+
+func search(ds *dogma.Dataset, q string, limit int, kinds []string) []any {
+	ql := strings.ToLower(strings.TrimSpace(q))
 	type hit struct {
-		id uint32
-		t  *dogma.TypeInfo
+		rank int
+		id   uint32
+		kind string
+		t    *dogma.TypeInfo
 	}
 	var hits []hit
 	for id, t := range ds.Types {
 		if !t.Published {
 			continue
 		}
-		if strings.Contains(strings.ToLower(t.Name), ql) || (q != "" && strings.Contains(ds.NamesZh[id], q)) {
-			hits = append(hits, hit{id, t})
+		k := searchKind(ds, t)
+		if k == "" || (kinds != nil && !slices.Contains(kinds, k)) {
+			continue
+		}
+		en, zh := strings.ToLower(t.Name), strings.ToLower(ds.NamesZh[id])
+		r := -1
+		switch {
+		case en == ql || (zh != "" && zh == ql):
+			r = 0
+		case strings.HasPrefix(en, ql) || (zh != "" && strings.HasPrefix(zh, ql)):
+			r = 1
+		case strings.Contains(en, ql) || (zh != "" && strings.Contains(zh, ql)):
+			r = 2
+		}
+		if r >= 0 {
+			hits = append(hits, hit{r, id, k, t})
 		}
 	}
 	sort.Slice(hits, func(i, j int) bool {
-		a, b := hits[i].t, hits[j].t
-		pa, pb := strings.HasPrefix(strings.ToLower(a.Name), ql), strings.HasPrefix(strings.ToLower(b.Name), ql)
-		if pa != pb {
-			return pa
+		if hits[i].rank != hits[j].rank {
+			return hits[i].rank < hits[j].rank
 		}
-		if len(a.Name) != len(b.Name) {
-			return len(a.Name) < len(b.Name)
-		}
-		if a.Name != b.Name {
-			return a.Name < b.Name
-		}
-		return a.ID < b.ID
+		return hits[i].id < hits[j].id
 	})
 	out := []any{}
 	for k, h := range hits {
 		if k >= limit {
 			break
 		}
-		out = append(out, map[string]any{"type_id": h.id, "name": h.t.Name, "name_zh": nilStr(ds.NamesZh[h.id]),
-			"group": groupName(ds, h.t.Group), "category_id": h.t.Category, "meta_level": h.t.MetaLevel, "slot": h.t.Slot})
+		out = append(out, map[string]any{"type_id": h.id, "name": h.t.Name, "name_zh": nilStr(ds.NamesZh[h.id]), "kind": h.kind,
+			"match": matchNames[h.rank], "group": groupName(ds, h.t.Group), "category_id": h.t.Category, "meta_level": h.t.MetaLevel, "slot": h.t.Slot})
 	}
 	return out
 }
@@ -208,7 +241,18 @@ func rpc(ds *dogma.Dataset, line []byte) any {
 	case "search":
 		limit := 20
 		_ = json.Unmarshal(p["limit"], &limit)
-		result = search(ds, str("query"), limit)
+		var kinds []string
+		if k, ok := p["kinds"]; ok && string(k) != "null" {
+			var raw []any
+			_ = json.Unmarshal(k, &raw)
+			kinds = []string{}
+			for _, x := range raw {
+				if s, ok := x.(string); ok {
+					kinds = append(kinds, s)
+				}
+			}
+		}
+		result = search(ds, str("query"), limit, kinds)
 	case "type":
 		result = typeInfo(ds, string(p["id"]))
 	case "meta":
@@ -312,7 +356,7 @@ func main() {
 		out.WriteByte('\n')
 	case "search":
 		ds := load(dsPath)
-		b, _ := json.MarshalIndent(search(ds, strings.Join(args[1:], " "), 25), "", "  ")
+		b, _ := json.MarshalIndent(search(ds, strings.Join(args[1:], " "), 20, nil), "", "  ")
 		out.Write(b)
 		out.WriteByte('\n')
 	case "type":
@@ -465,7 +509,11 @@ func serveHTTP(ds *dogma.Dataset, addr string) {
 		if err != nil || limit <= 0 {
 			limit = 20
 		}
-		writeJSON(w, 200, dogma.Marshal(search(ds, r.URL.Query().Get("q"), limit)))
+		var kinds []string
+		if k := r.URL.Query().Get("kinds"); k != "" {
+			kinds = strings.Split(k, ",")
+		}
+		writeJSON(w, 200, dogma.Marshal(search(ds, r.URL.Query().Get("q"), limit, kinds)))
 	})
 	mux.HandleFunc("GET /v1/type/{id}", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, dogma.Marshal(typeInfo(ds, r.PathValue("id"))))
