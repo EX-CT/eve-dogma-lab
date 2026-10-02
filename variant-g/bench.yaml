@@ -1,0 +1,4 @@
+# eve-dogma-bench manifest for variant G (Python 3.10+ with NumPy)
+build: python3 -c "import numpy, sys; assert sys.version_info >= (3, 10)" && ./bin/eve-dogma-g --dataset {dataset} meta > /dev/null
+cmd: ./bin/eve-dogma-g --dataset {dataset} calc
+batch_cmd: ./bin/eve-dogma-g --dataset {dataset} batch

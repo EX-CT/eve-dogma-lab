@@ -1,0 +1,4 @@
+#!/bin/sh
+# eve-dogma-g launcher: python3 -m evedogma_g with the package directory on PYTHONPATH
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m evedogma_g "$@"

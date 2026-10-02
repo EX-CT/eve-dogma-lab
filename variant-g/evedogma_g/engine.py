@@ -1,0 +1,1056 @@
+"""Batch dogma engine.
+
+A *batch* holds any number of fits. Everything that scales with the number of items or modifiers is
+stored as flat NumPy columns over the whole batch:
+
+  items      one row per item (ship, character, skills, modules, charges, drones, ...) of every fit
+  mods       one row per (target item, attribute, operator, source) modifier
+  nodes      one row per (item, attribute) value, keyed by  item << 14 | attribute
+
+Building = relational joins (modifier templates x items x target tables) with searchsorted.
+Evaluation = the dogma graph is levelised (longest path from unmodified attributes) and evaluated one
+level at a time; within a level all operator stages, stacking penalties and min/max caps are vector
+ops over every modified attribute of every fit in the batch.
+
+The few effects that the SDE ships without modifierInfo (propulsion, MJD, slot/hardpoint modifiers,
+projected ewar, warfare bursts, Reactive Armor Hardener) are registered by small per-fit Python code
+that appends rows to the same tables.
+"""
+import numpy as np
+
+from .dataset import ATTR_BITS, SPECIAL_AB, SPECIAL_HARDPOINT, SPECIAL_MJD, SPECIAL_MWD, SPECIAL_SLOT
+from .request import RequestError
+
+# item kinds / locations
+SHIP, CHAR, SKILL, MODULE, CHARGE, DRONE, FIGHTER, IMPLANT, BOOSTER, MODE, BEACON, PROJECTED = range(12)
+L_SHIP, L_CHAR, L_SPACE, L_NOWHERE = range(4)
+OWNED_KINDS = (MODULE, CHARGE, DRONE, FIGHTER, SHIP)
+FULL_KINDS = (SHIP, CHAR, MODULE, CHARGE, DRONE, FIGHTER, PROJECTED)  # all base attrs materialised
+OFFLINE, ONLINE, ACTIVE, OVERHEATED = range(4)
+
+EXEMPT_CATEGORIES = np.array([6, 8, 16, 20, 32, 65])
+HULL_RESONANCES = (113, 111, 109, 110)
+ATTR_SKILL_LEVEL = 280
+STRUCTURE_SKILL_EFFECT_NAMES = (
+    "targetingMaxTargetBonusModAddMaxLockedTargetsLocationChar", "skillStructureMissileDamageBonus",
+    "skillStructureElectronicSystemsCapNeedBonus", "skillStructureEngineeringSystemsCapNeedBonus",
+    "skillStructureDoomsdayDurationBonus")
+# effect category -> minimum state for the effect to be applied locally (None = never local)
+STATE_OK = np.zeros((8, 4), bool)
+for _cat, _min in ((0, ONLINE), (4, ONLINE), (1, ACTIVE), (5, OVERHEATED), (7, OFFLINE)):
+    STATE_OK[_cat, _min:] = True
+OP_STAGES = (-1, 0, 1, 2, 3, 4, 5, 6, 7)  # CCP operator application order
+STAGE_OF_OP = {op: s for s, op in enumerate(OP_STAGES)}
+SRC_ATTR, SRC_CONST, SRC_PROP, SRC_PROJ = range(4)
+PENALTY_DENOM = 7.1289
+MAX_LEVELS = 64
+
+# target table classes (see Batch._target_table)
+T_LOC_SHIP, T_LOC_CHAR, T_GRP_SHIP, T_GRP_CHAR, T_RS_SHIP, T_RS_OWNED, T_RS_CHAR = range(7)
+KEY_X_BITS = 20
+
+
+def _tkey(fit, cls, x):
+    return ((np.asarray(fit, np.int64) * 8 + cls) << KEY_X_BITS) | np.asarray(x, np.int64)
+
+
+def _expand_ranges(lo, hi):
+    """for ranges [lo_i, hi_i): (owner index per element, element positions)"""
+    n = hi - lo
+    owner = np.repeat(np.arange(len(lo)), n)
+    if len(owner) == 0:
+        return owner, owner.astype(np.int64)
+    starts = np.repeat(lo - np.concatenate(([0], np.cumsum(n)[:-1])), n)
+    return owner, starts + np.arange(len(owner))
+
+
+def _join(qkeys, tkeys_sorted, tvals_sorted):
+    """many-to-many equi-join: (query row, matched table value) pairs"""
+    lo = np.searchsorted(tkeys_sorted, qkeys, "left")
+    hi = np.searchsorted(tkeys_sorted, qkeys, "right")
+    q, pos = _expand_ranges(lo, hi)
+    return q, tvals_sorted[pos]
+
+
+class Fit:
+    """per-fit metadata (Python side). Item indices are global batch indices."""
+
+    def __init__(self, req, index):
+        self.req = req
+        self.index = index
+        self.warnings = []
+        self.items = []  # non-skill items, global indices
+        self.modules, self.drones, self.fighters = [], [], []
+        self.error = None
+
+
+class Batch:
+    def __init__(self, ds):
+        self.ds = ds
+        self.fits = []
+        # item columns (Python lists while building, NumPy after finish_items)
+        self._cols = {k: [] for k in ("fit", "ti", "kind", "loc", "owned", "state", "parent", "charge")}
+        self.meta = []  # per item dict (slot, req_index, quantity, ...) - None for skills
+        self.skill_blocks = []  # (fit, first item index, type idx array, level array)
+        self.n_items = 0
+        self.overrides = {}  # (item, attr) -> base value
+        self.custom_effects = {}  # item -> list[(eff, default)] (mutated items)
+        self.custom_reqskills = {}
+        self.extra_rows = []  # (item, type idx, excluded effects) template rows from a mutation base type
+        self.mods = []  # list of dicts of NumPy columns, concatenated lazily
+        self.small = []  # Python-side mod rows (tuples)
+        self.values = None
+
+    # ------------------------------------------------------------------ items
+    def _new_item(self, fit, type_id, kind, loc, path, owned=None):
+        ds = self.ds
+        ti = ds.tidx(type_id)
+        if ti < 0:
+            raise RequestError("UNKNOWN_TYPE", f"unknown type_id {type_id}", path)
+        c = self._cols
+        c["fit"].append(fit.index); c["ti"].append(ti); c["kind"].append(kind); c["loc"].append(loc)
+        c["owned"].append(kind in OWNED_KINDS if owned is None else owned)
+        c["state"].append(ONLINE); c["parent"].append(-1); c["charge"].append(-1)
+        idx = self.n_items
+        self.n_items += 1
+        self.meta.append({"type_id": type_id, "ti": ti, "kind": kind, "slot": None, "req_index": None,
+                          "quantity": 1, "active_count": 0, "state": ONLINE, "charge": None, "parent": None,
+                          "effects": ds.t_effects[ti], "fighter_abilities": None, "side_effects": (),
+                          "spool": None, "distance": None, "group": int(ds.t_group[ti]), "category": int(ds.t_cat[ti])})
+        fit.items.append(idx)
+        return idx
+
+    def _set_state(self, i, st):
+        self._cols["state"][i] = st
+        self.meta[i]["state"] = st
+
+    def _apply_mutation(self, i, m):
+        ds = self.ds
+        it = self.meta[i]
+        bti = ds.tidx(m["base_type_id"])
+        if bti >= 0:
+            own_ti = it["ti"]
+
+            def raw(ti):
+                d = ds.type_attrs(ti)
+                for a in (4, 38, 161, 162):
+                    d.pop(a, None)
+                d.update(ds.t_raw_fields[ti])
+                return d
+
+            attrs = ds.type_attrs(own_ti)
+            attrs.update(raw(bti))
+            attrs.update(raw(own_ti))
+            if attrs.get(4, 0.0) == 0.0 and ds.t_mass[bti] != 0.0:
+                attrs[4] = float(ds.t_mass[bti])
+            for a, v in attrs.items():
+                self.overrides[(i, a)] = v
+            own = {e for e, _ in it["effects"]}
+            extra = [(e, d) for e, d in ds.t_effects[bti] if e not in own]
+            if extra:
+                it["effects"] = list(it["effects"]) + extra
+                self.extra_rows.append((i, bti, own))
+            if not ds.t_reqskills[own_ti]:
+                self.custom_reqskills[i] = ds.t_reqskills[bti]
+        muta = ds.muta.get(m["mutaplasmid_type_id"]) if m["mutaplasmid_type_id"] is not None else None
+        for k, v in m["attributes"].items():
+            try:
+                aid = int(k)
+            except ValueError:
+                continue
+            val = v
+            if muta is not None and bti >= 0:
+                rng = muta["attrs"].get(k)
+                bv = ds.type_attr(bti, aid)
+                if rng is not None and bv is not None and bv != 0.0:
+                    a, b = bv * rng[0], bv * rng[1]
+                    val = min(max(val, min(a, b)), max(a, b))
+            self.overrides[(i, aid)] = val
+
+    def add_fit(self, req):
+        """Create all items of one request (no modifiers yet). Raises RequestError for unknown types."""
+        ds = self.ds
+        fit = Fit(req, len(self.fits))
+        n_items0, n_meta0 = self.n_items, len(self.meta)
+        cols_len0 = {k: len(v) for k, v in self._cols.items()}
+        n_ov0 = dict(self.overrides)
+        try:
+            self._add_fit_items(fit, req)
+        except RequestError:
+            # roll back partial items of this fit
+            self.n_items = n_items0
+            del self.meta[n_meta0:]
+            for k, v in self._cols.items():
+                del v[cols_len0[k]:]
+            self.overrides = n_ov0
+            self.skill_blocks = [b for b in self.skill_blocks if b[0] != fit.index]
+            self.extra_rows = [r for r in self.extra_rows if r[0] < n_items0]
+            raise
+        self.fits.append(fit)
+        return fit
+
+    def _add_fit_items(self, fit, req):
+        ds = self.ds
+        ship = self._new_item(fit, req["ship"]["type_id"], SHIP, L_SHIP, "/ship/type_id")
+        fit.ship = ship
+        fit.is_structure = self.meta[ship]["category"] == 65
+        ch = self._new_item(fit, 1373, CHAR, L_CHAR, "/character")
+        fit.char = ch
+        sec = req["character"]["security_status"]
+        if sec is not None and ds.a("pilotSecurityStatus"):
+            self.overrides[(ch, ds.a("pilotSecurityStatus"))] = sec
+        # skills: every published skill at default level, then explicit levels (by id or name)
+        sk = req["character"]["skills"]
+        dl = sk["default_level"] or 0
+        levels = {}
+        for k, v in sk["levels"].items():
+            try:
+                sid = int(k)
+            except ValueError:
+                sid = ds.type_by_name.get(k.strip().lower())
+                if sid is None:
+                    continue
+            levels[sid] = v
+        sids = ds.published_skills
+        lv = np.full(len(sids), min(dl, 5), np.float64)
+        extra_ids = []
+        if levels:
+            pos = {int(s): k for k, s in enumerate(sids.tolist())} if len(levels) > 0 else {}
+            for sid, v in levels.items():
+                if sid in pos:
+                    lv[pos[sid]] = min(v, 5)
+                elif ds.tidx(sid) >= 0:
+                    extra_ids.append((sid, min(v, 5)))
+        all_ids = np.concatenate([sids, np.array([s for s, _ in extra_ids], np.int64)])
+        all_lv = np.concatenate([lv, np.array([v for _, v in extra_ids], np.float64)])
+        tis = ds.type_index[all_ids].astype(np.int32)
+        first = self.n_items
+        n = len(all_ids)
+        self.skill_blocks.append((fit.index, first, tis, all_lv))
+        c = self._cols
+        c["fit"].extend([fit.index] * n); c["ti"].extend(tis.tolist()); c["kind"].extend([SKILL] * n)
+        c["loc"].extend([L_CHAR] * n); c["owned"].extend([False] * n); c["state"].extend([ONLINE] * n)
+        c["parent"].extend([-1] * n); c["charge"].extend([-1] * n)
+        self.meta.extend([None] * n)
+        self.n_items += n
+        fit.skill_levels = dict(zip(all_ids.tolist(), all_lv.tolist()))
+        fit.skill_first, fit.skill_n = first, n
+        # tactical destroyer mode
+        mode = req["ship"]["mode_type_id"]
+        if mode is None:
+            sname = ds.t_name[self.meta[ship]["ti"]].lower()
+            cands = [tid for tid, nm in ds.modes_1306 if nm.startswith(sname)]
+            if cands:
+                mode = min(cands)
+                fit.warnings.append(f"no tactical mode given; defaulted to type {mode}")
+        if mode is not None:
+            self._new_item(fit, mode, MODE, L_NOWHERE, "/ship/mode_type_id", owned=False)
+        for i, m in enumerate(req["modules"]):
+            path = f"/modules/{i}"
+            idx = self._new_item(fit, m["type_id"], MODULE, L_SHIP, path)
+            it = self.meta[idx]
+            slot = m["slot"] or ds.t_slot[it["ti"]]
+            it["slot"], it["req_index"], it["spool"] = slot, i, m["spool"]
+            st = m["state"] if m["state"] is not None else ONLINE
+            if slot in ("rig", "subsystem") and st != OFFLINE:
+                st = ONLINE
+            self._set_state(idx, st)
+            if m["mutation"]:
+                self._apply_mutation(idx, m["mutation"])
+            if m["charge_type_id"] is not None:
+                cidx = self._new_item(fit, m["charge_type_id"], CHARGE, L_SHIP, path + "/charge_type_id")
+                self._cols["parent"][cidx] = idx
+                self._cols["charge"][idx] = cidx
+                self.meta[cidx]["parent"] = idx
+                self.meta[cidx]["req_index"] = i
+                it["charge"] = cidx
+            fit.modules.append(idx)
+        for i, d in enumerate(req["drones"]):
+            idx = self._new_item(fit, d["type_id"], DRONE, L_SPACE, f"/drones/{i}")
+            if d["mutation"]:
+                self._apply_mutation(idx, d["mutation"])
+            it = self.meta[idx]
+            it["quantity"] = max(d["quantity"], 1)
+            it["active_count"] = min(d["active"] or 0, it["quantity"])
+            self._set_state(idx, ACTIVE if it["active_count"] > 0 else OFFLINE)
+            it["req_index"] = i
+            fit.drones.append(idx)
+        sq_attr = ds.a("fighterSquadronMaxSize")
+        for i, f in enumerate(req["fighters"]):
+            idx = self._new_item(fit, f["type_id"], FIGHTER, L_SPACE, f"/fighters/{i}")
+            it = self.meta[idx]
+            maxsq = int(ds.type_attr(it["ti"], sq_attr, 1.0))
+            q = f["quantity"]
+            it["quantity"] = min(max(q if q is not None else maxsq, 1), max(maxsq, 1))
+            if (q or 0) > maxsq:
+                fit.warnings.append(f"fighters/{i}: squadron size {q} capped to {maxsq}")
+            it["active_count"] = it["quantity"] if f["active"] else 0
+            self._set_state(idx, ACTIVE if f["active"] else OFFLINE)
+            if f["abilities"] is not None:
+                it["fighter_abilities"] = list(f["abilities"])
+            else:
+                on, std_seen = [], False
+                for e in sorted(e for e, _ in it["effects"]):
+                    nm = ds.effect_name.get(e)
+                    if nm is None or not nm.startswith("fighterAbility"):
+                        continue
+                    if nm == "fighterAbilityAttackM":
+                        on.append(e)
+                        std_seen = True
+                    elif not std_seen and nm not in ("fighterAbilityMicroWarpDrive", "fighterAbilityEvasiveManeuvers",
+                                                     "fighterAbilityMicroJumpDrive"):
+                        on.append(e)
+                it["fighter_abilities"] = on
+            it["req_index"] = i
+            fit.fighters.append(idx)
+        for i, imp in enumerate(req["implants"]):
+            idx = self._new_item(fit, imp, IMPLANT, L_CHAR, f"/implants/{i}", owned=False)
+            self.meta[idx]["req_index"] = i
+        for i, b in enumerate(req["boosters"]):
+            idx = self._new_item(fit, b["type_id"], BOOSTER, L_CHAR, f"/boosters/{i}", owned=False)
+            self.meta[idx]["side_effects"] = tuple(b["side_effects"])
+            self.meta[idx]["req_index"] = i
+        for i, e in enumerate(req["environment"]["effect_type_ids"]):
+            self._new_item(fit, e, BEACON, L_NOWHERE, f"/environment/effect_type_ids/{i}", owned=False)
+        for i, p in enumerate(req["projected"]):
+            if p["kind"] == "module":
+                if p["module"]:
+                    m = p["module"]
+                    for _ in range(max(p["amount"], 1)):
+                        idx = self._new_item(fit, m["type_id"], PROJECTED, L_NOWHERE, f"/projected/{i}", owned=False)
+                        self._set_state(idx, m["state"] if m["state"] is not None else ACTIVE)
+                        self.meta[idx]["distance"] = p["distance_m"]
+                        self.meta[idx]["req_index"] = i
+            elif p["kind"] == "drone":
+                if p["drone"]:
+                    d = p["drone"]
+                    for _ in range(max(p["amount"], 1) * max(d["quantity"], 1)):
+                        idx = self._new_item(fit, d["type_id"], PROJECTED, L_NOWHERE, f"/projected/{i}", owned=False)
+                        self._set_state(idx, ACTIVE)
+                        self.meta[idx]["distance"] = p["distance_m"]
+            else:
+                fit.warnings.append(f"projected kind '{p['kind']}' not supported yet (index {i})")
+        # system security -> securityModifier
+        sec = (req["environment"]["system_security"] or "nullsec").lower()
+        if sec in ("hisec", "highsec", "high"):
+            src = "hiSecModifier"
+        elif sec in ("lowsec", "low"):
+            src = "lowSecModifier"
+        elif sec in ("nullsec", "null", "wspace", "wormhole", "w-space"):
+            src = "nullSecModifier"
+        else:
+            fit.warnings.append(f"unknown system_security '{sec}', using nullsec")
+            src = "nullSecModifier"
+        src_id, dst_id = ds.a(src), ds.a("securityModifier")
+        sec_types = ds.sec_types.get(src)
+        if sec_types is not None and len(sec_types):
+            for i in fit.items:
+                ti = self.meta[i]["ti"]
+                key = (i, src_id)
+                if key in self.overrides:
+                    self.overrides[(i, dst_id)] = self.overrides[key]
+                elif np.any(sec_types == ti):
+                    self.overrides[(i, dst_id)] = ds.type_attr(ti, src_id)
+            tis = self.skill_blocks[-1][2]
+            hit = np.isin(tis, sec_types)
+            for k in np.nonzero(hit)[0].tolist():
+                self.overrides[(fit.skill_first + k, dst_id)] = ds.type_attr(int(tis[k]), src_id)
+        for o in req["overrides"]:
+            for i in fit.items:
+                if self.meta[i]["type_id"] == o["type_id"]:
+                    self.overrides[(i, o["attribute_id"])] = o["value"]
+            if o["type_id"] in fit.skill_levels:
+                sid_list = self.skill_blocks[-1][2]
+                ti = ds.tidx(o["type_id"])
+                for k in np.nonzero(sid_list == ti)[0].tolist():
+                    self.overrides[(fit.skill_first + k, o["attribute_id"])] = o["value"]
+
+    # ------------------------------------------------------------------ registration
+    def finish_items(self):
+        c = self._cols
+        self.it_fit = np.array(c["fit"], np.int64)
+        self.it_ti = np.array(c["ti"], np.int64)
+        self.it_kind = np.array(c["kind"], np.int8)
+        self.it_loc = np.array(c["loc"], np.int8)
+        self.it_owned = np.array(c["owned"], bool)
+        self.it_state = np.array(c["state"], np.int8)
+        self.it_parent = np.array(c["parent"], np.int64)
+        self.it_charge = np.array(c["charge"], np.int64)
+        ds = self.ds
+        self.it_group = ds.t_group[self.it_ti].astype(np.int64)
+        self.it_cat = ds.t_cat[self.it_ti].astype(np.int64)
+        nf = len(self.fits)
+        self.fit_ship = np.array([f.ship for f in self.fits], np.int64)
+        self.fit_char = np.array([f.char for f in self.fits], np.int64)
+        self.fit_struct = np.array([f.is_structure for f in self.fits], bool) if nf else np.zeros(0, bool)
+        # effective state for effect registration
+        st = self.it_state.copy()
+        k = self.it_kind
+        st[np.isin(k, (SHIP, CHAR, SKILL, IMPLANT, BOOSTER, MODE, BEACON))] = ONLINE
+        ch = k == CHARGE
+        st[ch] = np.where(self.it_parent[ch] >= 0, self.it_state[np.maximum(self.it_parent[ch], 0)], ONLINE)
+        self.it_estate = st
+        self._target_table()
+
+    def _target_table(self):
+        """sorted (key -> item) table used to resolve Location / LocationGroup / RequiredSkill modifiers"""
+        n = self.n_items
+        items = np.arange(n, dtype=np.int64)
+        f, loc, grp = self.it_fit, self.it_loc, self.it_group
+        keys, vals = [], []
+        s = loc == L_SHIP
+        c = loc == L_CHAR
+        keys += [_tkey(f[s], T_LOC_SHIP, 0), _tkey(f[c], T_LOC_CHAR, 0),
+                 _tkey(f[s], T_GRP_SHIP, grp[s]), _tkey(f[c], T_GRP_CHAR, grp[c])]
+        vals += [items[s], items[c], items[s], items[c]]
+        # required skills (skills' own requirements are never used as targets)
+        rs_item, rs_skill = [], []
+        for i, m in enumerate(self.meta):
+            if m is None:
+                continue
+            req = self.custom_reqskills.get(i) or self.ds.t_reqskills[m["ti"]]
+            for sk in req:
+                rs_item.append(i)
+                rs_skill.append(sk)
+        rs_item = np.array(rs_item, np.int64)
+        rs_skill = np.array(rs_skill, np.int64)
+        self.rs_item, self.rs_skill = rs_item, rs_skill
+        rf = f[rs_item]
+        for cls, mask in ((T_RS_SHIP, loc[rs_item] == L_SHIP), (T_RS_OWNED, self.it_owned[rs_item]),
+                          (T_RS_CHAR, (self.it_owned[rs_item] | (loc[rs_item] == L_CHAR)) & (self.it_kind[rs_item] != SKILL))):
+            keys.append(_tkey(rf[mask], cls, rs_skill[mask]))
+            vals.append(rs_item[mask])
+        keys = np.concatenate(keys)
+        vals = np.concatenate(vals)
+        o = np.argsort(keys, kind="stable")
+        self.tt_keys, self.tt_vals = keys[o], vals[o]
+
+    def register_all(self):
+        self.finish_items()
+        self._register_generic()
+        for fit in self.fits:
+            self._register_python(fit)
+
+    def _register_generic(self):
+        """vectorised registration of all SDE modifiers of all items in the batch"""
+        ds, tm = self.ds, self.ds.tm
+        ti = self.it_ti
+        lo, hi = ds.tm_ptr[ti], ds.tm_ptr[ti + 1]
+        src, rows = _expand_ranges(lo, hi)
+        src = src.astype(np.int64)
+        # template rows from mutation base types (effects the mutated type does not have itself)
+        for i, bti, own in self.extra_rows:
+            r = np.arange(ds.tm_ptr[bti], ds.tm_ptr[bti + 1])
+            r = r[~np.isin(tm["eff"][r], list(own))]
+            src = np.concatenate([src, np.full(len(r), i, np.int64)])
+            rows = np.concatenate([rows, r])
+        eff = tm["eff"][rows]
+        ecat = tm["ecat"][rows].astype(np.int64)
+        kind = self.it_kind[src]
+        fit = self.it_fit[src]
+        struct = self.fit_struct[fit]
+        keep = kind != PROJECTED
+        keep &= ~(struct & np.isin(kind, (DRONE, IMPLANT, BOOSTER)))
+        sok = np.array([ds.e(n) for n in STRUCTURE_SKILL_EFFECT_NAMES])
+        keep &= ~(struct & (kind == SKILL) & ~np.isin(eff, sok) & ~tm["allitem"][rows])
+        # booster side effects only when selected; fighter abilities only when enabled
+        fuc = tm["fuc"][rows]
+        if fuc.any():
+            allowed = {(i, e) for i, m in enumerate(self.meta) if m is not None for e in m["side_effects"]}
+            idx = np.nonzero(fuc)[0]
+            ok = np.array([(int(src[j]), int(eff[j])) in allowed for j in idx], bool)
+            keep[idx[~ok]] = False
+        fi = np.nonzero((kind == FIGHTER) & (ecat != 0))[0]
+        if len(fi):
+            ok = np.array([int(eff[j]) in self.meta[int(src[j])]["fighter_abilities"] for j in fi], bool)
+            keep[fi[~ok]] = False
+        keep &= STATE_OK[np.clip(ecat, 0, 7), self.it_estate[src]] & (ecat <= 7)
+        src, rows, eff = src[keep], rows[keep], eff[keep]
+        special = tm["special"][rows]
+        sp = special != 0
+        self.special_rows = list(zip(src[sp].tolist(), special[sp].tolist()))
+        src, rows, eff = src[~sp], rows[~sp], eff[~sp]
+        func = tm["func"][rows].astype(np.int64)
+        dom = tm["dom"][rows].astype(np.int64)
+        extra = tm["extra"][rows].copy()
+        z = (extra == 0) & ((func == 3) | (func == 4))
+        extra[z] = self.ds.t_id[self.it_ti[src[z]]]  # EXCT patch convention: skill 0 = the effect's owner
+        fit = self.it_fit[src]
+        # direct targets
+        tgt_q, tgt_t = [], []
+        r = np.arange(len(src))
+        m = (dom == 0) & (func == 0)
+        tgt_q.append(r[m]); tgt_t.append(src[m])
+        m = dom == 3
+        other = np.where(self.it_charge[src] >= 0, self.it_charge[src], self.it_parent[src])
+        m &= other >= 0
+        tgt_q.append(r[m]); tgt_t.append(other[m])
+        shipdom = (dom == 1) | ((dom == 4) & self.fit_struct[fit])
+        m = shipdom & (func == 0)
+        tgt_q.append(r[m]); tgt_t.append(self.fit_ship[fit[m]])
+        m = (dom == 2) & (func == 0)
+        tgt_q.append(r[m]); tgt_t.append(self.fit_char[fit[m]])
+        # table targets
+        cls = np.full(len(src), -1, np.int64)
+        x = np.zeros(len(src), np.int64)
+        cls[shipdom & (func == 1)] = T_LOC_SHIP
+        cls[shipdom & (func == 2)] = T_GRP_SHIP
+        cls[shipdom & (func == 3)] = T_RS_SHIP
+        cls[shipdom & (func == 4)] = T_RS_OWNED
+        cls[(dom == 2) & (func == 1)] = T_LOC_CHAR
+        cls[(dom == 2) & (func == 2)] = T_GRP_CHAR
+        cls[(dom == 2) & ((func == 3) | (func == 4))] = T_RS_CHAR
+        has_x = np.isin(cls, (T_GRP_SHIP, T_GRP_CHAR, T_RS_SHIP, T_RS_OWNED, T_RS_CHAR))
+        x[has_x] = extra[has_x]
+        jm = np.nonzero(cls >= 0)[0]
+        q, t = _join(_tkey(fit[jm], cls[jm], x[jm]), self.tt_keys, self.tt_vals)
+        tgt_q.append(jm[q]); tgt_t.append(t)
+        q = np.concatenate(tgt_q)
+        t = np.concatenate(tgt_t)
+        rq = rows[q]
+        cat = self.it_cat[src[q]]
+        bastion = ds.e("moduleBonusBastionModule")
+        if bastion:
+            cat = np.where((eff[q] == bastion) & np.isin(tm["modified"][rq], HULL_RESONANCES), 6, cat)
+        attr = tm["modified"][rq].astype(np.int64)
+        self.mods.append({
+            "tgt": t, "attr": attr, "op": tm["op"][rq].astype(np.int64),
+            "pen": ~ds.attr_stack[attr] & ~np.isin(cat, EXEMPT_CATEGORIES),
+            "kind": np.zeros(len(q), np.int64),
+            "a": (src[q] << ATTR_BITS) | tm["modifying"][rq].astype(np.int64),
+            "b": np.full(len(q), -1, np.int64), "c": np.full(len(q), -1, np.int64),
+            "const": np.zeros(len(q)), "factor": np.ones(len(q)), "mul": np.zeros(len(q), bool),
+            "src_item": src[q]})
+
+    # small per-fit registrations -------------------------------------------------
+    def push(self, tgt, attr, op, kind, a=-1, b=-1, c=-1, const=0.0, factor=1.0, mul=False, src_item=-1, src_cat=0):
+        pen = (not self.ds.attr_stack[attr]) and src_cat not in (6, 8, 16, 20, 32, 65)
+        self.small.append((tgt, attr, op, pen, kind, a, b, c, const, factor, mul, src_item))
+
+    @staticmethod
+    def key(item, attr):
+        return (item << ATTR_BITS) | attr
+
+    def _register_python(self, fit):
+        ds = self.ds
+        a = ds.a
+        K = self.key
+        ship = fit.ship
+        for i, sp in [r for r in self.special_rows if self.it_fit[r[0]] == fit.index]:
+            cat = self.meta[i]["category"]
+            if sp in (SPECIAL_AB, SPECIAL_MWD):
+                self.push(ship, 4, 2, SRC_ATTR, K(i, a("massAddition")), src_item=i, src_cat=cat)
+                self.push(ship, a("maxVelocity"), 4, SRC_PROP, K(i, a("speedFactor")), K(i, a("speedBoostFactor")),
+                          K(ship, 4), src_item=i, src_cat=cat)
+                if sp == SPECIAL_MWD:
+                    self.push(ship, a("signatureRadius"), 6, SRC_ATTR, K(i, a("signatureRadiusBonus")), src_item=i, src_cat=cat)
+            elif sp == SPECIAL_MJD:
+                self.push(ship, a("signatureRadius"), 6, SRC_ATTR, K(i, a("signatureRadiusBonusPercent")), src_item=i, src_cat=6)
+            elif sp == SPECIAL_SLOT:
+                for t, s in (("hiSlots", "hiSlotModifier"), ("medSlots", "medSlotModifier"), ("lowSlots", "lowSlotModifier")):
+                    self.push(ship, a(t), 2, SRC_ATTR, K(i, a(s)), src_item=i, src_cat=cat)
+            elif sp == SPECIAL_HARDPOINT:
+                for t, s in (("turretSlotsLeft", "turretHardPointModifier"), ("launcherSlotsLeft", "launcherHardPointModifier")):
+                    self.push(ship, a(t), 2, SRC_ATTR, K(i, a(s)), src_item=i, src_cat=cat)
+        for i in fit.items:
+            if self.meta[i]["kind"] == PROJECTED:
+                self._register_projected(fit, i)
+        # explicit fleet buffs (aggregated per buff id)
+        agg = {}
+        for b in fit.req["fleet"]["buffs"]:
+            info = ds.dbuffs.get(b["buff_id"])
+            if info is None:
+                fit.warnings.append(f"unknown warfare buff {b['buff_id']}")
+                continue
+            if b["buff_id"] not in agg:
+                agg[b["buff_id"]] = b["value"]
+            elif info.get("aggregate") == "Minimum":
+                agg[b["buff_id"]] = min(agg[b["buff_id"]], b["value"])
+            else:
+                agg[b["buff_id"]] = max(agg[b["buff_id"]], b["value"])
+        for bid in sorted(agg):
+            self.apply_buff(fit, bid, SRC_CONST, -1, agg[bid], ship)
+
+    def _register_projected(self, fit, i):
+        ds = self.ds
+        it = self.meta[i]
+        ship = fit.ship
+        K = self.key
+        if it["state"] < ACTIVE:
+            return
+        base = ds.type_attrs(it["ti"])
+        for (k_item, k_attr), v in self.overrides.items():
+            if k_item == i:
+                base[k_attr] = v
+        for eid, _ in it["effects"]:
+            e = ds.eff_info.get(eid)
+            if e is None or e["category"] not in (2, 3):
+                continue
+            opt = base.get(e["range_attr"], 0.0) if e["range_attr"] is not None else 0.0
+            fo = base.get(e["falloff_attr"], 0.0) if e["falloff_attr"] is not None else 0.0
+            factor = range_factor(opt, fo, it["distance"], True)
+            resist = e["resistance_attr"]
+            if resist is None:
+                resist = int(base.get(ds.a("remoteResistanceID"), 0.0)) if ds.a("remoteResistanceID") in base else 0
+
+            def push(tattr, sattr, op):
+                self.push(ship, tattr, op, SRC_PROJ, K(i, sattr), -1, K(ship, resist) if resist else -1,
+                          factor=factor, mul=op in (0, 4), src_item=i, src_cat=it["category"])
+
+            if e["mods"]:
+                for f, dom, mod_, mding, op, extra in e["mods"]:
+                    if dom in (5, 6, 1) and f == 0:
+                        push(mod_, mding, op)
+                continue
+            nm = e["name"]
+            a = ds.a
+            if nm.startswith("remoteWebifier") or nm == "structureModuleEffectStasisWebifier":
+                push(a("maxVelocity"), a("speedFactor"), 6)
+            elif nm.startswith("remoteTargetPaint") or nm == "structureModuleEffectTargetPainter":
+                push(a("signatureRadius"), a("signatureRadiusBonus"), 6)
+            elif nm.startswith("remoteSensorDamp") or nm == "structureModuleEffectRemoteSensorDampener" \
+                    or nm.startswith("remoteSensorBoost"):
+                push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
+                push(a("scanResolution"), a("scanResolutionBonus"), 6)
+            else:
+                fit.warnings.append(f"projected effect '{nm}' not modelled yet")
+
+    def loc_ship_items(self, fit):
+        return [i for i in fit.items if self.meta[i]["kind"] in (SHIP, MODULE, CHARGE)]
+
+    def apply_buff(self, fit, bid, kind, a_key, const, source_item):
+        info = self.ds.dbuffs.get(bid)
+        if info is None:
+            return
+        op = info["op"]
+        ship = fit.ship
+        loc = self.loc_ship_items(fit)
+        for at in info["item"]:
+            self.push(ship, at, op, kind, a_key, const=const, src_item=source_item, src_cat=0)
+        for at in info["location"]:
+            for t in loc:
+                self.push(t, at, op, kind, a_key, const=const, src_item=source_item, src_cat=0)
+        for at, g in info["location_group"]:
+            for t in loc:
+                if self.meta[t]["group"] == g:
+                    self.push(t, at, op, kind, a_key, const=const, src_item=source_item, src_cat=0)
+        for at, s in info["location_skill"]:
+            for t in loc:
+                req = self.custom_reqskills.get(t) or self.ds.t_reqskills[self.meta[t]["ti"]]
+                if s in req:
+                    self.push(t, at, op, kind, a_key, const=const, src_item=source_item, src_cat=0)
+
+
+def range_factor(optimal, falloff, distance, restricted):
+    if distance is None:
+        return 1.0
+    if falloff > 0.0:
+        if restricted and distance > optimal + 3.0 * falloff:
+            return 0.0
+        return 0.5 ** ((max(distance - optimal, 0.0) / falloff) ** 2)
+    return 1.0 if distance <= optimal else 0.0
+
+
+# ====================================================================== evaluation
+MOD_COLS = ("tgt", "attr", "op", "pen", "kind", "a", "b", "c", "const", "factor", "mul", "src_item")
+
+
+def _round_half_away(x):
+    return np.sign(x) * np.floor(np.abs(x) * 100.0 + 0.5) / 100.0
+
+
+class Evaluated:
+    """values of every node of (a subset of) a batch"""
+
+    def __init__(self, keys, val, base):
+        self.keys, self.val, self.base = keys, val, base
+
+    def lookup(self, keys):
+        k = np.asarray(keys, np.int64)
+        pos = np.searchsorted(self.keys, k)
+        pos = np.minimum(pos, len(self.keys) - 1)
+        found = self.keys[pos] == k if len(self.keys) else np.zeros(len(k), bool)
+        return pos, found
+
+
+def _mods_table(batch):
+    parts = list(batch.mods)
+    if batch.small:
+        cols = list(zip(*batch.small))
+        parts.append({k: np.array(v, dtype=(bool if k in ("pen", "mul") else (np.float64 if k in ("const", "factor") else np.int64)))
+                      for k, v in zip(MOD_COLS, cols)})
+    if not parts:
+        return {k: np.zeros(0, np.int64) for k in MOD_COLS}
+    return {k: np.concatenate([p[k] for p in parts]) for k in MOD_COLS}
+
+
+def evaluate(batch, fit_mask=None):
+    """Evaluate every attribute of every fit (or of fits where fit_mask is True)."""
+    ds = batch.ds
+    B = ATTR_BITS
+    M = _mods_table(batch)
+    tgt_key = (M["tgt"] << B) | M["attr"]
+    item_fit = batch.it_fit
+    if fit_mask is not None:
+        sel = fit_mask[item_fit[M["tgt"]]]
+        M = {k: v[sel] for k, v in M.items()}
+        tgt_key = tgt_key[sel]
+    # ---- node set
+    full = np.isin(batch.it_kind, FULL_KINDS)
+    if fit_mask is not None:
+        full &= fit_mask[item_fit]
+    fi = np.nonzero(full)[0]
+    ti = batch.it_ti[fi]
+    owner, pos = _expand_ranges(ds.t_attr_ptr[ti], ds.t_attr_ptr[ti + 1])
+    base_keys = (fi[owner] << B) | ds.t_attr_ids[pos].astype(np.int64)
+    ov_keys = np.array([(i << B) | a for i, a in batch.overrides], np.int64)
+    ov_vals = np.array(list(batch.overrides.values()), np.float64)
+    if fit_mask is not None and len(ov_keys):
+        s = fit_mask[item_fit[ov_keys >> B]]
+        ov_keys, ov_vals = ov_keys[s], ov_vals[s]
+    sk_keys, sk_vals = [], []
+    for f, first, tis, lv in batch.skill_blocks:
+        if fit_mask is None or fit_mask[f]:
+            sk_keys.append(((first + np.arange(len(tis), dtype=np.int64)) << B) | ATTR_SKILL_LEVEL)
+            sk_vals.append(lv)
+    sk_keys = np.concatenate(sk_keys) if sk_keys else np.zeros(0, np.int64)
+    sk_vals = np.concatenate(sk_vals) if sk_vals else np.zeros(0)
+    refs = [M["a"], M["b"], M["c"]]
+    refs = [r[r >= 0] for r in refs]
+    keys = np.unique(np.concatenate([base_keys, ov_keys, sk_keys, tgt_key] + refs))
+    n = len(keys)
+    node_item = keys >> B
+    node_attr = keys & ((1 << B) - 1)
+    base = _resolve_base(batch, keys, node_item, node_attr, ov_keys, ov_vals, sk_keys, sk_vals)
+
+    # ---- modifier -> node indices
+    tgt = np.searchsorted(keys, tgt_key)
+
+    def idx(k):
+        out = np.full(len(k), -1, np.int64)
+        m = k >= 0
+        out[m] = np.searchsorted(keys, k[m])
+        return out
+
+    ia, ib, ic = idx(M["a"]), idx(M["b"]), idx(M["c"])
+    kind = M["kind"]
+    # ---- min/max caps
+    cap_node = []
+    for cap_attr_tab in (ds.attr_min, ds.attr_max):
+        ca = cap_attr_tab[node_attr].astype(np.int64)
+        has = ca >= 0
+        ck = np.where(has, (node_item << B) | np.maximum(ca, 0), -1)
+        ci = np.full(n, -1, np.int64)
+        p = np.searchsorted(keys, ck[has])
+        p = np.minimum(p, n - 1)
+        ok = keys[p] == ck[has]
+        ci[np.nonzero(has)[0][ok]] = p[ok]
+        # fallback constant when the cap attribute is not a node (pruned/absent)
+        fb = np.zeros(n)
+        miss = np.nonzero(has)[0][~ok]
+        if len(miss):
+            fb[miss] = _resolve_base(batch, ck[miss], node_item[miss], ca[miss], ov_keys, ov_vals, sk_keys, sk_vals)
+        cap_node.append((has, ci, fb))
+    rnd = ds.attr_round[node_attr]
+
+    # ---- levelise: longest path from unmodified nodes
+    lev = np.zeros(n, np.int64)
+    work = np.zeros(n, bool)
+    work[tgt] = True
+    for has, _, _ in cap_node:
+        work |= has
+    work |= rnd
+    lev[work] = 1
+    e_dst = [tgt[ia >= 0], tgt[ib >= 0], tgt[ic >= 0]]
+    e_src = [ia[ia >= 0], ib[ib >= 0], ic[ic >= 0]]
+    for has, ci, _ in cap_node:
+        m = ci >= 0
+        e_dst.append(np.nonzero(m)[0])
+        e_src.append(ci[m])
+    e_dst = np.concatenate(e_dst)
+    e_src = np.concatenate(e_src)
+    for _ in range(MAX_LEVELS):
+        new = lev.copy()
+        np.maximum.at(new, e_dst, lev[e_src] + 1)
+        np.minimum(new, MAX_LEVELS, out=new)
+        if np.array_equal(new, lev):
+            break
+        lev = new
+    val = base.copy()
+    if not work.any():
+        return Evaluated(keys, val, base)
+    mlev = lev[tgt]
+    order = np.argsort(mlev, kind="stable")
+    mstarts = np.searchsorted(mlev[order], np.arange(MAX_LEVELS + 2))
+    nodes_by_lev = np.argsort(lev, kind="stable")
+    nstarts = np.searchsorted(lev[nodes_by_lev], np.arange(MAX_LEVELS + 2))
+    stage = np.full(16, -1, np.int64)
+    for s, op in enumerate(OP_STAGES):
+        stage[op + 1] = s
+    mstage = stage[M["op"] + 1]
+    hig = ds.attr_hig
+    for L in range(1, int(lev.max()) + 1):
+        nodes = nodes_by_lev[nstarts[L]:nstarts[L + 1]]
+        if len(nodes) == 0:
+            continue
+        mi = order[mstarts[L]:mstarts[L + 1]]
+        v = val[nodes]
+        if len(mi):
+            t_loc = np.searchsorted(nodes, tgt[mi])  # nodes are sorted (stable argsort of ascending ids)
+            k = kind[mi]
+            sv = np.empty(len(mi))
+            m0 = k == SRC_ATTR
+            sv[m0] = val[ia[mi[m0]]]
+            m1 = k == SRC_CONST
+            sv[m1] = M["const"][mi[m1]]
+            m2 = k == SRC_PROP
+            if m2.any():
+                mass = val[ic[mi[m2]]]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    pv = 1.0 + val[ia[mi[m2]]] / 100.0 * val[ib[mi[m2]]] / mass
+                sv[m2] = np.where(mass == 0.0, 1.0, pv)
+            m3 = k == SRC_PROJ
+            if m3.any():
+                j = mi[m3]
+                f = M["factor"][j] * np.where(ic[j] >= 0, val[np.maximum(ic[j], 0)], 1.0)
+                pv = val[ia[j]]
+                sv[m3] = np.where(M["mul"][j], (pv - 1.0) * f + 1.0, pv * f)
+            op = M["op"][mi]
+            st = mstage[mi]
+            nl = len(nodes)
+            flat = st * nl + t_loc
+            present = np.zeros(9 * nl, bool)
+            present[flat] = True
+            # assignments (PreAssign / PostAssign): highest (or lowest if not high_is_good) wins
+            asg = (op == -1) | (op == 7)
+            assign = np.full(9 * nl, -np.inf)
+            if asg.any():
+                h = hig[M["attr"][mi[asg]]]
+                np.maximum.at(assign, flat[asg], np.where(h, sv[asg], -sv[asg]))
+            addv = np.zeros(9 * nl)
+            ad = (op == 2) | (op == 3)
+            if ad.any():
+                np.add.at(addv, flat[ad], sv[ad])
+            mulv = np.ones(9 * nl)
+            mu = ~asg & ~ad
+            if mu.any():
+                mv = sv[mu]
+                o = op[mu]
+                with np.errstate(divide="ignore"):
+                    inv = np.where(mv == 0.0, 1.0, 1.0 / np.where(mv == 0.0, 1.0, mv))
+                mm = np.where((o == 0) | (o == 4), mv, np.where((o == 1) | (o == 5), inv,
+                                                                np.where(o == 6, 1.0 + mv / 100.0, 1.0)))
+                pen = M["pen"][mi[mu]] & (mm != 1.0)
+                fac = mm.copy()
+                if pen.any():
+                    pm = mm[pen]
+                    grp = flat[mu][pen] * 2 + (pm < 1.0)
+                    srt = np.lexsort((-np.abs(pm - 1.0), grp))
+                    g_s = grp[srt]
+                    first = np.r_[True, g_s[1:] != g_s[:-1]]
+                    start = np.maximum.accumulate(np.where(first, np.arange(len(g_s)), 0))
+                    rank = np.arange(len(g_s)) - start
+                    pf = np.empty(len(pm))
+                    pf[srt] = 1.0 + (pm[srt] - 1.0) * np.exp(-(rank * rank) / PENALTY_DENOM)
+                    fac[pen] = pf
+                np.multiply.at(mulv, flat[mu], fac)
+            attr_n = node_attr[nodes]
+            hn = hig[attr_n]
+            for s, opv in enumerate(OP_STAGES):
+                sl = slice(s * nl, (s + 1) * nl)
+                pr = present[sl]
+                if not pr.any():
+                    continue
+                if opv in (-1, 7):
+                    a = assign[sl]
+                    a = np.where(hn, a, -a)
+                    v = np.where(pr, a, v)
+                elif opv == 2:
+                    v = v + addv[sl]
+                elif opv == 3:
+                    v = v - addv[sl]
+                else:
+                    v = v * mulv[sl]
+        for has, ci, fb in cap_node:
+            hs = has[nodes]
+            if hs.any():
+                c = ci[nodes]
+                cv = np.where(c >= 0, val[np.maximum(c, 0)], fb[nodes])
+                if has is cap_node[0][0]:
+                    v = np.where(hs, np.where(cv > v, cv, v), v)
+                else:
+                    v = np.where(hs, np.where(cv < v, cv, v), v)
+        r = rnd[nodes]
+        if r.any():
+            v = np.where(r, _round_half_away(v), v)
+        val[nodes] = v
+    return Evaluated(keys, val, base)
+
+
+def _resolve_base(batch, keys, node_item, node_attr, ov_keys, ov_vals, sk_keys, sk_vals):
+    """base value of (item, attr) nodes: override > skill level > type attribute > attribute default"""
+    ds = batch.ds
+    B = ATTR_BITS
+    base = ds.attr_def[node_attr].copy()
+    tk = (batch.it_ti[node_item] << B) | node_attr
+    p = np.minimum(np.searchsorted(ds.ta_key, tk), len(ds.ta_key) - 1)
+    ok = ds.ta_key[p] == tk
+    base[ok] = ds.t_attr_vals[p[ok]]
+    for kk, vv in ((sk_keys, sk_vals), (ov_keys, ov_vals)):
+        if len(kk):
+            o = np.argsort(kk, kind="stable")
+            ks, vs = kk[o], vv[o]
+            p = np.minimum(np.searchsorted(ks, keys), len(ks) - 1)
+            ok = ks[p] == keys
+            base[ok] = vs[p[ok]]
+    return base
+
+
+class Values:
+    """attribute access for one evaluated batch (Rust-like get / has / base semantics)"""
+
+    def __init__(self, batch, ev):
+        self.batch, self.ev, self.ds = batch, ev, batch.ds
+        self._keys = ev.keys
+        self._n = len(ev.keys)
+
+    def _pos(self, item, attr):
+        k = (item << ATTR_BITS) | attr
+        p = int(np.searchsorted(self._keys, k))
+        if p < self._n and self._keys[p] == k:
+            return p
+        return -1
+
+    def get(self, item, attr):
+        p = self._pos(item, attr)
+        return float(self.ev.val[p]) if p >= 0 else self.ds.attr_default(attr)
+
+    def has(self, item, attr):
+        return self._pos(item, attr) >= 0
+
+    def base(self, item, attr):
+        p = self._pos(item, attr)
+        return float(self.ev.base[p]) if p >= 0 else self.ds.attr_default(attr)
+
+    def many(self, items, attr):
+        """vector get for many items, same attribute"""
+        items = np.asarray(items, np.int64)
+        k = (items << ATTR_BITS) | attr
+        p = np.minimum(np.searchsorted(self._keys, k), max(self._n - 1, 0))
+        ok = self._keys[p] == k
+        return np.where(ok, self.ev.val[p], self.ds.attr_default(attr))
+
+
+WARFARE_PAIRS = [(f"warfareBuff{k}ID", f"warfareBuff{k}Value") for k in range(1, 5)]
+
+
+def run(batch):
+    """register everything, resolve the evaluation-dependent effects (bursts, RAH), final evaluation"""
+    ds = batch.ds
+    batch.register_all()
+    nf = len(batch.fits)
+    # ---- local command bursts: warfareBuffNID of active modules (may be assigned by the charge)
+    pairs = [(ds.a(i), ds.a(v)) for i, v in WARFARE_PAIRS]
+    id_attrs = {p[0] for p in pairs}
+    tgt_attrs = {}
+    for part in batch.mods:
+        m = np.isin(part["attr"], list(id_attrs))
+        for t in part["tgt"][m].tolist():
+            tgt_attrs.setdefault(t, True)
+    for r in batch.small:
+        if r[1] in id_attrs:
+            tgt_attrs[r[0]] = True
+    need = np.zeros(nf, bool)
+    for fit in batch.fits:
+        for i in fit.modules:
+            if batch.meta[i]["state"] >= ACTIVE:
+                ti = batch.meta[i]["ti"]
+                if i in tgt_attrs or any(ds.type_attr(ti, a) is not None for a in id_attrs) or \
+                        any((i, a) in batch.overrides for a in id_attrs):
+                    need[fit.index] = True
+    if need.any():
+        vals = Values(batch, evaluate(batch, need))
+        for fit in batch.fits:
+            if not need[fit.index]:
+                continue
+            explicit = {b["buff_id"] for b in fit.req["fleet"]["buffs"]}
+            for i in fit.modules:
+                if batch.meta[i]["state"] < ACTIVE:
+                    continue
+                for ida, vala in pairs:
+                    bid = int(vals.get(i, ida)) if vals.has(i, ida) else 0
+                    if bid == 0 or bid in explicit:
+                        continue
+                    batch.apply_buff(fit, bid, SRC_ATTR, Batch.key(i, vala), 0.0, i)
+    # ---- Reactive Armor Hardener adaptation (sequential per RAH, like the reference)
+    eid = ds.e("adaptiveArmorHardener")
+    if eid:
+        rahs = {}
+        for fit in batch.fits:
+            r = [i for i in fit.modules if batch.meta[i]["state"] >= ACTIVE
+                 and any(e == eid for e, _ in batch.meta[i]["effects"])]
+            if r:
+                rahs[fit.index] = r
+        rnd = 0
+        while rahs and any(len(v) > rnd for v in rahs.values()):
+            mask = np.zeros(nf, bool)
+            for f, v in rahs.items():
+                if len(v) > rnd:
+                    mask[f] = True
+            vals = Values(batch, evaluate(batch, mask))
+            for f in np.nonzero(mask)[0].tolist():
+                _apply_rah(batch, batch.fits[f], rahs[f][rnd], vals)
+            rnd += 1
+    return Values(batch, evaluate(batch))
+
+
+RAH_ATTRS = ("armorEmDamageResonance", "armorThermalDamageResonance", "armorKineticDamageResonance",
+             "armorExplosiveDamageResonance")
+
+
+def _apply_rah(batch, fit, m, vals):
+    ds = batch.ds
+    attrs = [ds.a(n) for n in RAH_ATTRS]
+    ship = fit.ship
+    req = fit.req
+    disable = req["options"]["rah"] == "disable"
+    dp = req["damage_pattern"] or {"em": 25.0, "thermal": 25.0, "kinetic": 25.0, "explosive": 25.0}
+    pattern = [dp["em"], dp["thermal"], dp["kinetic"], dp["explosive"]]
+    res = [vals.get(m, a) for a in attrs]
+    if not disable:
+        base = [pattern[k] * vals.get(ship, attrs[k]) for k in range(4)]
+        shift = vals.get(m, ds.a("resistanceShiftAmount")) / 100.0
+        cycles = []
+        loop_start = -20
+        for _ in range(50):
+            t = [(k, base[k] * res[k], res[k]) for k in (0, 3, 2, 1)]  # tie order em, explosive, kinetic, thermal
+            t.sort(key=lambda x: x[1])
+            if t[2][1] == 0.0:
+                c0, c1, c2 = 1.0 - t[0][2], 1.0 - t[1][2], 1.0 - t[2][2]
+                c3 = -(c0 + c1 + c2)
+            elif t[1][1] == 0.0:
+                c0, c1 = 1.0 - t[0][2], 1.0 - t[1][2]
+                c2 = c3 = -(c0 + c1) / 2.0
+            else:
+                c0, c1 = min(shift, 1.0 - t[0][2]), min(shift, 1.0 - t[1][2])
+                c2 = c3 = -(c0 + c1) / 2.0
+            res[t[0][0]] = t[0][2] + c0
+            res[t[1][0]] = t[1][2] + c1
+            res[t[2][0]] = t[2][2] + c2
+            res[t[3][0]] = t[3][2] + c3
+            hit = next((j for j, v in enumerate(cycles) if all(abs(res[k] - v[k]) <= 1e-6 for k in range(4))), None)
+            if hit is not None:
+                loop_start = hit
+                break
+            cycles.append(list(res))
+        start = loop_start if loop_start >= 0 else max(len(cycles) - 20, 0)
+        lp = cycles[start:]
+        if lp:
+            for k in range(4):
+                x = sum(v[k] for v in lp) / len(lp) * 1000.0
+                res[k] = float(np.sign(x) * np.floor(abs(x) + 0.5)) / 1000.0
+    cat = batch.meta[m]["category"]
+    for k in range(4):
+        if not disable:
+            batch.push(m, attrs[k], 7, SRC_CONST, const=res[k], src_item=m, src_cat=cat)
+        batch.push(ship, attrs[k], 0, SRC_CONST, const=res[k], src_item=m, src_cat=cat)

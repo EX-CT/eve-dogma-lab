@@ -1,0 +1,199 @@
+{
+ "cases": 226,
+ "identical_cases": 221,
+ "leaf_total": 62991,
+ "leaf_mismatch": 45,
+ "batch_s": 1.4274098399982904,
+ "cases_diff": {
+  "env_blackhole6_ishtar": {
+   "/navigation/agility": {
+    "got": 0.572063,
+    "ref": 0.572062
+   }
+  },
+  "esf_gila": {
+   "/capacitor/depletes_in_s": {
+    "got": 215.0,
+    "ref": 215.016
+   }
+  },
+  "fleet_armorcmd_hyperion": {
+   "/capacitor/depletes_in_s": {
+    "got": 94.5,
+    "ref": 95.0
+   },
+   "/capacitor/sim_iterations": {
+    "got": 119,
+    "ref": 127
+   },
+   "/defense/ehp/armor": {
+    "got": 30697.44291,
+    "ref": 42340.588135
+   },
+   "/defense/ehp/total": {
+    "got": 76026.98363,
+    "ref": 87670.128855
+   },
+   "/defense/hp/armor": {
+    "got": 11000.0,
+    "ref": 12897.5
+   },
+   "/defense/hp/total": {
+    "got": 33000.0,
+    "ref": 34897.5
+   },
+   "/defense/resonance/armor/em": {
+    "got": 0.31875,
+    "ref": 0.270962
+   },
+   "/defense/resonance/armor/explosive": {
+    "got": 0.366876,
+    "ref": 0.311873
+   },
+   "/defense/resonance/armor/kinetic": {
+    "got": 0.371158,
+    "ref": 0.315513
+   },
+   "/defense/resonance/armor/thermal": {
+    "got": 0.37656,
+    "ref": 0.320105
+   },
+   "/defense/tank/effective/armor_repair": {
+    "got": 941.388249,
+    "ref": 1338.266495
+   },
+   "/defense/tank/raw/armor_repair": {
+    "got": 337.333333,
+    "ref": 407.653575
+   },
+   "/modules/0/cycle_time_ms": {
+    "got": 9000.0,
+    "ref": 7447.5
+   },
+   "/modules/1/cycle_time_ms": {
+    "got": 9000.0,
+    "ref": 7447.5
+   }
+  },
+  "fleet_shieldcmd_ishtar": {
+   "/defense/ehp/shield": {
+    "got": 39247.38676,
+    "ref": 46169.224483
+   },
+   "/defense/ehp/total": {
+    "got": 51385.49346,
+    "ref": 58307.331183
+   },
+   "/defense/resonance/shield/em": {
+    "got": 0.590625,
+    "ref": 0.502077
+   },
+   "/defense/resonance/shield/explosive": {
+    "got": 0.295313,
+    "ref": 0.251038
+   },
+   "/defense/resonance/shield/kinetic": {
+    "got": 0.088594,
+    "ref": 0.075311
+   },
+   "/defense/resonance/shield/thermal": {
+    "got": 0.23625,
+    "ref": 0.200831
+   },
+   "/defense/tank/effective/passive_shield": {
+    "got": 104.659698,
+    "ref": 123.117932
+   },
+   "/navigation/max_velocity": {
+    "got": 1559.645433,
+    "ref": 1906.602126
+   }
+  },
+  "fleet_two_boosters_hyperion": {
+   "/capacitor/depletes_in_s": {
+    "got": 94.5,
+    "ref": 95.0
+   },
+   "/capacitor/sim_iterations": {
+    "got": 119,
+    "ref": 127
+   },
+   "/defense/ehp/armor": {
+    "got": 30697.44291,
+    "ref": 42340.588135
+   },
+   "/defense/ehp/shield": {
+    "got": 16256.157635,
+    "ref": 19644.903487
+   },
+   "/defense/ehp/total": {
+    "got": 76026.98363,
+    "ref": 91058.874706
+   },
+   "/defense/hp/armor": {
+    "got": 11000.0,
+    "ref": 12897.5
+   },
+   "/defense/hp/total": {
+    "got": 33000.0,
+    "ref": 34897.5
+   },
+   "/defense/resonance/armor/em": {
+    "got": 0.31875,
+    "ref": 0.270962
+   },
+   "/defense/resonance/armor/explosive": {
+    "got": 0.366876,
+    "ref": 0.311873
+   },
+   "/defense/resonance/armor/kinetic": {
+    "got": 0.371158,
+    "ref": 0.315513
+   },
+   "/defense/resonance/armor/thermal": {
+    "got": 0.37656,
+    "ref": 0.320105
+   },
+   "/defense/resonance/shield/em": {
+    "got": 0.875,
+    "ref": 0.724063
+   },
+   "/defense/resonance/shield/explosive": {
+    "got": 0.4375,
+    "ref": 0.362031
+   },
+   "/defense/resonance/shield/kinetic": {
+    "got": 0.525,
+    "ref": 0.434438
+   },
+   "/defense/resonance/shield/thermal": {
+    "got": 0.7,
+    "ref": 0.57925
+   },
+   "/defense/tank/effective/armor_repair": {
+    "got": 941.388249,
+    "ref": 1338.266495
+   },
+   "/defense/tank/effective/passive_shield": {
+    "got": 21.674877,
+    "ref": 26.193205
+   },
+   "/defense/tank/raw/armor_repair": {
+    "got": 337.333333,
+    "ref": 407.653575
+   },
+   "/modules/0/cycle_time_ms": {
+    "got": 9000.0,
+    "ref": 7447.5
+   },
+   "/modules/1/cycle_time_ms": {
+    "got": 9000.0,
+    "ref": 7447.5
+   },
+   "/navigation/max_velocity": {
+    "got": 1058.936002,
+    "ref": 1295.74038
+   }
+  }
+ }
+}
