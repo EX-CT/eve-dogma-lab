@@ -1,2 +1,0 @@
-/workspace/exct-eve/ref/pyfa/eos/db/saveddata/queries.py:563: SAWarning: Object of type <Fit> not in session, add operation along 'Character.fits' will not proceed
-  saveddata_session.commit()
