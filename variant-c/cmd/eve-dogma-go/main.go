@@ -26,7 +26,8 @@ Commands:
   batch [-j N]           JSONL FitRequests on stdin -> JSONL FitStats on stdout (order preserved; streams,
                          so it also works as a long-running calc process)
   serve-stdio [-j N]     long-running JSONL RPC (ordered, flushed per reply): {"id":..,"method":"calc|eft_parse|eft_export|search|type|meta","params":..}
-  serve-http [-addr :8080]  HTTP: POST /v1/calc, /v1/eft/parse, /v1/eft/export, /v1/rpc; GET /v1/search?q=, /v1/type/{id}, /v1/meta
+  serve-http [-addr :8080]  HTTP: POST /v1/calc, /v1/batch (JSONL), /v1/eft/parse, /v1/eft/export, /v1/rpc;
+                         GET /v1/search?q=, /v1/type/{id}, /v1/meta, /healthz
   eft [FILE]             EFT text (file or stdin) -> FitRequest JSON (add --calc to compute, --skills N)
   search QUERY           search types by name (en/zh)
   type ID|NAME           show type with base attributes
@@ -471,8 +472,18 @@ func serveHTTP(ds *dogma.Dataset, addr string) {
 	mux.HandleFunc("GET /v1/meta", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, dogma.Marshal(meta(ds)))
 	})
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, []byte(`{"ok":true}`))
+	})
+	// POST /v1/batch: JSONL requests -> JSONL responses (same order), computed on all cores
+	mux.HandleFunc("POST /v1/batch", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		bw := bufio.NewWriterSize(w, 64<<10)
+		batch(ds, io.LimitReader(r.Body, 256<<20), bw, runtime.NumCPU())
+	})
 	fmt.Fprintf(os.Stderr, "eve-dogma-go serve-http on %s (sde %d)\n", addr, ds.Build)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
