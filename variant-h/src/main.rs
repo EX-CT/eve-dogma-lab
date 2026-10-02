@@ -25,7 +25,7 @@ fn load(path: Option<String>) -> Dataset {
             "dataset.json.gz".into()
         }
     });
-    match Dataset::load_path(&p) {
+    match Dataset::load_path_cached(&p) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("error: {e}");

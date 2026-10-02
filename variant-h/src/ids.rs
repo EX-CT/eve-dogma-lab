@@ -3,7 +3,7 @@ use rustc_hash::FxHashMap;
 
 macro_rules! id_table {
     ($name:ident { $($f:ident = $s:expr),* $(,)? } arrays { $($af:ident : [$n:expr] = $fmt:expr),* $(,)? }) => {
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct $name { $(pub $f: u32,)* $(pub $af: [u32; $n],)* }
         impl $name {
             pub fn resolve(m: &FxHashMap<String, u32>) -> Self {

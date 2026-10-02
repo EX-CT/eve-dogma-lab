@@ -1,3 +1,4 @@
-build: cargo build --release
+# build also warms the derived dataset cache (target/release/dataset.hcache)
+build: cargo build --release && ./target/release/eve-dogma-h --dataset {dataset} meta > /dev/null
 cmd: ./target/release/eve-dogma-h --dataset {dataset} calc
 batch_cmd: ./target/release/eve-dogma-h --dataset {dataset} batch

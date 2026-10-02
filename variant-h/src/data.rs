@@ -1,11 +1,11 @@
 //! Static dataset (exct-eve-dataset v1, produced by EX-CT/eve-sde-pipeline) plus derived lookup tables.
 //! Loaded once per process; every request is evaluated against this immutable store.
 use rustc_hash::FxHashMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttrInfo {
     pub name: String,
     pub default: f64,
@@ -17,7 +17,7 @@ pub struct AttrInfo {
     pub round2: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Func {
     Item,
     Location,
@@ -27,7 +27,7 @@ pub enum Func {
     EffectStopper,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Domain {
     Item,
     Ship,
@@ -39,7 +39,7 @@ pub enum Domain {
     None,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ModInfo {
     pub func: Func,
     pub domain: Domain,
@@ -49,7 +49,7 @@ pub struct ModInfo {
     pub extra: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectInfo {
     pub name: String,
     pub category: u8,
@@ -60,7 +60,7 @@ pub struct EffectInfo {
     pub mods: Vec<ModInfo>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeInfo {
     pub id: u32,
     pub name: String,
@@ -86,7 +86,7 @@ impl TypeInfo {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbuffInfo {
     pub aggregate: Option<String>,
     pub op: i32,
@@ -96,11 +96,12 @@ pub struct DbuffInfo {
     pub location_skill: Vec<(u32, u32)>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MutaInfo {
     pub attrs: HashMap<String, (f64, f64)>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Dataset {
     pub build: u64,
     pub sha256: String,
@@ -300,8 +301,9 @@ impl Dataset {
         let mut type_by_name = FxHashMap::default();
         let mut published_skills = Vec::new();
         let mut t3d_modes = Vec::new();
-        for (k, t) in raw.types {
-            let id: u32 = k.parse().unwrap_or(0);
+        let mut raw_types: Vec<(u32, RawType)> = raw.types.into_iter().map(|(k, t)| (k.parse().unwrap_or(0), t)).collect();
+        raw_types.sort_by_key(|x| x.0);
+        for (id, t) in raw_types {
             let name = t.name.unwrap_or_default();
             let lname = name.to_lowercase();
             if t.published || !type_by_name.contains_key(&lname) {
@@ -375,5 +377,66 @@ impl Dataset {
     #[inline]
     pub fn attr_default(&self, id: u32) -> f64 {
         self.attrs.get(&id).map(|a| a.default).unwrap_or(0.0)
+    }
+}
+
+// ---------------------------------------------------------------- derived binary cache
+/// Derived cache of the processed dataset (bincode). Keyed by a hash of the dataset file bytes and of the
+/// running executable (size + mtime), so a rebuilt engine or another dataset never reads a stale cache.
+/// Location: `$EVE_DOGMA_H_CACHE_DIR`, else the executable's directory. Purely an optimisation: if it is
+/// missing, unreadable or unwritable the dataset is parsed normally and results are identical.
+const CACHE_MAGIC: &[u8; 8] = b"EXCTHC01";
+
+fn cache_key(dataset_bytes: &[u8]) -> u64 {
+    let mut k = xxhash_rust::xxh3::xxh3_64(dataset_bytes) ^ (dataset_bytes.len() as u64).rotate_left(17);
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(md) = std::fs::metadata(&exe) {
+            k ^= md.len().rotate_left(31);
+            if let Ok(t) = md.modified() {
+                if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
+                    k ^= d.as_nanos() as u64;
+                }
+            }
+        }
+    }
+    k
+}
+
+fn cache_file() -> Option<std::path::PathBuf> {
+    if let Ok(d) = std::env::var("EVE_DOGMA_H_CACHE_DIR") {
+        return Some(std::path::PathBuf::from(d).join("dataset.hcache"));
+    }
+    Some(std::env::current_exe().ok()?.parent()?.join("dataset.hcache"))
+}
+
+impl Dataset {
+    /// Load with the derived cache (read if valid, else parse and write it best-effort).
+    pub fn load_path_cached(path: &str) -> Result<Dataset, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+        let key = cache_key(&bytes);
+        let file = cache_file();
+        if let Some(f) = &file {
+            if let Ok(c) = std::fs::read(f) {
+                if c.len() > 16 && &c[..8] == CACHE_MAGIC && c[8..16] == key.to_le_bytes() {
+                    if let Ok(ds) = bincode::deserialize::<Dataset>(&c[16..]) {
+                        return Ok(ds);
+                    }
+                }
+            }
+        }
+        let ds = Self::load_bytes(&bytes)?;
+        if let Some(f) = &file {
+            if let Ok(body) = bincode::serialize(&ds) {
+                let mut out = Vec::with_capacity(body.len() + 16);
+                out.extend_from_slice(CACHE_MAGIC);
+                out.extend_from_slice(&key.to_le_bytes());
+                out.extend_from_slice(&body);
+                let tmp = f.with_extension(format!("tmp{}", std::process::id()));
+                if std::fs::write(&tmp, &out).is_ok() && std::fs::rename(&tmp, f).is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                }
+            }
+        }
+        Ok(ds)
     }
 }
