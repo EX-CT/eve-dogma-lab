@@ -81,7 +81,7 @@ type Spool struct {
 type Mutation struct {
 	BaseTypeID        uint32             `json:"base_type_id"`
 	MutaplasmidTypeID *uint32            `json:"mutaplasmid_type_id"`
-	Attributes        map[string]float64 `json:"attributes"`
+	Attributes        map[string]float64 `json:"attributes,omitempty"`
 }
 
 type ModuleReq struct {
@@ -129,7 +129,7 @@ func (f *FighterReq) UnmarshalJSON(b []byte) error {
 
 type BoosterReq struct {
 	TypeID      uint32   `json:"type_id"`
-	SideEffects []uint32 `json:"side_effects"`
+	SideEffects []uint32 `json:"side_effects,omitempty"`
 }
 
 type CargoReq struct {
@@ -149,7 +149,7 @@ func (c *CargoReq) UnmarshalJSON(b []byte) error {
 
 type Skills struct {
 	DefaultLevel *uint8           `json:"default_level"`
-	Levels       map[string]uint8 `json:"levels"`
+	Levels       map[string]uint8 `json:"levels,omitempty"`
 }
 
 type Character struct {
@@ -163,8 +163,8 @@ type Buff struct {
 }
 
 type Fleet struct {
-	Buffs       []Buff       `json:"buffs"`
-	BoosterFits []FitRequest `json:"booster_fits"`
+	Buffs       []Buff       `json:"buffs,omitempty"`
+	BoosterFits []FitRequest `json:"booster_fits,omitempty"`
 }
 
 type Projected struct {
@@ -187,7 +187,7 @@ func (p *Projected) UnmarshalJSON(b []byte) error {
 }
 
 type Environment struct {
-	EffectTypeIDs  []uint32 `json:"effect_type_ids"`
+	EffectTypeIDs  []uint32 `json:"effect_type_ids,omitempty"`
 	SystemSecurity *string  `json:"system_security"`
 }
 
@@ -251,18 +251,18 @@ type FitRequest struct {
 	SchemaVersion *uint32        `json:"schema_version"`
 	Ship          ShipReq        `json:"ship"`
 	Character     Character      `json:"character"`
-	Modules       []ModuleReq    `json:"modules"`
-	Drones        []DroneReq     `json:"drones"`
-	Fighters      []FighterReq   `json:"fighters"`
-	Implants      []uint32       `json:"implants"`
-	Boosters      []BoosterReq   `json:"boosters"`
-	Cargo         []CargoReq     `json:"cargo"`
+	Modules       []ModuleReq    `json:"modules,omitempty"`
+	Drones        []DroneReq     `json:"drones,omitempty"`
+	Fighters      []FighterReq   `json:"fighters,omitempty"`
+	Implants      []uint32       `json:"implants,omitempty"`
+	Boosters      []BoosterReq   `json:"boosters,omitempty"`
+	Cargo         []CargoReq     `json:"cargo,omitempty"`
 	Fleet         Fleet          `json:"fleet"`
-	Projected     []Projected    `json:"projected"`
+	Projected     []Projected    `json:"projected,omitempty"`
 	Environment   Environment    `json:"environment"`
 	DamagePattern *Resists       `json:"damage_pattern"`
 	TargetProfile *TargetProfile `json:"target_profile"`
-	Overrides     []Override     `json:"overrides"`
+	Overrides     []Override     `json:"overrides,omitempty"`
 	Options       Options        `json:"options"`
 }
 

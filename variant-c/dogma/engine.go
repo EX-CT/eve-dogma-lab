@@ -114,6 +114,7 @@ type amod struct {
 	a2, a3 uint32  // prop: thrust, mass ; proj: resist in a2
 	c      float64 // const value / projected range factor
 	from   int32   // item that registered the modifier
+	seq    uint32  // registration order (fold order = registration order, like eve-dogma-rs/Pyfa)
 }
 
 type bucketKind uint8
@@ -144,6 +145,7 @@ type Fit struct {
 	IsStructure bool
 
 	reg   map[bkey][]amod
+	nseq  uint32
 	cache map[uint64]float64
 	stack []uint64 // nodes being evaluated (cycle guard + dependency recording)
 
@@ -567,6 +569,8 @@ func (f *Fit) push(k bucketKind, x uint32, attr uint32, m amod, sourceCat uint32
 		stackable = a.Stackable
 	}
 	m.pen = !stackable && !exemptCategory(sourceCat)
+	f.nseq++
+	m.seq = f.nseq
 	key := bkey{k, x, attr}
 	f.reg[key] = append(f.reg[key], m)
 }
@@ -1138,18 +1142,11 @@ func (f *Fit) srcValue(m *amod) float64 {
 	return 0
 }
 
-type penv struct {
-	op int8
-	m  float64
-}
-
-var penaltyFactors = func() [16]float64 {
-	var p [16]float64
-	for i := range p {
-		p[i] = math.Exp(-float64(i*i) / 7.1289)
-	}
-	return p
-}()
+// penaltyFactors[i] = exp(-(i^2)/7.1289), the values glibc's exp produces (bit-identical with Rust/Python).
+var penaltyFactors = [16]float64{1.0, 0.8691199808003975, 0.5705831435105602, 0.28295515402326116, 0.10599264974270436,
+	0.02999116653328048, 0.006410183117533512, 0.001034920482668705, 0.00012621268254589462, 1.1626753929630923e-05,
+	8.090464068743095e-07, 4.2525345863587603e-08, 1.688424883993958e-09, 5.063783187479741e-11,
+	1.1471703921167754e-12, 1.9630900654863316e-14}
 
 func penalty(i int) float64 {
 	if i < len(penaltyFactors) {
@@ -1158,44 +1155,64 @@ func penalty(i int) float64 {
 	return math.Exp(-float64(i*i) / 7.1289)
 }
 
-// fold applies all modifiers in CCP operator order with stacking penalties.
+const foldBuf = 64
+
+// fold applies all modifiers in CCP operator order with stacking penalties. Within an operator, modifiers
+// are applied in registration order so results are bit-identical with eve-dogma-rs.
 func (f *Fit) fold(attr uint32, val float64, buckets [][]amod) float64 {
-	// per-op accumulators: index op+1 (ops -1..7)
-	var any [9]bool
-	var assign [9]float64
-	var mul [9]float64
-	var add, sub float64
-	for k := range mul {
-		mul[k] = 1
+	var pbuf [foldBuf]*amod
+	ms := pbuf[:0]
+	for _, l := range buckets {
+		for k := range l {
+			ms = append(ms, &l[k])
+		}
 	}
-	var pbuf [16]penv
-	pens := pbuf[:0]
+	if len(buckets) > 1 { // merge buckets back into registration order (insertion sort, lists are short)
+		for i := 1; i < len(ms); i++ {
+			for j := i; j > 0 && ms[j-1].seq > ms[j].seq; j-- {
+				ms[j-1], ms[j] = ms[j], ms[j-1]
+			}
+		}
+	}
+	var vbuf [foldBuf]float64
+	vals := vbuf[:0]
+	var present uint16
+	for _, m := range ms {
+		vals = append(vals, f.srcValue(m))
+		if m.op >= -1 && m.op <= 7 {
+			present |= 1 << uint(m.op+1)
+		}
+	}
 	hig := true
 	if a := f.DS.Attrs[attr]; a != nil {
 		hig = a.HighIsGood
 	}
-	for _, l := range buckets {
-		for mi := range l {
-			m := &l[mi]
-			op := m.op
-			if op < -1 || op > 7 {
+	var posB, negB [foldBuf]float64
+	for op := int8(-1); op <= 7; op++ {
+		if present&(1<<uint(op+1)) == 0 {
+			continue
+		}
+		pos, neg := posB[:0], negB[:0]
+		hasAssign := false
+		assign := 0.0
+		for k, m := range ms {
+			if m.op != op {
 				continue
 			}
-			v := f.srcValue(m)
-			oi := op + 1
+			v := vals[k]
 			switch op {
 			case -1, 7:
-				if !any[oi] {
-					assign[oi] = v
+				if !hasAssign {
+					assign, hasAssign = v, true
 				} else if hig {
-					assign[oi] = math.Max(assign[oi], v)
+					assign = math.Max(assign, v)
 				} else {
-					assign[oi] = math.Min(assign[oi], v)
+					assign = math.Min(assign, v)
 				}
 			case 2:
-				add += v
+				val += v
 			case 3:
-				sub += v
+				val -= v
 			default:
 				var x float64
 				switch op {
@@ -1209,77 +1226,36 @@ func (f *Fit) fold(attr uint32, val float64, buckets [][]amod) float64 {
 					}
 				case 6:
 					x = 1 + v/100
+				default:
+					x = 1
 				}
 				if m.pen {
-					if x != 1 {
-						pens = append(pens, penv{op, x})
+					if x > 1 {
+						pos = append(pos, x)
+					} else if x < 1 {
+						neg = append(neg, x)
 					}
 				} else {
-					mul[oi] *= x
+					val *= x
 				}
 			}
-			any[oi] = true
 		}
-	}
-	for op := int8(-1); op <= 7; op++ {
-		oi := op + 1
-		if !any[oi] {
-			continue
+		if hasAssign {
+			val = assign
 		}
-		switch op {
-		case -1, 7:
-			val = assign[oi]
-			continue
-		case 2:
-			val += add
-			continue
-		case 3:
-			val -= sub
-			continue
-		}
-		val *= mul[oi]
-		if len(pens) == 0 {
-			continue
-		}
-		var pos, neg [16]float64
-		np, nn := 0, 0
-		var posX, negX []float64
-		for _, p := range pens {
-			if p.op != op {
-				continue
-			}
-			if p.m > 1 {
-				if np < 16 {
-					pos[np] = p.m
-				} else {
-					posX = append(posX, p.m)
+		for _, lst := range [2][]float64{pos, neg} {
+			// strongest first (stable insertion sort)
+			for i := 1; i < len(lst); i++ {
+				for j := i; j > 0 && math.Abs(lst[j-1]-1) < math.Abs(lst[j]-1); j-- {
+					lst[j-1], lst[j] = lst[j], lst[j-1]
 				}
-				np++
-			} else {
-				if nn < 16 {
-					neg[nn] = p.m
-				} else {
-					negX = append(negX, p.m)
-				}
-				nn++
 			}
-		}
-		for _, lst := range [2][]float64{joinF(pos[:min(np, 16)], posX), joinF(neg[:min(nn, 16)], negX)} {
-			// strongest first
-			sort.SliceStable(lst, func(a, b int) bool { return math.Abs(lst[a]-1) > math.Abs(lst[b]-1) })
 			for k, m := range lst {
 				val *= 1 + (m-1)*penalty(k)
 			}
 		}
 	}
 	return val
-}
-
-func joinF(a, b []float64) []float64 {
-	if len(b) == 0 {
-		return a
-	}
-	return append(append([]float64(nil), a...), b...)
 }
 
 // SetBase changes an item's base attribute value and invalidates dependent cached values. With TrackDeps
