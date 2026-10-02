@@ -716,6 +716,43 @@ impl<'a> Fit<'a> {
                     }
                     continue;
                 }
+                if eid == ef.odr && it.kind == Kind::Beacon {
+                    // Effect4728 (Sansha / Drifter incursion system effects): unpenalised PostPercent nerfs
+                    let src = Src::Attr { e, attr: a.sys_dmg_reduction };
+                    let mut add = |t: Entity, attr: u32, src: Src| {
+                        if attr != 0 {
+                            pend.push(PendingMod { target: t, attr, m: Mod { op: 6, penalized: false, src } });
+                        }
+                    };
+                    for &t in &self.order {
+                        let ti = v.item(t);
+                        let req = v.req_skills(t);
+                        match ti.kind {
+                            Kind::Charge if req.contains(&3319) => {
+                                for k in 0..4 {
+                                    add(t, a.dmg[k], src);
+                                }
+                            }
+                            Kind::Module => {
+                                if ds.group_names.get(&ti.group).map(|g| g == "Smart Bomb").unwrap_or(false) {
+                                    for k in 0..4 {
+                                        add(t, a.dmg[k], src);
+                                    }
+                                }
+                                if req.contains(&3300) {
+                                    add(t, a.dmg_mult, src);
+                                }
+                            }
+                            Kind::Drone => add(t, a.dmg_mult, src),
+                            _ => {}
+                        }
+                    }
+                    for k in 0..4 {
+                        add(ship, a.res_armor[k], Src::Attr { e, attr: a.armor_res_bonus[k] });
+                        add(ship, a.res_shield[k], Src::Attr { e, attr: a.shield_res_bonus[k] });
+                    }
+                    continue;
+                }
                 if eff.mods.is_empty() && (eff.category == 1 || eid == ef.entosis) && it.kind == Kind::Module {
                     // active modules whose Pyfa handlers have no modifierInfo; `pen` says whether Pyfa passes
                     // stackingPenalties (it does so regardless of the attribute's stackable flag)
@@ -811,7 +848,7 @@ impl<'a> Fit<'a> {
                 let name = eff.name.as_str();
                 // category-1 effects that Pyfa still applies when projected (ECM bursts, lockbreaker bombs)
                 let launcher_group = if name == "useMissiles" { ds.group_names.get(&it.group).map(|g| g.as_str()) } else { None };
-                let projected_active = matches!(name, "ECMBurstJammer" | "doomsdayAOEECM")
+                let projected_active = matches!(name, "ECMBurstJammer") || name.starts_with("doomsdayAOE")
                     || matches!(launcher_group, Some("Missile Launcher Bomb" | "Interdiction Sphere Launcher"));
                 if (eff.category != 2 && eff.category != 3 && !projected_active) || state < State::Active {
                     continue;
@@ -844,6 +881,41 @@ impl<'a> Fit<'a> {
                 };
                 if let Some((_, q)) = &squad {
                     factor *= q;
+                }
+                // burst projectors: full strength at any distance, blocked by disallowOffensiveModifiers
+                if name.starts_with("doomsdayAOE") {
+                    if no_offense {
+                        continue;
+                    }
+                    factor = 1.0;
+                    match name {
+                        "doomsdayAOEWeb" => {
+                            pend.push(PendingMod { target: ship, attr: a.max_velocity, m: Mod { op: 6, penalized: true, src: Src::Projected { e, attr: a.speed_factor, factor, target: ship, resist, mul: false } } });
+                            continue;
+                        }
+                        "doomsdayAOEPaint" => {
+                            pend.push(PendingMod { target: ship, attr: a.sig, m: Mod { op: 6, penalized: true, src: Src::Projected { e, attr: a.sig_bonus, factor, target: ship, resist, mul: false } } });
+                            continue;
+                        }
+                        "doomsdayAOEDamp" => {
+                            for (t, s2) in [(a.max_target_range, a.max_target_range_bonus), (a.scan_resolution, a.scan_resolution_bonus)] {
+                                pend.push(PendingMod { target: ship, attr: t, m: Mod { op: 6, penalized: true, src: Src::Projected { e, attr: s2, factor, target: ship, resist, mul: false } } });
+                            }
+                            continue;
+                        }
+                        "doomsdayAOENeut" => {
+                            specials.push((e, Special::Drain(IncomingDrain { amount_attr: a.neut_amount, duration_attr: a.duration, bomb: None, factor, resist, sign: 1.0 })));
+                            continue;
+                        }
+                        "doomsdayAOEBubble" => continue,
+                        _ => {}
+                    }
+                }
+                if name == "structureModuleEffectWeaponDisruption" {
+                    // Effect6686: range factor from the modified maxRange / falloffEffectiveness
+                    let c = self.calc();
+                    let g = |x: u32| if c.has(e, x) { c.get(e, x) } else { 0.0 };
+                    factor = crate::stats::range_factor(g(a.max_range), g(a.falloff_effectiveness), dist, true);
                 }
                 let push = |fit: &Fit, target_attr: u32, src_attr: u32, op: i32, pend: &mut Vec<PendingMod>| {
                     let mul = op == 4 || op == 0;
@@ -896,7 +968,7 @@ impl<'a> Fit<'a> {
                     }
                     continue;
                 }
-                if matches!(name, "shipModuleTrackingDisruptor" | "shipModuleGuidanceDisruptor" | "shipModuleRemoteTrackingComputer" | "npcEntityWeaponDisruptor") {
+                if matches!(name, "shipModuleTrackingDisruptor" | "shipModuleGuidanceDisruptor" | "shipModuleRemoteTrackingComputer" | "npcEntityWeaponDisruptor" | "doomsdayAOETrack" | "structureModuleEffectWeaponDisruption") {
                     // Pyfa Effect6424 / 6423: the target's turrets (requiring Gunnery) or missile charges (requiring
                     // Missile Launcher Operation), postPercent x range factor, stacking-penalised, remote resistance.
                     // Effect6428 (remote tracking computer): the same turret boost, no resistance, blocked by
@@ -923,24 +995,31 @@ impl<'a> Fit<'a> {
                     } else if no_offense {
                         continue;
                     }
-                    let td = name != "shipModuleGuidanceDisruptor";
-                    let pairs: &[(&str, &str)] = if td {
-                        &[("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"), ("falloffBonus", "falloff")]
-                    } else {
-                        &[("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"), ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay")]
-                    };
-                    let (skill, kind) = if td { (3300, Kind::Module) } else { (3319, Kind::Charge) };
+                    // turret part (TD / RTC / TD drones) and missile part (GD); the weapon-disruption burst and the
+                    // Standup Weapon Disruptor do both
+                    let both = matches!(name, "doomsdayAOETrack" | "structureModuleEffectWeaponDisruption");
+                    let turret_pairs: &[(&str, &str)] = &[("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"), ("falloffBonus", "falloff")];
+                    let missile_pairs: &[(&str, &str)] = &[("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"), ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay")];
+                    let mut parts: Vec<(&[(&str, &str)], u32, Kind)> = Vec::new();
+                    if both || name != "shipModuleGuidanceDisruptor" {
+                        parts.push((turret_pairs, 3300, Kind::Module));
+                    }
+                    if both || name == "shipModuleGuidanceDisruptor" {
+                        parts.push((missile_pairs, 3319, Kind::Charge));
+                    }
                     let mut tg = Vec::new();
-                    self.targets(&v, e, Func::LocationRequiredSkill, Domain::Ship, skill, &mut tg);
-                    tg.retain(|&t| v.item(t).kind == kind);
-                    for &(sa, ta) in pairs {
-                        let (sa, ta) = (ds.attr_id(sa), ds.attr_id(ta));
-                        if sa == 0 || ta == 0 {
-                            continue;
-                        }
-                        for &t in &tg {
-                            pend.push(PendingMod { target: t, attr: ta,
-                                m: Mod { op: 6, penalized: true, src: Src::Projected { e, attr: sa, factor, target: ship, resist, mul: false } } });
+                    for (pairs, skill, kind) in parts {
+                        self.targets(&v, e, Func::LocationRequiredSkill, Domain::Ship, skill, &mut tg);
+                        tg.retain(|&t| v.item(t).kind == kind);
+                        for &(sa, ta) in pairs {
+                            let (sa, ta) = (ds.attr_id(sa), ds.attr_id(ta));
+                            if sa == 0 || ta == 0 {
+                                continue;
+                            }
+                            for &t in &tg {
+                                pend.push(PendingMod { target: t, attr: ta,
+                                    m: Mod { op: 6, penalized: true, src: Src::Projected { e, attr: sa, factor, target: ship, resist, mul: false } } });
+                            }
                         }
                     }
                     continue;
@@ -1110,6 +1189,22 @@ impl<'a> Fit<'a> {
         for (id, v) in self.burst_buffs() {
             add(id, v, &mut agg);
         }
+        // abyssal weather / AoE cloud beacons join the same strongest-|value| pool
+        for &b in &req.environment.effect_type_ids {
+            let Some(t) = ds.types.get(&b) else { continue };
+            let is_weather = t.effects.iter().any(|&(eid, _)| {
+                ds.effects.get(&eid).map(|x| x.name.starts_with("weather_") || x.name.starts_with("aoe_beacon_")).unwrap_or(false)
+            });
+            if !is_weather {
+                continue;
+            }
+            for k in 0..2 {
+                let id = t.attr(ds.a.warfare_id[k]).unwrap_or(0.0) as u32;
+                if id != 0 {
+                    add(id, t.attr(ds.a.warfare_value[k]).unwrap_or(0.0), &mut agg);
+                }
+            }
+        }
         for (i, bf) in req.fleet.booster_fits.iter().enumerate() {
             let mut breq = bf.clone();
             breq.fleet.booster_fits.clear();
@@ -1131,7 +1226,26 @@ impl<'a> Fit<'a> {
         let mut tg = Vec::new();
         let views = self.views();
         for (id, val) in agg {
+            let start = pend.len();
             self.buff_mods(&views, id, Src::Const(val), &mut pend, &mut tg);
+            // Pyfa: these buffs also hit drones that require Drones
+            if matches!(id, 79 | 90 | 93..=99) {
+                if let Some(info) = ds.dbuffs.get(&id) {
+                    for &d in &self.order {
+                        if views.item(d).kind == Kind::Drone && views.req_skills(d).contains(&3436) {
+                            for &at in &info.item {
+                                self.pending(d, at, info.op, Src::Const(val), 0, &mut pend);
+                            }
+                        }
+                    }
+                }
+            }
+            // ... and the weather resistance / HP / velocity buffs are not stacking-penalised
+            if matches!(id, 90 | 93 | 94 | 95 | 96 | 98 | 99) {
+                for p in &mut pend[start..] {
+                    p.m.penalized = false;
+                }
+            }
         }
         drop(views);
         self.apply(pend);

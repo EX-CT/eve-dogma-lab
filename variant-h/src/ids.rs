@@ -64,7 +64,10 @@ id_table!(AttrIds {
     mass_bonus_pct = "massBonusPercentage", speed_boost_factor_bonus = "speedBoostFactorBonus",
     speed_factor_bonus = "speedFactorBonus", siege_warp_status = "siegeModeWarpStatus",
     dd_duration = "doomsdayDamageDuration", dd_cycle = "doomsdayDamageCycleTime",
+    sys_dmg_reduction = "systemEffectDamageReduction",
 } arrays {
+    armor_res_bonus: [4] = ["Em", "Thermal", "Kinetic", "Explosive"].map(|s| format!("armor{s}DamageResistanceBonus")),
+    shield_res_bonus: [4] = ["Em", "Thermal", "Kinetic", "Explosive"].map(|s| format!("shield{s}DamageResistanceBonus")),
     hull_res_src: [4] = ["hullEmDamageResonance".into(), "hullThermalDamageResonance".into(), "hullKineticDamageResonance".into(), "hullExplosiveDamageResonance".into()],
     dmg: [4] = ["emDamage".into(), "thermalDamage".into(), "kineticDamage".into(), "explosiveDamage".into()],
     extra_durations: [5] = ["durationHighisGood".into(), "durationSensorDampeningBurstProjector".into(),
@@ -96,7 +99,7 @@ id_table!(EffectIds {
     f_mwd = "fighterAbilityMicroWarpDrive", f_evasive = "fighterAbilityEvasiveManeuvers", f_mjd = "fighterAbilityMicroJumpDrive",
     skill_effect = "skillEffect", fof_missile = "fofMissileLaunching",
     ehe = "emergencyHullEnergizer", entosis = "entosisLink", mjfg = "microJumpPortalDrive",
-    bubble = "warpDisruptSphere", lance = "doomsdayBeamDOT", debuff_lance = "debuffLance", dd_slash = "doomsdaySlash",
+    odr = "OffensiveDefensiveReduction", bubble = "warpDisruptSphere", lance = "doomsdayBeamDOT", debuff_lance = "debuffLance", dd_slash = "doomsdaySlash",
 } arrays {
     structure_skill_ok: [5] = ["targetingMaxTargetBonusModAddMaxLockedTargetsLocationChar".into(),
         "skillStructureMissileDamageBonus".into(), "skillStructureElectronicSystemsCapNeedBonus".into(),
