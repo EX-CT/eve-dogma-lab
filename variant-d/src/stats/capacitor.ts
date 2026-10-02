@@ -3,7 +3,9 @@ import { Drain, simulate } from './capsim.js';
 import { StatsCtx } from './ctx.js';
 
 /** capacitor section + per-module rows */
-export function capacitor(c: StatsCtx): { json: Record<string, unknown>; modules: object[] } {
+export interface CapInfo { json: Record<string, unknown>; modules: object[]; peak: number; used: number; added: number; stable: boolean }
+
+export function capacitor(c: StatsCtx): CapInfo {
   const { fit, req, A, ds } = c;
   const ship = fit.ship;
   const factorReload = req.options.factor_reload;
@@ -28,7 +30,8 @@ export function capacitor(c: StatsCtx): { json: Record<string, unknown>; modules
     };
     if (cycRaw > 0) row.cycle_time_ms = cycRaw;
     if (c.active(i) && capNeed !== 0 && full > 0) {
-      const avg = c.avgCycleMs(i, factorReload);
+      // Pyfa forces reload into capacitor boosters' average cycle (module.forceReload)
+      const avg = c.avgCycleMs(i, factorReload || isInj);
       const use = avg > 0 ? capNeed / (avg / 1000) : 0;
       if (use > 0) used += use;
       else added -= use;
@@ -49,6 +52,11 @@ export function capacitor(c: StatsCtx): { json: Record<string, unknown>; modules
     const sres = c.g(ps.item, 'energyNeutralizerSignatureResolution');
     if (sres !== 0) need *= Math.min(sigNow / sres, 1);
     const dur = fit.get(ps.item, ps.duration);
+    if (need !== 0 && dur > 0) {
+      const u = need / (Math.trunc(dur) / 1000);
+      if (u > 0) used += u;
+      else added -= u;
+    }
     if (need !== 0 && dur > 0) drains.push({ duration: Math.trunc(dur), capNeed: need, clipSize: 0, reloadMs: 0, isInjector: false, disableStagger: false });
   }
   const j: Record<string, unknown> = {
@@ -67,5 +75,5 @@ export function capacitor(c: StatsCtx): { json: Record<string, unknown>; modules
     j.eve_stable_percent = r.eveStable * 100;
     j.sim_iterations = r.iterations;
   }
-  return { json: j, modules: rows };
+  return { json: j, modules: rows, peak, used, added, stable: j.stable as boolean };
 }

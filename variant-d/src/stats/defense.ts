@@ -1,6 +1,7 @@
+import type { CapInfo } from './capacitor.js';
 import { StatsCtx } from './ctx.js';
 
-export function defense(c: StatsCtx): object {
+export function defense(c: StatsCtx, cap: CapInfo): object {
   const { fit, req } = c;
   const ship = fit.ship;
   const dp = req.damage_pattern ?? { em: 25, thermal: 25, kinetic: 25, explosive: 25 };
@@ -50,6 +51,7 @@ export function defense(c: StatsCtx): object {
   hullRep += applied(lists[2]);
   const rrS = c.g(ship, 'shieldRechargeRate') / 1000;
   const passive = rrS > 0 ? (10 / rrS) * 0.5 * 0.5 * hpS : 0;
+  const sus = sustained(c, cap, [shieldRep, armorRep, hullRep]);
   return {
     hp: { shield: hpS, armor: hpA, hull: hpH, total: hpS + hpA + hpH },
     resonance: { shield: resJson(rs), armor: resJson(ra), hull: resJson(rh) },
@@ -61,6 +63,84 @@ export function defense(c: StatsCtx): object {
         passive_shield: effectivify(passive, rs), shield_repair: effectivify(shieldRep, rs),
         armor_repair: effectivify(armorRep, ra), hull_repair: effectivify(hullRep, rh),
       },
+      sustained: { passive_shield: passive, shield_repair: sus[0], armor_repair: sus[1], hull_repair: sus[2] },
+      sustained_effective: {
+        passive_shield: effectivify(passive, rs), shield_repair: effectivify(sus[0], rs),
+        armor_repair: effectivify(sus[1], ra), hull_repair: effectivify(sus[2], rh),
+      },
     },
   };
+}
+
+const SUSTAIN_SPEC: Record<string, [number, string]> = {
+  'Shield Booster': [0, 'shieldBonus'], 'Ancillary Shield Booster': [0, 'shieldBonus'],
+  'Armor Repair Unit': [1, 'armorDamageAmount'], 'Ancillary Armor Repairer': [1, 'armorDamageAmount'],
+  'Hull Repair Unit': [2, 'structureDamageAmount'],
+};
+
+/**
+ * Sustainable tank (Pyfa Fit.sustainableTank, eos LGPL): when the capacitor is not stable (or reload is factored),
+ * local cap-using repairers only run as far as peak recharge + injected cap allow (most cap-efficient first).
+ */
+function sustained(c: StatsCtx, cap: CapInfo, raw: number[]): number[] {
+  const { fit, req, ds } = c;
+  const factorReload = req.options.factor_reload;
+  const sus = raw.slice();
+  if (cap.stable && !factorReload) return sus;
+  const A = c.A;
+  const grp = (i: number) => ds.groups.get(c.item(i).group)?.name ?? '';
+  const isPaste = (ch: number) => ch >= 0 && ds.types.get(fit.items[ch].typeId)!.name === 'Nanite Repair Paste';
+  const pasteMult = (i: number) => { const m = c.g(i, 'chargedArmorDamageMultiplier'); return m === 0 ? 1 : m; };
+  const adj = [0, 0, 0];
+  let used = cap.used;
+  const reps: [number, number, string, number][] = [];
+  for (let layer = 0; layer < 3; layer++) {
+    for (const i of c.modules) {
+      if (!c.active(i)) continue;
+      const g = grp(i);
+      const spec = SUSTAIN_SPEC[g];
+      if (!spec || spec[0] !== layer) continue;
+      const [l, attr] = spec;
+      const capNeed = fit.get(i, A.capNeed);
+      const avg = c.avgCycleMs(i, factorReload);
+      const capUse = capNeed !== 0 && avg > 0 ? capNeed / (avg / 1000) : 0;
+      const cyc = c.rawCycleMs(i);
+      if (cyc <= 0) continue;
+      const amount = c.g(i, attr);
+      const ch = c.item(i).charge;
+      if (capUse !== 0) {
+        used -= capUse;
+        adj[l] -= (amount * (isPaste(ch) ? pasteMult(i) : 1)) / (cyc / 1000);
+        reps.push([i, l, attr, capUse]);
+      } else if (g === 'Ancillary Shield Booster') {
+        const reload = factorReload && ch >= 0 ? fit.get(i, A.reload) : 0;
+        const shots = Math.max(c.numShots(i), 1);
+        const off = reload / (shots * cyc + reload);
+        adj[l] -= (amount * off) / (cyc / 1000);
+      }
+    }
+  }
+  const eff = (i: number, attr: string) => (c.g(i, attr) * pasteMult(i)) / fit.get(i, A.capNeed);
+  // stable sort, descending efficiency (Rust sort_by is stable)
+  const keyed = reps.map((r, k) => [eff(r[0], r[2]), k, r] as const);
+  keyed.sort((a, b) => (b[0] > a[0] ? 1 : b[0] < a[0] ? -1 : a[1] - b[1]));
+  const totalPeak = cap.peak + cap.added;
+  for (const [, , [i, l, attr, capUse]] of keyed) {
+    if (used > totalPeak) break;
+    const ch = c.item(i).charge;
+    const reload = factorReload && ch >= 0 ? fit.get(i, A.reload) : 0;
+    const cyc = c.rawCycleMs(i);
+    const sustain = Math.min((totalPeak - used) / capUse, 1);
+    const amount = c.g(i, attr);
+    if (ch < 0) adj[l] += (sustain * amount) / (cyc / 1000);
+    else {
+      const mult = isPaste(ch) ? pasteMult(i) : 1;
+      const shots = Math.max(c.numShots(i), 1);
+      const on = (shots * cyc) / (shots * cyc + reload);
+      adj[l] += (sustain * amount * on * mult) / (cyc / 1000);
+    }
+    used += capUse;
+  }
+  for (let l = 0; l < 3; l++) sus[l] += adj[l];
+  return sus;
 }

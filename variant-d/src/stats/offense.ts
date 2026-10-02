@@ -78,7 +78,9 @@ export function offense(c: StatsCtx): object {
     const dps = v.scale(1000 / cyc);
     dVol.add(v);
     dDps.add(dps);
-    droneOut.push({ drone_index: c.item(i).reqIndex, type_id: c.item(i).typeId, name: c.typeName(i), count: n, volley: v.json(), dps: dps.json() });
+    droneOut.push({ drone_index: c.item(i).reqIndex, type_id: c.item(i).typeId, name: c.typeName(i), count: n, volley: v.json(), dps: dps.json(),
+      optimal_m: c.g(i, 'maxRange'), falloff_m: c.g(i, 'falloff'), tracking: c.g(i, 'trackingSpeed'),
+      max_velocity: c.g(i, 'maxVelocity'), signature_radius: c.g(i, 'signatureRadius') });
   }
   const fVol = new Dmg(), fDps = new Dmg();
   const fighterOut: object[] = [];
@@ -103,7 +105,8 @@ export function offense(c: StatsCtx): object {
     if (fv.total() > 0) {
       fVol.add(fv);
       fDps.add(fd);
-      fighterOut.push({ fighter_index: it.reqIndex, type_id: it.typeId, name: c.typeName(i), squadron_size: n, volley: fv.json(), dps: fd.json() });
+      fighterOut.push({ fighter_index: it.reqIndex, type_id: it.typeId, name: c.typeName(i), squadron_size: n, volley: fv.json(), dps: fd.json(),
+        max_velocity: c.g(i, 'maxVelocity'), signature_radius: c.g(i, 'signatureRadius') });
     }
   }
   const tVol = wVol.clone(); tVol.add(dVol); tVol.add(fVol);

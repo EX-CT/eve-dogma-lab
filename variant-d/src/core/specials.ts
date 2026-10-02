@@ -54,6 +54,20 @@ special('hardPointModifierEffect', ({ fit, item, cat }) => {
   }
 });
 
+// --- fighter self abilities (Pyfa hand-written handlers, eos LGPL): modify the squadron itself --------------------
+const fighterSelf = (mods: [string, string, number][]): SpecialHandler => ({ fit, item, cat }) => {
+  for (const [t, a, op] of mods) fit.pushAttr(item, fit.ds.attrId(t), op, item, fit.ds.attrId(a), cat);
+};
+special('fighterAbilityMicroWarpDrive', fighterSelf([
+  ['maxVelocity', 'fighterAbilityMicroWarpDriveSpeedBonus', 6], ['signatureRadius', 'fighterAbilityMicroWarpDriveSignatureRadiusBonus', 6],
+]));
+special('fighterAbilityAfterburner', fighterSelf([['maxVelocity', 'fighterAbilityAfterburnerSpeedBonus', 6]]));
+special('fighterAbilityEvasiveManeuvers', fighterSelf([
+  ['maxVelocity', 'fighterAbilityEvasiveManeuversSpeedBonus', 6], ['signatureRadius', 'fighterAbilityEvasiveManeuversSignatureRadiusBonus', 6],
+  ['shieldEmDamageResonance', 'fighterAbilityEvasiveManeuversEmResonance', 4], ['shieldThermalDamageResonance', 'fighterAbilityEvasiveManeuversThermResonance', 4],
+  ['shieldKineticDamageResonance', 'fighterAbilityEvasiveManeuversKinResonance', 4], ['shieldExplosiveDamageResonance', 'fighterAbilityEvasiveManeuversExpResonance', 4],
+]));
+
 // --- projected effects without modifierInfo -----------------------------------------------
 /** [target attribute name, source attribute name, operator] */
 type ProjMap = [string, string, number][];
@@ -82,7 +96,9 @@ export type ProjSpecial =
   /** layer 0 shield, 1 armor, 2 hull: attr `amount` * mult * factor every cycle */
   | { kind: 'rep'; item: number; layer: 0 | 1 | 2; amount: number; mult: number; factor: number }
   /** capacitor drain (sign +1) or fill (sign -1) per cycle of attr `duration` */
-  | { kind: 'drain'; item: number; amount: number; duration: number; factor: number; resist: number; sign: number };
+  | { kind: 'drain'; item: number; amount: number; duration: number; factor: number; resist: number; sign: number }
+  /** ECM jam strength vs the target's strongest sensor type (Pyfa addProjectedEcm / jamChance) */
+  | { kind: 'ecm'; item: number; fighter: boolean; factor: number; resist: number };
 
 /** weapon damage / mining projected onto the target: not part of the target's own stats */
 export const PROJECTED_DAMAGE_EFFECTS = new Set([
@@ -95,8 +111,13 @@ type FeedFn = (h: FeedHelpers) => ProjSpecial[];
 interface FeedHelpers {
   rep: (layer: 0 | 1 | 2, amount: string, mult: number, factor: number) => ProjSpecial[];
   drain: (amount: string, duration: string, factor: number, sign: number) => ProjSpecial[];
+  ecm: (fighter: boolean, factor: number) => ProjSpecial[];
   falloff: () => number;
   gate: (attr: string) => number;
+  /** range factor from named optimal / falloff attributes */
+  rf: (opt: string, falloff: string) => number;
+  /** squadron size (projected fighters), >= 1 */
+  qty: number;
   paste: boolean;
   noAssist: boolean;
 }
@@ -115,6 +136,13 @@ const FEEDS: Record<string, FeedFn> = {
   energyNosferatuFalloff: (h) => h.drain('powerTransferAmount', 'duration', h.falloff(), 1),
   structureEnergyNeutralizerFalloff: (h) => h.drain('energyNeutralizerAmount', 'duration', 1, 1),
   entityEnergyNeutralizerFalloff: (h) => h.drain('energyNeutralizerAmount', 'energyNeutralizerDuration', h.gate('energyNeutralizerRangeOptimal'), 1),
+  fighterAbilityEnergyNeutralizer: (h) => h.drain('fighterAbilityEnergyNeutralizerAmount', 'fighterAbilityEnergyNeutralizerDuration',
+    h.rf('fighterAbilityEnergyNeutralizerOptimalRange', 'fighterAbilityEnergyNeutralizerFalloffRange') * h.qty, 1),
+  remoteECMFalloff: (h) => h.ecm(false, h.falloff()),
+  structureModuleEffectECM: (h) => h.ecm(false, h.falloff()),
+  entityECMFalloff: (h) => h.ecm(false, h.gate('ECMRangeOptimal')),
+  ECMBurstJammer: (h) => h.ecm(false, h.gate('ecmBurstRange')),
+  fighterAbilityECM: (h) => h.ecm(true, h.rf('fighterAbilityECMRangeOptimal', 'fighterAbilityECMRangeFalloff') * h.qty),
 };
 
 /** Pyfa's projected handlers for remote reps, cap transfers and neuts/nos (eos/effects.py, LGPL); null = not a feed effect */
@@ -127,9 +155,13 @@ export function projectedFeed(fit: Fit, item: number, name: string, resist: numb
   const dist = it.distance;
   const da = ds.attrId('disallowAssistance');
   const noAssist = fit.has(fit.ship, da) && fit.base(fit.ship, da) !== 0;
+  const dof = ds.attrId('disallowOffensiveModifiers');
+  const noOffense = fit.has(fit.ship, dof) && fit.base(fit.ship, dof) !== 0;
   const paste = it.charge >= 0 && ds.types.get(fit.items[it.charge].typeId)?.name === 'Nanite Repair Paste';
   return f({
-    noAssist, paste,
+    noAssist, paste, qty: Math.max(it.quantity, 1),
+    rf: (o, fo) => rangeFactor(base(o), base(fo), dist, true),
+    ecm: (fighter, factor) => (noOffense ? [] : [{ kind: 'ecm', item, fighter, factor, resist }]),
     falloff: () => rangeFactor(base('maxRange'), base('falloffEffectiveness'), dist, true),
     gate: (attr) => (base(attr) < (dist ?? 0) ? 0 : 1),
     rep: (layer, amount, mult, factor) => (noAssist ? [] : [{ kind: 'rep', item, layer, amount: ds.attrId(amount), mult, factor }]),

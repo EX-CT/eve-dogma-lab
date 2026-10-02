@@ -23,7 +23,7 @@ export function computeStats(fit: Fit, req: NormRequest): unknown {
     ship: { type_id: st.id, name: st.name, group: ds.groups.get(st.group)?.name ?? null },
     resources: res.json,
     offense: offense(c),
-    defense: defense(c),
+    defense: defense(c, cap),
     capacitor: cap.json,
     navigation: navigation(c),
     targeting: targeting(c),

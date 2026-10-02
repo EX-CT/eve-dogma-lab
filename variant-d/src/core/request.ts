@@ -23,7 +23,7 @@ export interface Character { skills?: Skills; security_status?: number | null }
 export interface Buff { buff_id: number; value: number }
 export interface Fleet { buffs?: Buff[]; booster_fits?: FitRequest[] }
 export interface Projected {
-  kind: string; module?: ModuleReq | null; drone?: DroneReq | null; fit?: FitRequest | null; amount?: number; distance_m?: number | null;
+  kind: string; module?: ModuleReq | null; drone?: DroneReq | null; fighter?: FighterReq | null; fit?: FitRequest | null; amount?: number; distance_m?: number | null;
 }
 export interface Environment { effect_type_ids?: number[]; system_security?: string | null }
 export interface Resists { em: number; thermal: number; kinetic: number; explosive: number }

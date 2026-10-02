@@ -37,7 +37,7 @@ export function targeting(c: StatsCtx): object {
   return {
     max_targets: Math.min(c.g(ship, 'maxLockedTargets'), Math.max(c.g(fit.char, 'maxLockedTargets'), 0)),
     max_range_m: c.g(ship, 'maxTargetRange'), scan_resolution: scanRes,
-    sensor_strength: best[1], sensor_type: best[0],
+    sensor_strength: best[1], sensor_type: best[0], jam_chance_percent: jamChance(c),
     probe_size: best[1] > 0 ? Math.max(sig / best[1], 1.08) : null,
     lock_time_s: { sig_25m: lt(25), sig_40m: lt(40), sig_125m: lt(125), sig_400m: lt(400), sig_target_profile: tpSig != null ? lt(tpSig) : null },
   };
@@ -49,4 +49,30 @@ export function drones(c: StatsCtx): object {
     max_active: c.g(c.fit.char, 'maxActiveDrones'),
     control_range_m: c.g(c.fit.char, 'droneControlDistance'),
   };
+}
+
+/** ECM jam chance (Pyfa Fit.jamChance): strengths vs the strongest sensor type (ties -> multispectral -> 0) */
+function jamChance(c: StatsCtx): number {
+  const { fit } = c;
+  const ship = fit.ship;
+  let maxS = -1;
+  let ty: string | null = null;
+  for (const t of ['Magnetometric', 'Ladar', 'Radar', 'Gravimetric']) {
+    const v = c.g(ship, `scan${t}Strength`);
+    if (v > maxS) { maxS = v; ty = t; } else if (v === maxS) ty = null;
+  }
+  let retain = 1;
+  let any = false;
+  for (const ps of fit.projSpecial) {
+    if (ps.kind !== 'ecm') continue;
+    any = true;
+    if (ty === null) continue;
+    let st = c.g(ps.item, ps.fighter ? `fighterAbilityECMStrength${ty}` : `scan${ty}StrengthBonus`) * ps.factor;
+    if (ps.resist !== 0) {
+      const r = fit.get(ship, ps.resist);
+      if (r !== 0) st *= r;
+    }
+    if (maxS > 0) retain *= 1 - Math.min(st / maxS, 1);
+  }
+  return any ? (1 - retain) * 100 : 0;
 }

@@ -225,6 +225,22 @@ export class Fit extends AttrGraph {
             fit.items[idx].charge = c;
           }
         }
+      } else if (p.kind === 'fighter') {
+        const f = p.fighter;
+        if (!f) return;
+        for (let k = 0; k < amount; k++) {
+          const idx = fit.newItem(f.type_id, Kind.Projected, Loc.Nowhere, `/projected/${i}`);
+          const it = fit.items[idx];
+          const sq = ds.attrId('fighterSquadronMaxSize');
+          const maxsq = Math.max(it.tattrs.has(sq) ? Math.trunc(it.tattrs.get(sq)!) : 1, 1);
+          it.owned = false;
+          it.state = (f.active ?? true) ? State.Active : State.Offline;
+          it.quantity = Math.min(Math.max(f.quantity ?? maxsq, 1), maxsq);
+          it.activeCount = it.quantity;
+          it.distance = p.distance_m ?? null;
+          it.reqIndex = i;
+          it.fighterAbilities = f.abilities ?? defaultFighterAbilities(ds, it.effects);
+        }
       } else if (p.kind === 'fit') {
         if (p.fit) fit.addProjectedFit(i, p.fit, amount, p.distance_m ?? null);
       } else if (p.kind === 'drone') {
@@ -274,15 +290,15 @@ export class Fit extends AttrGraph {
       this.warnings.push(`projected[${i}] fit: ${(e as Error).message}`);
       return;
     }
-    const frozen: [number, number, Map<number, number>][] = [];
+    const frozen: [number, number, Map<number, number>, Kind, number, number[] | null][] = [];
     for (const it of src.items) {
-      const copies = it.kind === Kind.Module && it.state >= State.Active ? 1 : it.kind === Kind.Drone ? it.activeCount : 0;
+      const copies = (it.kind === Kind.Module || it.kind === Kind.Fighter) && it.state >= State.Active ? 1 : it.kind === Kind.Drone ? it.activeCount : 0;
       if (copies === 0) continue;
       const vals = new Map<number, number>();
       for (const a of src.attrKeys(it.idx)) vals.set(a, src.get(it.idx, a));
-      frozen.push([it.typeId, copies, vals]);
+      frozen.push([it.typeId, copies, vals, it.kind, it.quantity, it.fighterAbilities]);
     }
-    for (const [typeId, copies, vals] of frozen) {
+    for (const [typeId, copies, vals, kind, qty, abil] of frozen) {
       for (let k = 0; k < copies * amount; k++) {
         const idx = this.newItem(typeId, Kind.Projected, Loc.Nowhere, `/projected/${i}`);
         const it = this.items[idx];
@@ -292,6 +308,11 @@ export class Fit extends AttrGraph {
         it.reqIndex = i;
         it.base = new Map(vals);
         it.ovA = -1;
+        if (kind === Kind.Fighter) {
+          it.quantity = qty;
+          it.activeCount = qty;
+          it.fighterAbilities = abil;
+        }
       }
     }
   }
@@ -412,20 +433,44 @@ export class Fit extends AttrGraph {
     const ds = this.ds;
     const it = this.items[i];
     const ship = this.ship;
+    const qty = Math.max(it.quantity, 1);
+    const dof = ds.attrId('disallowOffensiveModifiers');
+    const targetOffenseOk = !this.has(ship, dof) || this.base(ship, dof) === 0;
+    const look = (n: string) => { const a = ds.attrId(n); return this.has(i, a) ? Math.trunc(this.base(i, a)) : 0; };
     for (const [eid] of it.effects) {
       const e = ds.effects.get(eid);
-      if (!e || (e.category !== 2 && e.category !== 3)) continue;
+      if (!e || (e.category !== 2 && e.category !== 3 && e.name !== 'ECMBurstJammer')) continue;
+      const isFighterAbility = e.name.startsWith('fighterAbility');
+      if (it.fighterAbilities !== null && isFighterAbility && !it.fighterAbilities.includes(eid)) continue;
       if (it.state < State.Active) continue;
       const opt = e.rangeAttr !== null && this.has(i, e.rangeAttr) ? this.base(i, e.rangeAttr) : 0;
       const fo = e.falloffAttr !== null && this.has(i, e.falloffAttr) ? this.base(i, e.falloffAttr) : 0;
       const factor = rangeFactor(opt, fo, it.distance, true);
-      const rr = ds.attrId('remoteResistanceID');
-      const resist = e.resistanceAttr ?? (this.has(i, rr) ? Math.trunc(this.base(i, rr)) : 0);
+      let resist: number;
+      if (e.resistanceAttr !== null) resist = e.resistanceAttr;
+      else if (isFighterAbility) resist = look(`${e.name}ResistanceID`) || look(`${e.name}RemoteResistanceID`);
+      else resist = look('remoteResistanceID');
       const push = (targetAttr: number, srcAttr: number, op: number) =>
         this.push(ship, targetAttr, op, { k: SrcK.Projected, item: i, attr: srcAttr, v: factor, a2: resist, a3: ship, mul: op === 4 || op === 0 }, i, it.category);
       if (e.mods.length > 0) {
         for (const m of e.mods) {
           if ((m.domain === Domain.TargetId || m.domain === Domain.Target || m.domain === Domain.Ship) && m.func === Func.Item) push(m.modified, m.modifying, m.op);
+        }
+        continue;
+      }
+      const pbase = (n: string) => { const a = ds.attrId(n); return this.has(i, a) ? this.base(i, a) : 0; };
+      if (e.name === 'fighterAbilityStasisWebifier') {
+        if (targetOffenseOk) {
+          const f = rangeFactor(pbase('fighterAbilityStasisWebifierOptimalRange'), pbase('fighterAbilityStasisWebifierFalloffRange'), it.distance, true) * qty;
+          this.push(ship, ds.attrId('maxVelocity'), 6,
+            { k: SrcK.Projected, item: i, attr: ds.attrId('fighterAbilityStasisWebifierSpeedPenalty'), v: f, a2: resist, a3: ship, mul: false }, i, it.category);
+        }
+        continue;
+      }
+      if (e.name === 'fighterAbilityWarpDisruption') {
+        if (targetOffenseOk && pbase('fighterAbilityWarpDisruptionRange') >= (it.distance ?? 0)) {
+          this.push(ship, ds.attrId('warpScrambleStatus'), 2,
+            { k: SrcK.Projected, item: i, attr: ds.attrId('fighterAbilityWarpDisruptionPointStrength'), v: qty, a2: resist, a3: ship, mul: false }, i, it.category);
         }
         continue;
       }
