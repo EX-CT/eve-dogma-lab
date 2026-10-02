@@ -42,12 +42,32 @@ func testDataset(t testing.TB) *Dataset {
 }
 
 func pointer(v any, ptr string) any {
+	// JSON pointer with optional array selector segments `name[key=value]`
 	for _, p := range strings.Split(strings.TrimPrefix(ptr, "/"), "/") {
 		m, ok := v.(map[string]any)
 		if !ok {
 			return nil
 		}
-		v = m[p]
+		b := strings.IndexByte(p, '[')
+		if b < 0 || !strings.HasSuffix(p, "]") {
+			v = m[p]
+			continue
+		}
+		k, want, ok := strings.Cut(p[b+1:len(p)-1], "=")
+		arr, _ := m[p[:b]].([]any)
+		if !ok {
+			return nil
+		}
+		v = nil
+		for _, e := range arr {
+			if em, ok := e.(map[string]any); ok && fmt.Sprint(em[k]) == want {
+				v = em
+				break
+			}
+		}
+		if v == nil {
+			return nil
+		}
 	}
 	return v
 }

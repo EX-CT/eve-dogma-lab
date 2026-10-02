@@ -338,7 +338,27 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		case "missile":
 			if it.Charge >= 0 {
 				c := int(it.Charge)
-				wo["range_m"] = g(c, "maxVelocity") * (g(c, "explosionDelay") / 1000)
+				// Pyfa missileMaxRangeData: flight time + ship radius bonus, acceleration phase, floor/ceil blend,
+				// FoF limit, centre-to-surface (eos/saveddata/module.py, LGPL)
+				if vel := g(c, "maxVelocity"); vel > 0 {
+					radius := g(ship, "radius")
+					ft := floatUnerr(g(c, "explosionDelay")/1000 + radius/vel)
+					accelCap := g(c, "mass") * g(c, "agility") / 1e6
+					rangeAt := func(t float64) float64 {
+						acc := math.Min(t, accelCap)
+						return vel/2*acc + vel*(t-acc)
+					}
+					lt, ht := math.Floor(ft), math.Ceil(ft)
+					lr, hr := rangeAt(lt), rangeAt(ht)
+					if f.hasEffect(c, ds.EffectID("fofMissileLaunching")) {
+						if lim := g(c, "maxFOFTargetRange"); lim > 0 {
+							lr, hr = math.Min(lr, lim), math.Min(hr, lim)
+						}
+					}
+					lr, hr = math.Max(lr-radius, 0), math.Max(hr-radius, 0)
+					hc := ft - lt
+					wo["range_m"] = lr*(1-hc) + hr*hc
+				}
 				wo["explosion_radius"] = g(c, "aoeCloudSize")
 				wo["explosion_velocity"] = g(c, "aoeVelocity")
 			}
@@ -469,6 +489,36 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 			hullRep += g(i, "structureDamageAmount") / dur
 		}
 	}
+	// incoming remote repairs (Pyfa __getAppliedRr diminishing-returns formula)
+	{
+		type rr struct{ a, c float64 }
+		var lists [3][]rr
+		for _, ps := range f.ProjSpecials {
+			if !ps.Rep {
+				continue
+			}
+			if dur := f.Get(ps.Item, w.duration) / 1000; dur > 0 {
+				lists[ps.Layer] = append(lists[ps.Layer], rr{f.Get(ps.Item, ps.Amount) * ps.Mult * ps.Factor, dur})
+			}
+		}
+		applied := func(l []rr) float64 {
+			total := 0.0
+			for _, x := range l {
+				total += x.a / math.Trunc(x.c)
+			}
+			sum := 0.0
+			for _, x := range l {
+				rrps := x.a / math.Trunc(x.c)
+				m := 7000 + rrps*20
+				q := (rrps+m)/(total+m) - 1
+				sum += (1 - q*q) * x.a / x.c
+			}
+			return sum
+		}
+		shieldRep += applied(lists[0])
+		armorRep += applied(lists[1])
+		hullRep += applied(lists[2])
+	}
 	srr := g(ship, "shieldRechargeRate") / 1000
 	passive := 0.0
 	if srr > 0 {
@@ -533,6 +583,23 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 				ReloadMs: f.Get(i, w.reload), IsInjector: isInj, DisableStagger: f.hasEffect(i, w.eTurret)})
 		}
 		moduleRows = append(moduleRows, row)
+	}
+	// incoming neuts / nos / cap transfers (Pyfa fit.addDrain): no stagger, after the fit's own modules
+	sigNow := g(ship, "signatureRadius")
+	for _, ps := range f.ProjSpecials {
+		if ps.Rep {
+			continue
+		}
+		need := f.Get(ps.Item, ps.Amount) * ps.Factor * ps.Sign
+		if ps.Resist != 0 {
+			need *= f.Get(ship, ps.Resist)
+		}
+		if sres := g(ps.Item, "energyNeutralizerSignatureResolution"); sres != 0 {
+			need *= math.Min(sigNow/sres, 1)
+		}
+		if dur := f.Get(ps.Item, ps.Duration); need != 0 && dur > 0 {
+			drains = append(drains, Drain{Duration: math.Trunc(dur), CapNeed: need})
+		}
 	}
 	capj := obj{"capacity": capC, "recharge_time_s": rr / 1000, "peak_recharge_gj_s": peak, "use_gj_s": capUsed,
 		"injected_gj_s": capAdded, "delta_gj_s": peak + capAdded - capUsed}

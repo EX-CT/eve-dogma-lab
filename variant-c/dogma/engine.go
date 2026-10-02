@@ -155,8 +155,24 @@ type Fit struct {
 	stack           []uint64 // nodes being evaluated (cycle guard + dependency recording)
 
 	// TrackDeps enables reverse-dependency recording so SetBase can invalidate precisely.
+	ProjSpecials []ProjSpecial // incoming reps / cap transfers / neuts (feed tank and capsim)
+
 	TrackDeps bool
 	rdeps     map[uint64][]uint64
+}
+
+// ProjSpecial is a projected effect that does not modify attributes but feeds tank or capacitor stats
+// (Pyfa: fit._armorRr, addDrain).
+type ProjSpecial struct {
+	Rep      bool    // true: remote repair; false: capacitor drain/fill
+	Item     int     // projected item
+	Layer    int     // rep: 0 shield, 1 armor, 2 hull
+	Amount   uint32  // attribute with the amount per cycle
+	Duration uint32  // drain: attribute with the cycle time
+	Mult     float64 // rep multiplier (paste)
+	Factor   float64 // range factor
+	Resist   uint32  // drain: target resistance attribute
+	Sign     float64 // drain: +1 drain, -1 fill
 }
 
 // EngineError is a request-level error (unknown type etc.).
@@ -488,6 +504,15 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 					}
 					it.Distance = p.DistanceM
 					it.ReqIndex = i
+					if p.Module.ChargeTypeID != nil {
+						c, err := f.newItem(*p.Module.ChargeTypeID, KCharge, LNowhere, fmt.Sprintf("/projected/%d/module/charge_type_id", i))
+						if err != nil {
+							return nil, err
+						}
+						f.Items[c].Parent = int32(idx)
+						f.Items[c].Owned = false
+						f.Items[idx].Charge = int32(c)
+					}
 				}
 			}
 		case "drone":
@@ -501,6 +526,57 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 					it.Owned = false
 					it.State = Active
 					it.Distance = p.DistanceM
+				}
+			}
+		case "fit":
+			// whole projected fit: compute the source fit on its own, then project each active module / drone as
+			// a frozen item carrying the source-modified values.
+			if p.Fit != nil {
+				sreq := *p.Fit
+				sreq.Projected = nil
+				src, err := Build(ds, &sreq)
+				if err != nil {
+					f.Warnings = append(f.Warnings, fmt.Sprintf("projected[%d] fit: %v", i, err))
+					continue
+				}
+				type frozen struct {
+					typeID uint32
+					copies uint32
+					vals   attrSet
+				}
+				var fr []frozen
+				for si := range src.Items {
+					it := &src.Items[si]
+					copies := uint32(0)
+					switch {
+					case it.Kind == KModule && it.State >= Active:
+						copies = 1
+					case it.Kind == KDrone:
+						copies = it.ActiveCount
+					}
+					if copies == 0 {
+						continue
+					}
+					ids := src.AttrIDs(si)
+					vals := make([]float64, len(ids))
+					for k, a := range ids {
+						vals[k] = src.Get(si, a)
+					}
+					fr = append(fr, frozen{it.TypeID, copies, attrSet{ids, vals}})
+				}
+				for _, z := range fr {
+					for k := uint32(0); k < z.copies*max(p.Amount, 1); k++ {
+						idx, err := f.newItem(z.typeID, KProjected, LNowhere, fmt.Sprintf("/projected/%d", i))
+						if err != nil {
+							return nil, err
+						}
+						it := &f.Items[idx]
+						it.Owned = false
+						it.State = Active
+						it.Distance = p.DistanceM
+						it.ReqIndex = i
+						it.overlay = attrSet{append([]uint32(nil), z.vals.ids...), append([]float64(nil), z.vals.vals...)}
+					}
 				}
 			}
 		default:
@@ -814,13 +890,96 @@ func (f *Fit) registerProjected(i int) {
 			push(a("maxVelocity"), a("speedFactor"), 6)
 		case strings.HasPrefix(n, "remoteTargetPaint") || n == "structureModuleEffectTargetPainter":
 			push(a("signatureRadius"), a("signatureRadiusBonus"), 6)
-		case strings.HasPrefix(n, "remoteSensorDamp") || n == "structureModuleEffectRemoteSensorDampener" || strings.HasPrefix(n, "remoteSensorBoost"):
+		case strings.HasPrefix(n, "remoteSensorDamp") || n == "structureModuleEffectRemoteSensorDampener":
 			push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
 			push(a("scanResolution"), a("scanResolutionBonus"), 6)
+		case strings.HasPrefix(n, "remoteSensorBoost"):
+			push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
+			push(a("scanResolution"), a("scanResolutionBonus"), 6)
+			for _, t := range [4]string{"Gravimetric", "Ladar", "Magnetometric", "Radar"} {
+				push(a("scan"+t+"Strength"), a("scan"+t+"StrengthPercent"), 6)
+			}
 		default:
-			f.Warnings = append(f.Warnings, fmt.Sprintf("projected effect '%s' not modelled yet", n))
+			if ps, ok := f.projSpecialFor(i, n, resist); ok {
+				f.ProjSpecials = append(f.ProjSpecials, ps...)
+			} else if !projDamageEffects[n] {
+				f.Warnings = append(f.Warnings, fmt.Sprintf("projected effect '%s' not modelled yet", n))
+			}
 		}
 	}
+}
+
+var projDamageEffects = map[string]bool{"projectileFired": true, "targetAttack": true, "useMissiles": true, "barrage": true,
+	"targetDisintegratorAttack": true, "missileLaunchingForEntity": true, "fighterAbilityAttackM": true, "fighterAbilityMissiles": true,
+	"superWeaponAmarr": true, "superWeaponCaldari": true, "superWeaponGallente": true, "superWeaponMinmatar": true, "mining": true,
+	"miningLaser": true, "miningClouds": true, "dotMissileLaunching": true}
+
+// projSpecialFor mirrors Pyfa's 'projected' handlers for remote reps, cap transfers and neuts/nos (eos, LGPL).
+func (f *Fit) projSpecialFor(i int, name string, resist uint32) ([]ProjSpecial, bool) {
+	ds := f.DS
+	a := ds.AttrID
+	it := &f.Items[i]
+	base := func(n string) float64 { v, _ := f.baseOK(i, a(n)); return v }
+	dist := it.Distance
+	falloff := func() float64 { return RangeFactor(base("maxRange"), base("falloffEffectiveness"), dist, true) }
+	gate := func(opt float64) float64 {
+		d := 0.0
+		if dist != nil {
+			d = *dist
+		}
+		if opt < d {
+			return 0
+		}
+		return 1
+	}
+	noAssist := false
+	if v, ok := f.baseOK(f.Ship, a("disallowAssistance")); ok && v != 0 {
+		noAssist = true
+	}
+	rep := func(layer int, amt string, mult, factor float64) []ProjSpecial {
+		if noAssist {
+			return nil
+		}
+		return []ProjSpecial{{Rep: true, Item: i, Layer: layer, Amount: a(amt), Mult: mult, Factor: factor}}
+	}
+	drain := func(amt, dur string, factor, sign float64) []ProjSpecial {
+		return []ProjSpecial{{Item: i, Amount: a(amt), Duration: a(dur), Factor: factor, Resist: resist, Sign: sign}}
+	}
+	paste := it.Charge >= 0 && f.Items[it.Charge].T.Name == "Nanite Repair Paste"
+	switch name {
+	case "shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster":
+		return rep(0, "shieldBonus", 1, falloff()), true
+	case "shipModuleRemoteArmorRepairer", "ShipModuleRemoteArmorMutadaptiveRepairer":
+		return rep(1, "armorDamageAmount", 1, falloff()), true
+	case "shipModuleAncillaryRemoteArmorRepairer":
+		m := 1.0
+		if paste {
+			m = 3
+		}
+		return rep(1, "armorDamageAmount", m, falloff()), true
+	case "shipModuleRemoteHullRepairer":
+		return rep(2, "structureDamageAmount", 1, falloff()), true
+	case "npcEntityRemoteShieldBooster":
+		return rep(0, "shieldBonus", 1, gate(base("maxRange"))), true
+	case "npcEntityRemoteArmorRepairer":
+		return rep(1, "armorDamageAmount", 1, gate(base("maxRange"))), true
+	case "npcEntityRemoteHullRepairer":
+		return rep(2, "structureDamageAmount", 1, gate(base("maxRange"))), true
+	case "shipModuleRemoteCapacitorTransmitter":
+		if noAssist {
+			return nil, true
+		}
+		return drain("powerTransferAmount", "duration", gate(base("maxRange")), -1), true
+	case "energyNeutralizerFalloff":
+		return drain("energyNeutralizerAmount", "duration", falloff(), 1), true
+	case "energyNosferatuFalloff":
+		return drain("powerTransferAmount", "duration", falloff(), 1), true
+	case "structureEnergyNeutralizerFalloff":
+		return drain("energyNeutralizerAmount", "duration", 1, 1), true
+	case "entityEnergyNeutralizerFalloff":
+		return drain("energyNeutralizerAmount", "energyNeutralizerDuration", gate(base("energyNeutralizerRangeOptimal")), 1), true
+	}
+	return nil, false
 }
 
 func (f *Fit) registerBuffs(req *FitRequest) {
@@ -843,17 +1002,21 @@ func (f *Fit) registerBuffs(req *FitRequest) {
 		}
 		agg[b.BuffID] = cur
 	}
-	ids := make([]uint32, 0, len(agg))
-	for k := range agg {
-		ids = append(ids, k)
+	// Pyfa keeps, per buff id, the single strongest (by |value|) source among the fit's own bursts and the
+	// fleet booster fits; explicit fleet.buffs override both.
+	type cand struct {
+		v   float64
+		src amod
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	for _, id := range ids {
-		f.applyBuff(id, amod{kind: srcConst, c: agg[id], from: int32(f.Ship)})
-	}
-	explicit := make([]uint32, 0, len(req.Fleet.Buffs))
-	for _, b := range req.Fleet.Buffs {
-		explicit = append(explicit, b.BuffID)
+	best := map[uint32]cand{}
+	var order []uint32
+	offer := func(id uint32, v float64, src amod) {
+		if old, ok := best[id]; ok && math.Abs(old.v) >= math.Abs(v) {
+			return
+		} else if !ok {
+			order = append(order, id)
+		}
+		best[id] = cand{v, src}
 	}
 	w := &ds.ids
 	for i := range f.Items {
@@ -861,17 +1024,52 @@ func (f *Fit) registerBuffs(req *FitRequest) {
 			continue
 		}
 		for k := 0; k < 4; k++ {
-			ida, vala := w.warfareID[k], w.warfareVal[k]
 			id := uint32(0)
-			if f.Has(i, ida) {
-				id = uint32(f.Get(i, ida))
+			if f.Has(i, w.warfareID[k]) {
+				id = uint32(f.Get(i, w.warfareID[k]))
 			}
-			if id == 0 || containsU32(explicit, id) {
+			if _, explicit := agg[id]; id == 0 || explicit {
 				continue
 			}
-			f.applyBuff(id, amod{kind: srcAttr, item: int32(i), attr: vala, from: int32(i)})
+			offer(id, f.Get(i, w.warfareVal[k]), amod{kind: srcAttr, item: int32(i), attr: w.warfareVal[k], from: int32(i)})
 		}
 	}
+	for k := range req.Fleet.BoosterFits {
+		breq := req.Fleet.BoosterFits[k]
+		breq.Fleet.BoosterFits = nil
+		b, err := Build(ds, &breq)
+		if err != nil {
+			f.Warnings = append(f.Warnings, fmt.Sprintf("fleet.booster_fits[%d]: %v", k, err))
+			continue
+		}
+		for i := range b.Items {
+			if b.Items[i].Kind != KModule || b.Items[i].State < Active {
+				continue
+			}
+			for q := 0; q < 4; q++ {
+				id := uint32(0)
+				if b.Has(i, w.warfareID[q]) {
+					id = uint32(b.Get(i, w.warfareID[q]))
+				}
+				if _, explicit := agg[id]; id == 0 || explicit {
+					continue
+				}
+				v := b.Get(i, w.warfareVal[q])
+				offer(id, v, amod{kind: srcConst, c: v, from: int32(f.Ship)})
+			}
+		}
+	}
+	for id, v := range agg {
+		if _, ok := best[id]; !ok {
+			order = append(order, id)
+		}
+		best[id] = cand{v, amod{kind: srcConst, c: v, from: int32(f.Ship)}}
+	}
+	sort.Slice(order, func(a, b int) bool { return order[a] < order[b] })
+	for _, id := range order {
+		f.applyBuff(id, best[id].src)
+	}
+	f.Invalidate()
 }
 
 func (f *Fit) applyBuff(id uint32, src amod) {

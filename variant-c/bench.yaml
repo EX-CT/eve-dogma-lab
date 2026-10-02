@@ -1,0 +1,3 @@
+build: go build -trimpath -o bin/eve-dogma-go ./cmd/eve-dogma-go
+cmd: ./bin/eve-dogma-go --dataset {dataset} calc
+batch_cmd: ./bin/eve-dogma-go --dataset {dataset} batch

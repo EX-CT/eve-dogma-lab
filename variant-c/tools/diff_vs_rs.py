@@ -16,7 +16,7 @@ def walk(a, b, p, out):
     elif a != b:
         out.append((p, f"{a!r} vs {b!r}"))
 from concurrent.futures import ThreadPoolExecutor
-files = sorted(glob.glob("testdata/requests/*.json"))
+files = sorted(glob.glob(sys.argv[1] if len(sys.argv) > 1 else "testdata/requests/*.json"))
 with ThreadPoolExecutor(8) as ex:
     res = list(ex.map(lambda f: (f, run(RS, f), run(GO, f)), files))
 tot = 0; bad = 0
