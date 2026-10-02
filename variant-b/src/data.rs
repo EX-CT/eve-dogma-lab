@@ -672,7 +672,7 @@ impl<'de> Deserialize<'de> for IdKey {
     }
 }
 
-const SNAPSHOT_VERSION: u32 = 5;
+const SNAPSHOT_VERSION: u32 = 6;
 
 /// Snapshot bytes: memory-mapped cache file (pages faulted in on use) or an owned buffer.
 pub enum Blob {
@@ -846,13 +846,24 @@ pub struct NameIndex {
     names: usize,
 }
 
+/// Stable (snapshot-persisted) string hash: 8 bytes per step, multiply-rotate (FxHash-style) + final mix.
 #[inline]
 fn fnv1a(b: &[u8]) -> u32 {
-    let mut h: u32 = 0x811c9dc5;
-    for &x in b {
-        h = (h ^ x as u32).wrapping_mul(0x01000193);
+    const K: u64 = 0xf135_7aea_2e62_a9c5;
+    let mut h: u64 = b.len() as u64;
+    let mut c = b.chunks_exact(8);
+    for w in &mut c {
+        h = (h ^ u64::from_le_bytes(w.try_into().unwrap())).wrapping_mul(K).rotate_left(26);
     }
-    h
+    let r = c.remainder();
+    if !r.is_empty() {
+        let mut t = [0u8; 8];
+        t[..r.len()].copy_from_slice(r);
+        h = (h ^ u64::from_le_bytes(t)).wrapping_mul(K).rotate_left(26);
+    }
+    h ^= h >> 29;
+    h = h.wrapping_mul(K);
+    (h ^ (h >> 32)) as u32
 }
 
 impl NameIndex {

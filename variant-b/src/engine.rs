@@ -172,7 +172,7 @@ struct Graph {
 
 pub struct Fit<'a> {
     pub ds: &'a Dataset,
-    prep: &'a Prepared,
+    pub(crate) prep: &'a Prepared,
     pub items: Vec<Item<'a>>,
     pub ship: usize,
     pub char: usize,
@@ -1714,6 +1714,8 @@ pub struct Prepared {
     /// tactical destroyer modes (group 1306): (lowercase name, type id)
     pub modes: Vec<(String, u32)>,
     pub attr_meta: Vec<AttrMeta>,
+    /// attribute ids used by fit validation (resolved once per dataset)
+    pub vids: crate::stats::ValidateIds,
     folds: std::sync::Mutex<Vec<(u32, Option<std::sync::Arc<SkillFold>>)>>,
     table: Vec<(u32, Option<std::sync::Arc<SkillFold>>)>,
 }
@@ -1758,7 +1760,8 @@ impl Prepared {
         let mut modes: Vec<(String, u32)> =
             ds.types.ids_in_group(1306).map(|id| (ds.types[&id].name.to_lowercase(), id)).collect();
         modes.sort_by_key(|x| x.1);
-        Prepared { skills_foldable: foldable, published_skills, modes, attr_meta, folds: std::sync::Mutex::new(Vec::new()), table }
+        let vids = crate::stats::ValidateIds::new(ds);
+        Prepared { skills_foldable: foldable, published_skills, modes, attr_meta, vids, folds: std::sync::Mutex::new(Vec::new()), table }
     }
 
     fn fold(&self, ds: &Dataset, s: u32) -> Option<std::sync::Arc<SkillFold>> {

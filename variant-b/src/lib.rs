@@ -24,7 +24,10 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Value {
 /// Convenience: JSON string in, JSON string out.
 pub fn calc_json(ds: &Dataset, request_json: &str) -> String {
     let v = match serde_json::from_str::<FitRequest>(request_json) {
-        Ok(req) => calc(ds, &req),
+        Ok(req) => match engine::Fit::build(ds, &req) {
+            Ok(fit) => return stats::write_rounded(&fit.compute_stats_raw(&req)),
+            Err(e) => json!({"error": {"code": e.code, "message": e.message, "path": e.path}}),
+        },
         Err(e) => json!({"error": {"code": "BAD_REQUEST", "message": e.to_string(), "path": ""}}),
     };
     serde_json::to_string(&v).unwrap()

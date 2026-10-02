@@ -114,6 +114,30 @@ fn round6(v: f64) -> f64 {
 }
 
 /// Recursively round floats for stable, readable output.
+/// JSON formatter that applies `tidy`'s rounding while writing (saves building a rounded copy).
+struct RoundFmt;
+impl serde_json::ser::Formatter for RoundFmt {
+    #[inline]
+    fn write_f64<W: ?Sized + std::io::Write>(&mut self, w: &mut W, v: f64) -> std::io::Result<()> {
+        // tidy: json!(round6(f)); a non-finite result becomes null
+        let r = round6(v);
+        if r.is_finite() {
+            serde_json::ser::CompactFormatter.write_f64(w, r)
+        } else {
+            w.write_all(b"null")
+        }
+    }
+}
+
+/// `serde_json::to_string(&tidy(v))` without the intermediate rounded tree.
+pub fn write_rounded(v: &Value) -> String {
+    use serde::Serialize;
+    let mut out = Vec::with_capacity(16 * 1024);
+    let mut ser = serde_json::Serializer::with_formatter(&mut out, RoundFmt);
+    v.serialize(&mut ser).expect("serialize");
+    String::from_utf8(out).expect("utf8")
+}
+
 fn tidy(mut v: Value) -> Value {
     tidy_mut(&mut v);
     v
@@ -132,6 +156,26 @@ fn tidy_mut(v: &mut Value) {
         Value::Array(a) => a.iter_mut().for_each(tidy_mut),
         Value::Object(o) => o.values_mut().for_each(tidy_mut),
         _ => {}
+    }
+}
+
+/// Attribute ids `validate` needs, resolved once per dataset (instead of format! + name lookup per module).
+pub struct ValidateIds {
+    can_fit_group: Vec<u32>,
+    can_fit_type: Vec<u32>,
+    charge_group: Vec<u32>,
+    req_skill: [(u32, u32); 6],
+}
+
+impl ValidateIds {
+    pub fn new(ds: &crate::data::Dataset) -> ValidateIds {
+        ValidateIds {
+            can_fit_group: (1..=20).map(|k| ds.attr_id(&format!("canFitShipGroup{k:02}"))).filter(|x| *x != 0).collect(),
+            can_fit_type: (1..=11).map(|k| ds.attr_id(&format!("canFitShipType{k}"))).filter(|x| *x != 0).collect(),
+            // kept unfiltered: an unknown name maps to id 0 exactly like the per-call lookup did
+            charge_group: (1..=5).map(|k| ds.attr_id(&format!("chargeGroup{k}"))).collect(),
+            req_skill: std::array::from_fn(|k| (ds.attr_id(&format!("requiredSkill{}", k + 1)), ds.attr_id(&format!("requiredSkill{}Level", k + 1)))),
+        }
     }
 }
 
@@ -230,7 +274,18 @@ impl<'a> Fit<'a> {
         (d, kind)
     }
 
+    /// Full stats with every float rounded to 6 decimals.
+
     pub fn compute_stats(&self, req: &FitRequest) -> Value {
+
+        tidy(self.compute_stats_raw(req))
+
+    }
+
+
+    /// Stats before rounding: serialize with [`write_rounded`] to get exactly the bytes of `compute_stats`.
+
+    pub fn compute_stats_raw(&self, req: &FitRequest) -> Value {
         let ds = self.ds;
         let id = ids(self);
         let ship = self.ship;
@@ -820,7 +875,7 @@ impl<'a> Fit<'a> {
             }
             _ => {}
         }
-        tidy(Value::Object(out))
+        Value::Object(out)
     }
 
     pub fn dump_attrs(&self, i: usize) -> Value {
@@ -867,8 +922,9 @@ impl<'a> Fit<'a> {
             push("LAUNCHER_HARDPOINTS", format!("launchers {l} > hardpoints {}", g(ship, "launcherSlotsLeft")), None);
         }
         let ship_t = &ds.types[&self.items[ship].type_id];
-        let groups_attrs: Vec<u32> = (1..=20).map(|k| ds.attr_id(&format!("canFitShipGroup{k:02}"))).filter(|x| *x != 0).collect();
-        let types_attrs: Vec<u32> = (1..=11).map(|k| ds.attr_id(&format!("canFitShipType{k}"))).filter(|x| *x != 0).collect();
+        let vids = &self.prep.vids;
+        let groups_attrs = &vids.can_fit_group;
+        let types_attrs = &vids.can_fit_type;
         let mut fitted_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut fitted_type: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut active_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
@@ -921,7 +977,7 @@ impl<'a> Fit<'a> {
             }
             if let Some(c) = it.charge {
                 let ct = &ds.types[&self.items[c].type_id];
-                let cg: Vec<u32> = (1..=5).filter_map(|k| mt.attr(ds.attr_id(&format!("chargeGroup{k}")))).map(|v| v as u32).filter(|v| *v != 0).collect();
+                let cg: Vec<u32> = vids.charge_group.iter().filter_map(|&a| mt.attr(a)).map(|v| v as u32).filter(|v| *v != 0).collect();
                 if !cg.contains(&ct.group) {
                     push("CHARGE_GROUP", format!("{} cannot be loaded into {name}", ct.name), idx);
                 }
@@ -942,20 +998,18 @@ impl<'a> Fit<'a> {
         for &(s, l) in &self.skills {
             have.insert(s, l as f64);
         }
-        let lvl_attrs = ["requiredSkill1Level", "requiredSkill2Level", "requiredSkill3Level", "requiredSkill4Level", "requiredSkill5Level", "requiredSkill6Level"];
-        let skill_attrs = ["requiredSkill1", "requiredSkill2", "requiredSkill3", "requiredSkill4", "requiredSkill5", "requiredSkill6"];
         let mut missing: Vec<(u32, f64, u32)> = Vec::new();
         for it in &self.items {
             if !matches!(it.kind, Kind::Ship | Kind::Module | Kind::Charge | Kind::Drone | Kind::Fighter | Kind::Implant | Kind::Booster) {
                 continue;
             }
             let t = &ds.types[&it.type_id];
-            for (sa, la) in skill_attrs.iter().zip(lvl_attrs.iter()) {
-                let s = t.attr(ds.attr_id(sa)).unwrap_or(0.0) as u32;
+            for &(sa, la) in &vids.req_skill {
+                let s = t.attr(sa).unwrap_or(0.0) as u32;
                 if s == 0 {
                     continue;
                 }
-                let need = t.attr(ds.attr_id(la)).unwrap_or(1.0);
+                let need = t.attr(la).unwrap_or(1.0);
                 if *have.get(&s).unwrap_or(&0.0) < need && !missing.iter().any(|m| m.0 == s && m.1 >= need) {
                     missing.push((s, need, it.type_id));
                 }
