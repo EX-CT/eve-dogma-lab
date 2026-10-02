@@ -636,19 +636,60 @@ impl<'a> Fit<'a> {
         }
     }
 
+    /// (buff id, value) of every active command burst on this fit (values read after local effects).
+    pub fn burst_buffs(&self) -> Vec<(u32, f64)> {
+        let ds = self.ds;
+        let c = self.calc();
+        let mut out = Vec::new();
+        for &m in &self.modules {
+            if self.state(m) < State::Active {
+                continue;
+            }
+            for k in 0..4 {
+                let ida = ds.a.warfare_id[k];
+                let id = if ida != 0 && c.has(m, ida) { c.get(m, ida) as u32 } else { 0 };
+                if id != 0 {
+                    out.push((id, c.get(m, ds.a.warfare_value[k])));
+                }
+            }
+        }
+        out
+    }
+
+    /// Fleet boosts: explicit buffs, this fit's own bursts and the bursts of every booster fit
+    /// (each booster is its own world run through spawn/index/local_effects). Per buff id the strongest
+    /// value wins (largest magnitude, first seen on ties - Pyfa's commandBonuses rule).
     pub fn fleet_buffs(&mut self, req: &FitRequest) {
         let ds = self.ds;
         let mut agg: Vec<(u32, f64)> = Vec::new();
+        let add = |id: u32, v: f64, agg: &mut Vec<(u32, f64)>| match agg.iter_mut().find(|x| x.0 == id) {
+            Some(x) => {
+                if x.1.abs() < v.abs() {
+                    x.1 = v
+                }
+            }
+            None => agg.push((id, v)),
+        };
         for b in &req.fleet.buffs {
-            let Some(info) = ds.dbuffs.get(&b.buff_id) else {
+            if !ds.dbuffs.contains_key(&b.buff_id) {
                 self.warnings.push(format!("unknown warfare buff {}", b.buff_id));
                 continue;
-            };
-            match agg.iter_mut().find(|x| x.0 == b.buff_id) {
-                Some(x) => {
-                    x.1 = if info.aggregate.as_deref() == Some("Minimum") { x.1.min(b.value) } else { x.1.max(b.value) };
+            }
+            add(b.buff_id, b.value, &mut agg);
+        }
+        for (id, v) in self.burst_buffs() {
+            add(id, v, &mut agg);
+        }
+        for (i, bf) in req.fleet.booster_fits.iter().enumerate() {
+            match Fit::spawn(ds, bf) {
+                Ok(mut sub) => {
+                    sub.build_index();
+                    sub.local_effects();
+                    for (id, v) in sub.burst_buffs() {
+                        add(id, v, &mut agg);
+                    }
                 }
-                None => agg.push((b.buff_id, b.value)),
+                Err(e) => self.warnings.push(format!("fleet/booster_fits/{i}: {} {}", e.code, e.message)),
             }
         }
         agg.sort_by_key(|x| x.0);
@@ -656,28 +697,6 @@ impl<'a> Fit<'a> {
         let mut tg = Vec::new();
         for (id, v) in agg {
             self.buff_mods(id, Src::Const(v), &mut pend, &mut tg);
-        }
-        // local command bursts: warfareBuffNID / warfareBuffNValue read (modified) from active modules
-        let explicit: Vec<u32> = req.fleet.buffs.iter().map(|b| b.buff_id).collect();
-        let mut local: Vec<(u32, Src)> = Vec::new();
-        {
-            let c = self.calc();
-            for &m in &self.modules {
-                if self.state(m) < State::Active {
-                    continue;
-                }
-                for k in 0..4 {
-                    let ida = ds.a.warfare_id[k];
-                    let id = if ida != 0 && c.has(m, ida) { c.get(m, ida) as u32 } else { 0 };
-                    if id == 0 || explicit.contains(&id) {
-                        continue;
-                    }
-                    local.push((id, Src::Attr { e: m, attr: ds.a.warfare_value[k] }));
-                }
-            }
-        }
-        for (id, src) in local {
-            self.buff_mods(id, src, &mut pend, &mut tg);
         }
         self.apply(pend);
     }
