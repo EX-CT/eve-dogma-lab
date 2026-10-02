@@ -16,6 +16,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -203,6 +204,9 @@ type Dataset struct {
 	// PublishedSkills is the sorted list of published skill type ids (category 16).
 	PublishedSkills []uint32
 	typesByGroup    map[uint32][]uint32
+	nameIdx         sync.Once
+	modeTypes       []uint32 // tactical destroyer modes (group 1306), ascending
+	modeNames       []string // their lower-cased names
 	ids             wellKnown
 	canFitGroupA    []uint32 // canFitShipGroup01..20 attribute ids present in the dataset
 	canFitTypeA     []uint32 // canFitShipType1..11
@@ -454,8 +458,6 @@ func LoadBytes(b []byte) (*Dataset, error) {
 func (ds *Dataset) index() {
 	ds.attrByName = make(map[string]uint32, len(ds.Attrs))
 	ds.effectByName = make(map[string]uint32, len(ds.Effects))
-	ds.typeByName = make(map[string]uint32, len(ds.Types))
-	ds.typesByGroup = map[uint32][]uint32{}
 	for id, ai := range ds.Attrs {
 		switch ai.Name {
 		case "cpu", "power", "cpuOutput", "powerOutput":
@@ -468,18 +470,18 @@ func (ds *Dataset) index() {
 		ds.effectByName[ei.Name] = id
 	}
 	var skills []uint32
+	ds.modeTypes, ds.modeNames = nil, nil
 	for id, ti := range ds.Types {
-		lname := strings.ToLower(ti.Name)
-		if prev, ok := ds.typeByName[lname]; !ok || betterNamed(ti, ds.Types[prev]) {
-			ds.typeByName[lname] = id
-		}
-		ds.typesByGroup[ti.Group] = append(ds.typesByGroup[ti.Group], id)
 		if ti.Category == 16 && ti.Published {
 			skills = append(skills, id)
 		}
+		if ti.Group == 1306 {
+			ds.modeTypes = append(ds.modeTypes, id)
+		}
 	}
-	for _, l := range ds.typesByGroup {
-		sort.Slice(l, func(i, j int) bool { return l[i] < l[j] })
+	slices.Sort(ds.modeTypes)
+	for _, id := range ds.modeTypes {
+		ds.modeNames = append(ds.modeNames, strings.ToLower(ds.Types[id].Name))
 	}
 	sort.Slice(skills, func(i, j int) bool { return skills[i] < skills[j] })
 	ds.PublishedSkills = skills
@@ -523,6 +525,7 @@ func (ds *Dataset) EffectID(name string) uint32 { return ds.effectByName[name] }
 
 // TypeByName finds a type by (case-insensitive) English name.
 func (ds *Dataset) TypeByName(name string) (uint32, bool) {
+	ds.buildNameIndex()
 	id, ok := ds.typeByName[strings.ToLower(strings.TrimSpace(name))]
 	return id, ok
 }
@@ -535,7 +538,26 @@ func (ds *Dataset) AttrDefault(id uint32) float64 {
 }
 
 // TypesInGroup returns type ids of a group (sorted).
-func (ds *Dataset) TypesInGroup(g uint32) []uint32 { return ds.typesByGroup[g] }
+func (ds *Dataset) TypesInGroup(g uint32) []uint32 { ds.buildNameIndex(); return ds.typesByGroup[g] }
+
+// buildNameIndex builds the name -> type and group -> types lookups on first use (saves ~8 ms of startup).
+func (ds *Dataset) buildNameIndex() {
+	ds.nameIdx.Do(func() {
+		byName := make(map[string]uint32, len(ds.Types))
+		byGroup := map[uint32][]uint32{}
+		for id, ti := range ds.Types {
+			lname := strings.ToLower(ti.Name)
+			if prev, ok := byName[lname]; !ok || betterNamed(ti, ds.Types[prev]) {
+				byName[lname] = id
+			}
+			byGroup[ti.Group] = append(byGroup[ti.Group], id)
+		}
+		for _, l := range byGroup {
+			sort.Slice(l, func(i, j int) bool { return l[i] < l[j] })
+		}
+		ds.typeByName, ds.typesByGroup = byName, byGroup
+	})
+}
 
 func inferSlot(t *TypeInfo) Slot {
 	for _, e := range t.Effects {
@@ -667,9 +689,33 @@ func buildType(id uint32, t *rawType) *TypeInfo {
 
 // derive computes base attributes (raw + authoritative mass/capacity/volume/radius), required skills and
 // slot from the raw record (JSON loader and cache loader).
-func (ti *TypeInfo) derive() {
+func (ti *TypeInfo) derive() { ti.deriveA(nil) }
+
+// slab hands out sub-slices of large shared backing arrays (one allocation per 64K entries instead of
+// two per type) for the dataset's immutable attribute tables. Each piece has its own fixed capacity.
+type slab struct {
+	u []uint32
+	f []float64
+}
+
+func (s *slab) take(n, c int) ([]uint32, []float64) {
+	if s == nil {
+		return make([]uint32, n, c), make([]float64, n, c)
+	}
+	if cap(s.u)-len(s.u) < c {
+		s.u, s.f = make([]uint32, 0, max(c, 1<<16)), make([]float64, 0, max(c, 1<<16))
+	}
+	l := len(s.u)
+	s.u, s.f = s.u[:l+c], s.f[:l+c]
+	return s.u[l : l+n : l+c], s.f[l : l+n : l+c]
+}
+
+func (ti *TypeInfo) deriveA(sl *slab) {
 	ids, vals := ti.raw.ids, ti.raw.vals
-	ti.base = attrSet{append([]uint32(nil), ids...), append([]float64(nil), vals...)}
+	bi, bv := sl.take(len(ids), len(ids)+4)
+	copy(bi, ids)
+	copy(bv, vals)
+	ti.base = attrSet{bi, bv}
 	for _, f := range [4]struct {
 		a uint32
 		v float64

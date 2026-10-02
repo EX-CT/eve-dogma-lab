@@ -5,12 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 )
 
@@ -23,10 +24,13 @@ import (
 // Location: $EVE_DOGMA_CACHE_DIR, else <user cache dir>/eve-dogma-go.
 
 const cacheMagic = "EXCTDGC\x00"
-const cacheVersion = 2 // 2: categories
+const cacheVersion = 4 // 2: categories; 3: crc32c trailer; 4: binary dbuffs/mutaplasmids
 
 // LoadPathCached loads a dataset file, using (and refreshing) the binary cache when enabled.
 func LoadPathCached(path string) (*Dataset, error) {
+	// the dataset is built once and lives for the whole process: collecting while it is being built only
+	// rescans live data, so the collector is paused during loading (restored afterwards)
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -221,11 +225,42 @@ func encodeCache(ds *Dataset, key [32]byte) []byte {
 		w.u32(k)
 		w.str(ds.Categories[k])
 	}
-	db, _ := json.Marshal(ds.Dbuffs)
-	mb, _ := json.Marshal(ds.Mutaplasmids)
-	w.blob(db)
-	w.blob(mb)
-	sum := sha256.Sum256(w.b)
+	ks = sortedKeys(ds.Dbuffs)
+	w.u32(uint32(len(ks)))
+	for _, k := range ks {
+		d := ds.Dbuffs[k]
+		w.u32(k)
+		w.optStr(d.Name)
+		w.optStr(d.Aggregate)
+		w.u32(uint32(d.Op))
+		w.u32s(d.Item)
+		w.u32s(d.Location)
+		w.pairs(d.LocationGroup)
+		w.pairs(d.LocationSkill)
+	}
+	ks = sortedKeys(ds.Mutaplasmids)
+	w.u32(uint32(len(ks)))
+	for _, k := range ks {
+		m := ds.Mutaplasmids[k]
+		w.u32(k)
+		ak := make([]string, 0, len(m.Attrs))
+		for a := range m.Attrs {
+			ak = append(ak, a)
+		}
+		sort.Strings(ak)
+		w.u32(uint32(len(ak)))
+		for _, a := range ak {
+			w.str(a)
+			w.f64(m.Attrs[a][0])
+			w.f64(m.Attrs[a][1])
+		}
+		w.u32(uint32(len(m.Mapping)))
+		for _, mp := range m.Mapping {
+			w.u32s(mp.Inputs)
+			w.u32(mp.Output)
+		}
+	}
+	sum := trailerSum(w.b)
 	w.b = append(w.b, sum[:]...) // integrity trailer
 	return w.b
 }
@@ -309,7 +344,7 @@ func decodeCache(b []byte, key [32]byte) (*Dataset, error) {
 		return nil, errCache
 	}
 	body := b[:len(b)-32]
-	if sum := sha256.Sum256(body); !bytes.Equal(sum[:], b[len(b)-32:]) {
+	if sum := trailerSum(body); !bytes.Equal(sum[:], b[len(b)-32:]) {
 		return nil, errCache
 	}
 	r := &cr{b: body, s: string(body), off: hdr}
@@ -360,6 +395,7 @@ func decodeCache(b []byte, key [32]byte) (*Dataset, error) {
 	n = r.count(60)
 	ds.Types = make(map[uint32]*TypeInfo, n)
 	types := make([]TypeInfo, n)
+	var sl slab
 	for i := range types {
 		t := &types[i]
 		t.ID, t.Name, t.Group, t.Category, t.Published = r.u32(), r.str(), r.u32(), r.u32(), r.bool()
@@ -371,7 +407,8 @@ func decodeCache(b []byte, key [32]byte) (*Dataset, error) {
 		}
 		t.VariationParent = r.optU32()
 		na := r.count(12)
-		t.raw = attrSet{make([]uint32, na), make([]float64, na)}
+		ri, rv := sl.take(na, na)
+		t.raw = attrSet{ri, rv}
 		for k := 0; k < na; k++ {
 			t.raw.ids[k], t.raw.vals[k] = r.u32(), r.f64()
 		}
@@ -384,7 +421,7 @@ func decodeCache(b []byte, key [32]byte) (*Dataset, error) {
 		if r.err {
 			return nil, errCache
 		}
-		t.derive()
+		t.deriveA(&sl)
 		ds.Types[t.ID] = t
 	}
 	n = r.count(8)
@@ -399,22 +436,119 @@ func decodeCache(b []byte, key [32]byte) (*Dataset, error) {
 		id := r.u32()
 		ds.Categories[id] = r.str()
 	}
-	db, mb := r.blob(), r.blob()
+	n = r.count(4)
+	ds.Dbuffs = make(map[uint32]*DbuffInfo, n)
+	for i := 0; i < n && !r.err; i++ {
+		id := r.u32()
+		d := &DbuffInfo{Name: r.optStr(), Aggregate: r.optStr(), Op: int32(r.u32())}
+		d.Item, d.Location = r.u32s(), r.u32s()
+		d.LocationGroup, d.LocationSkill = r.pairs(), r.pairs()
+		ds.Dbuffs[id] = d
+	}
+	n = r.count(4)
+	ds.Mutaplasmids = make(map[uint32]*MutaInfo, n)
+	for i := 0; i < n && !r.err; i++ {
+		id := r.u32()
+		m := &MutaInfo{}
+		na := r.count(20)
+		m.Attrs = make(map[string][2]float64, na)
+		for j := 0; j < na && !r.err; j++ {
+			a := r.str()
+			m.Attrs[a] = [2]float64{r.f64(), r.f64()}
+		}
+		nm := r.count(8)
+		for j := 0; j < nm && !r.err; j++ {
+			m.Mapping = append(m.Mapping, MutaMapping{Inputs: r.u32s(), Output: r.u32()})
+		}
+		ds.Mutaplasmids[id] = m
+	}
 	if r.err || r.off != len(body) {
 		return nil, errCache
 	}
-	if err := json.Unmarshal(db, &ds.Dbuffs); err != nil {
-		return nil, errCache
-	}
-	if err := json.Unmarshal(mb, &ds.Mutaplasmids); err != nil {
-		return nil, errCache
-	}
-	if ds.Dbuffs == nil {
-		ds.Dbuffs = map[uint32]*DbuffInfo{}
-	}
-	if ds.Mutaplasmids == nil {
-		ds.Mutaplasmids = map[uint32]*MutaInfo{}
-	}
 	ds.index()
 	return ds, nil
+}
+
+var crcTable = crc32.MakeTable(crc32.Castagnoli)
+
+// trailerSum is the 32-byte integrity trailer: CRC-32C (hardware accelerated, ~10x cheaper than sha256 on
+// the 5 MB cache; it guards against truncation/corruption, the key already binds the dataset content).
+func trailerSum(b []byte) [32]byte {
+	var t [32]byte
+	binary.LittleEndian.PutUint32(t[:], crc32.Checksum(b, crcTable))
+	binary.LittleEndian.PutUint64(t[4:], uint64(len(b)))
+	return t
+}
+
+func (w *cw) optStr(p *string) {
+	if p == nil {
+		w.u8(0)
+		return
+	}
+	w.u8(1)
+	w.str(*p)
+}
+
+func (w *cw) u32s(v []uint32) {
+	if v == nil {
+		w.u32(math.MaxUint32)
+		return
+	}
+	w.u32(uint32(len(v)))
+	for _, x := range v {
+		w.u32(x)
+	}
+}
+
+func (w *cw) pairs(v [][2]uint32) {
+	if v == nil {
+		w.u32(math.MaxUint32)
+		return
+	}
+	w.u32(uint32(len(v)))
+	for _, x := range v {
+		w.u32(x[0])
+		w.u32(x[1])
+	}
+}
+
+func (r *cr) optStr() *string {
+	if r.u8() == 0 {
+		return nil
+	}
+	s := r.str()
+	return &s
+}
+
+// lenOrNil reads a length where MaxUint32 encodes a nil slice.
+func (r *cr) lenOrNil(elem int) (int, bool) {
+	if r.need(4) && binary.LittleEndian.Uint32(r.b[r.off:]) == math.MaxUint32 {
+		r.off += 4
+		return 0, true
+	}
+	return r.count(elem), false
+}
+
+func (r *cr) u32s() []uint32 {
+	n, isNil := r.lenOrNil(4)
+	if isNil || r.err {
+		return nil
+	}
+	v := make([]uint32, n)
+	for i := range v {
+		v[i] = r.u32()
+	}
+	return v
+}
+
+func (r *cr) pairs() [][2]uint32 {
+	n, isNil := r.lenOrNil(8)
+	if isNil || r.err {
+		return nil
+	}
+	v := make([][2]uint32, n)
+	for i := range v {
+		v[i] = [2]uint32{r.u32(), r.u32()}
+	}
+	return v
 }

@@ -414,8 +414,8 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		modeID = req.Ship.ModeTypeID
 	} else if st := ds.typ(req.Ship.TypeID); st != nil {
 		sn := strings.ToLower(st.Name)
-		for _, id := range ds.TypesInGroup(1306) {
-			if strings.HasPrefix(strings.ToLower(ds.typ(id).Name), sn) {
+		for k, id := range ds.modeTypes {
+			if strings.HasPrefix(ds.modeNames[k], sn) {
 				m := id
 				modeID = &m
 				f.Warnings = append(f.Warnings, fmt.Sprintf("no tactical mode given; defaulted to type %d", m))
