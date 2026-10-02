@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::Read;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct AttrInfo {
     pub id: u32,
     pub name: String,
@@ -17,7 +17,7 @@ pub struct AttrInfo {
     pub display: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub enum Func {
     Item,
     Location,
@@ -27,7 +27,7 @@ pub enum Func {
     EffectStopper,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub enum Domain {
     Item,
     Ship,
@@ -39,7 +39,7 @@ pub enum Domain {
     None,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, Deserialize)]
 pub struct Modifier {
     pub func: Func,
     pub domain: Domain,
@@ -50,7 +50,7 @@ pub struct Modifier {
     pub extra: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct EffectInfo {
     pub id: u32,
     pub name: String,
@@ -67,7 +67,7 @@ pub struct EffectInfo {
     pub mods: Vec<Modifier>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct TypeInfo {
     pub id: u32,
     pub name: String,
@@ -95,13 +95,13 @@ impl TypeInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct GroupInfo {
     pub name: String,
     pub category: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct DbuffInfo {
     pub name: Option<String>,
     pub aggregate: Option<String>,
@@ -112,13 +112,13 @@ pub struct DbuffInfo {
     pub location_skill: Vec<(u32, u32)>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct MutaMapping {
     pub inputs: Vec<u32>,
     pub output: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct MutaInfo {
     pub attrs: HashMap<String, (f64, f64)>,
     pub mapping: Vec<MutaMapping>,
@@ -256,9 +256,43 @@ fn domain_of(c: i32) -> Domain {
 }
 
 impl Dataset {
+    /// Load a dataset file. Variant B keeps a derived binary snapshot (bincode of the parsed dataset) in a cache
+    /// directory keyed by the SHA-256 of the file bytes, so later processes skip gunzip + JSON parsing.
+    /// `EVE_DOGMA_NO_CACHE=1` disables it; `EVE_DOGMA_CACHE=DIR` sets the directory.
     pub fn load_path(path: &str) -> Result<Dataset, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-        Self::load_bytes(&bytes)
+        if std::env::var_os("EVE_DOGMA_NO_CACHE").is_some() {
+            return Self::load_bytes(&bytes);
+        }
+        let key = {
+            use sha2::Digest;
+            let d = sha2::Sha256::digest(&bytes);
+            d.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        let dir = std::env::var_os("EVE_DOGMA_CACHE")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(|d| std::path::PathBuf::from(d).join("eve-dogma-vb")))
+            .or_else(|| std::env::var_os("HOME").map(|d| std::path::PathBuf::from(d).join(".cache/eve-dogma-vb")))
+            .unwrap_or_else(|| std::env::temp_dir().join("eve-dogma-vb"));
+        let file = dir.join(format!("{key}-v{}-{SNAPSHOT_VERSION}.bin", env!("CARGO_PKG_VERSION")));
+        if let Ok(snap) = std::fs::read(&file) {
+            let t0 = std::time::Instant::now();
+            if let Ok(ds) = bincode::deserialize::<Snapshot>(&snap) {
+                if std::env::var_os("VB_LOAD_TIMING").is_some() {
+                    eprintln!("snapshot {:?}", t0.elapsed());
+                }
+                return Ok(ds.into_dataset());
+            }
+        }
+        let ds = Self::load_bytes(&bytes)?;
+        // best effort: never fail a calculation because the cache is not writable
+        let _ = std::fs::create_dir_all(&dir).and_then(|_| {
+            let tmp = dir.join(format!("{key}.{}.tmp", std::process::id()));
+            let data = bincode::serialize(&Snapshot::of(&ds)).map_err(std::io::Error::other)?;
+            std::fs::write(&tmp, data)?;
+            std::fs::rename(&tmp, &file)
+        });
+        Ok(ds)
     }
 
     pub fn load_bytes(bytes: &[u8]) -> Result<Dataset, String> {
@@ -512,5 +546,65 @@ impl<'de> Deserialize<'de> for IdKey {
             }
         }
         d.deserialize_str(K)
+    }
+}
+
+const SNAPSHOT_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, Deserialize)]
+struct Snapshot {
+    build: u64,
+    release_date: Option<String>,
+    sha256: String,
+    types: FxHashMap<u32, TypeInfo>,
+    groups: FxHashMap<u32, GroupInfo>,
+    attrs: FxHashMap<u32, AttrInfo>,
+    effects: FxHashMap<u32, EffectInfo>,
+    dbuffs: FxHashMap<u32, DbuffInfo>,
+    mutaplasmids: FxHashMap<u32, MutaInfo>,
+    names_zh: FxHashMap<u32, String>,
+    attr_by_name: FxHashMap<String, u32>,
+    effect_by_name: FxHashMap<String, u32>,
+    type_by_name: FxHashMap<String, u32>,
+    skills: Vec<u32>,
+}
+
+impl Snapshot {
+    fn of(d: &Dataset) -> Snapshot {
+        Snapshot {
+            build: d.build,
+            release_date: d.release_date.clone(),
+            sha256: d.sha256.clone(),
+            types: d.types.clone(),
+            groups: d.groups.clone(),
+            attrs: d.attrs.clone(),
+            effects: d.effects.clone(),
+            dbuffs: d.dbuffs.clone(),
+            mutaplasmids: d.mutaplasmids.clone(),
+            names_zh: d.names_zh.clone(),
+            attr_by_name: d.attr_by_name.clone(),
+            effect_by_name: d.effect_by_name.clone(),
+            type_by_name: d.type_by_name.clone(),
+            skills: d.skills.clone(),
+        }
+    }
+    fn into_dataset(self) -> Dataset {
+        Dataset {
+            build: self.build,
+            release_date: self.release_date,
+            sha256: self.sha256,
+            types: self.types,
+            groups: self.groups,
+            attrs: self.attrs,
+            effects: self.effects,
+            dbuffs: self.dbuffs,
+            mutaplasmids: self.mutaplasmids,
+            names_zh: self.names_zh,
+            attr_by_name: self.attr_by_name,
+            effect_by_name: self.effect_by_name,
+            type_by_name: self.type_by_name,
+            skills: self.skills,
+            prepared: std::sync::OnceLock::new(),
+        }
     }
 }

@@ -1604,6 +1604,15 @@ impl Prepared {
     }
 
     pub fn new(ds: &Dataset) -> Prepared {
+        let t0 = std::time::Instant::now();
+        let p = Self::new_inner(ds);
+        if std::env::var_os("VB_LOAD_TIMING").is_some() {
+            eprintln!("prepared {:?}", t0.elapsed());
+        }
+        p
+    }
+
+    fn new_inner(ds: &Dataset) -> Prepared {
         // can any modifier reach a skill from outside? (char-location / char-location-group on a skill group)
         let skill_groups: Vec<u32> = ds.groups.iter().filter(|(_, g)| g.category == 16).map(|(id, _)| *id).collect();
         let foldable = !ds.effects.values().any(|e| {

@@ -100,3 +100,12 @@ booster fits, projected fits, remote reps/neuts) is re-expressed in the compile/
 * The capacitor simulator dominates some fits (e.g. 1 ms of the Vexor's 1.3 ms); it is Pyfa-exact event simulation
   shared with A and was not optimised.
 * WASM build (no threads) is straightforward: no native deps besides zlib-rs/sha2 (both pure Rust).
+
+## Cold start: dataset snapshot cache
+`data::load_path` hashes the raw `.json.gz` bytes (SHA-256) and looks for
+`<cache>/ds-v1-<hash>.bin` (bincode). Hit: deserialize (~10 ms) instead of
+gunzip + JSON parse + index build (~65-85 ms). Miss: normal load, then write the
+snapshot atomically (tmp + rename). Cache dir: `$EVE_DOGMA_CACHE`, else
+`$XDG_CACHE_HOME/eve-dogma-vb`, else `~/.cache/eve-dogma-vb`, else tmp.
+`EVE_DOGMA_NO_CACHE=1` disables it. Keyed by content hash, so a changed
+dataset can never serve stale data. `VB_LOAD_TIMING=1` prints load phases.

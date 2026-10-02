@@ -22,3 +22,7 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
 - `sweep`: multi-lane evaluation of K variants on one compiled plan.
 - Cut remaining per-fit allocations (item effect lists, req_skills) and stats-layer string lookups.
 - Track A's new features (diff tool flags them immediately).
+
+## 2026-10-03 ~05:10 CST — snapshot cache
+- bincode dataset snapshot keyed by SHA-256 of dataset bytes: process cold calc ~25 ms (was ~90 ms).
+- Parity: 289/289 bench cases byte-identical vs A@0e5a1ce (with and without cache); oracle test passes.
