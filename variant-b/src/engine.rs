@@ -1709,12 +1709,7 @@ impl Prepared {
 
     fn new_inner(ds: &Dataset) -> Prepared {
         // can any modifier reach a skill from outside? (char-location / char-location-group on a skill group)
-        let skill_groups: Vec<u32> = ds.groups.iter().filter(|(_, g)| g.category == 16).map(|(id, _)| *id).collect();
-        let foldable = !ds.effects.values().any(|e| {
-            e.mods.iter().any(|m| {
-                m.domain == Domain::Char && (m.func == Func::Location || (m.func == Func::LocationGroup && skill_groups.contains(&m.extra)))
-            })
-        });
+        let foldable = ds.skills_foldable;
         let mut table: Vec<(u32, Option<std::sync::Arc<SkillFold>>)> = Vec::with_capacity(ds.skills.len());
         if foldable {
             for &s in &ds.skills {

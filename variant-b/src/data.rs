@@ -131,11 +131,13 @@ pub struct Dataset {
     pub types: TypeTable,
     pub groups: FxHashMap<u32, GroupInfo>,
     pub attrs: FxHashMap<u32, AttrInfo>,
-    pub effects: FxHashMap<u32, EffectInfo>,
-    pub dbuffs: FxHashMap<u32, DbuffInfo>,
-    pub mutaplasmids: FxHashMap<u32, MutaInfo>,
-    attr_by_name: FxHashMap<String, u32>,
-    effect_by_name: FxHashMap<String, u32>,
+    pub effects: LazyTable<EffectInfo>,
+    pub dbuffs: LazyTable<DbuffInfo>,
+    pub mutaplasmids: LazyTable<MutaInfo>,
+    attr_by_name: NameIndex,
+    effect_by_name: NameIndex,
+    /// no char Location / LocationGroup(skill group) modifier exists, so skills can be folded into constants
+    pub skills_foldable: bool,
     /// (names_zh, type_by_name): only needed by search/type/EFT, so a snapshot load decodes them on first use
     names: std::sync::OnceLock<Names>,
     names_blob: Vec<u8>,
@@ -304,32 +306,86 @@ impl Dataset {
         // best effort: never fail a calculation because the cache is not writable
         let _ = std::fs::create_dir_all(&dir).and_then(|_| {
             let tmp = dir.join(format!("{key}.{}.tmp", std::process::id()));
-            let main = bincode::serialize(&Snapshot::of(&ds)).map_err(std::io::Error::other)?;
-            let names = bincode::serialize(ds.names()).map_err(std::io::Error::other)?;
-            let types = ds.types.encode().map_err(std::io::Error::other)?;
-            let mut data = Vec::with_capacity(16 + main.len() + names.len() + types.len());
-            data.extend_from_slice(&(main.len() as u64).to_le_bytes());
-            data.extend_from_slice(&main);
-            data.extend_from_slice(&(names.len() as u64).to_le_bytes());
-            data.extend_from_slice(&names);
-            data.extend_from_slice(&types);
+            let data = ds.snapshot_bytes().map_err(std::io::Error::other)?;
             std::fs::write(&tmp, data)?;
             std::fs::rename(&tmp, &file)
         });
         Ok(ds)
     }
 
-    /// Snapshot file: u64 len + bincode(Snapshot), u64 len + bincode(Names), then the lazily decoded type table.
+    /// Snapshot file: magic, then length-prefixed (u64 LE) sections: bincode(Snapshot), bincode(Names), then the
+    /// lazily decoded types / effects / dbuffs / mutaplasmids tables and the attr / effect name indexes.
     fn from_snapshot(snap: Blob) -> Option<Dataset> {
-        let rd = |at: usize| -> Option<usize> { Some(u64::from_le_bytes(snap.get(at..at + 8)?.try_into().ok()?) as usize) };
-        let main_len = rd(0)?;
-        let main_end = 8usize.checked_add(main_len)?;
-        let ds: Snapshot = bincode::deserialize(snap.get(8..main_end)?).ok()?;
-        let names_len = rd(main_end)?;
-        let names_end = (main_end + 8).checked_add(names_len)?;
-        let names = snap.get(main_end + 8..names_end)?.to_vec();
-        let types = TypeTable::decode(snap, names_end)?;
-        Some(ds.into_dataset(names, types))
+        let blob = std::sync::Arc::new(snap);
+        let b: &[u8] = &blob;
+        if b.get(..8)? != SNAP_MAGIC {
+            return None;
+        }
+        let mut secs: Vec<(usize, usize)> = Vec::with_capacity(8);
+        let mut at = 8usize;
+        while at < b.len() {
+            let len = u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?) as usize;
+            let s = at + 8;
+            let e = s.checked_add(len)?;
+            if e > b.len() {
+                return None;
+            }
+            secs.push((s, e));
+            at = e;
+        }
+        if secs.len() != 8 {
+            return None;
+        }
+        let main: Snapshot = bincode::deserialize(&b[secs[0].0..secs[0].1]).ok()?;
+        let names_blob = b[secs[1].0..secs[1].1].to_vec();
+        Some(Dataset {
+            build: main.build,
+            release_date: main.release_date,
+            sha256: main.sha256,
+            types: LazyTable::decode(&blob, secs[2].0, secs[2].1)?,
+            groups: main.groups,
+            attrs: main.attrs,
+            effects: LazyTable::decode(&blob, secs[3].0, secs[3].1)?,
+            dbuffs: LazyTable::decode(&blob, secs[4].0, secs[4].1)?,
+            mutaplasmids: LazyTable::decode(&blob, secs[5].0, secs[5].1)?,
+            attr_by_name: NameIndex::decode(&blob, secs[6].0, secs[6].1)?,
+            effect_by_name: NameIndex::decode(&blob, secs[7].0, secs[7].1)?,
+            skills_foldable: main.skills_foldable,
+            names: std::sync::OnceLock::new(),
+            names_blob,
+            skills: main.skills,
+            prepared: std::sync::OnceLock::new(),
+        })
+    }
+
+    fn snapshot_bytes(&self) -> Result<Vec<u8>, String> {
+        let main = Snapshot {
+            build: self.build,
+            release_date: self.release_date.clone(),
+            sha256: self.sha256.clone(),
+            groups: self.groups.clone(),
+            attrs: self.attrs.clone(),
+            skills: self.skills.clone(),
+            skills_foldable: self.skills_foldable,
+        };
+        let names_of = |ix: &NameIndex| -> Vec<u8> { ix.blob[ix.at..].to_vec() };
+        let secs: Vec<Vec<u8>> = vec![
+            bincode::serialize(&main).map_err(|e| e.to_string())?,
+            bincode::serialize(self.names()).map_err(|e| e.to_string())?,
+            self.types.encode()?,
+            self.effects.encode()?,
+            self.dbuffs.encode()?,
+            self.mutaplasmids.encode()?,
+            names_of(&self.attr_by_name),
+            names_of(&self.effect_by_name),
+        ];
+        let mut out = Vec::with_capacity(8 + secs.iter().map(|x| x.len() + 8).sum::<usize>());
+        out.extend_from_slice(SNAP_MAGIC);
+        for x in secs {
+            out.extend_from_slice(&(x.len() as u64).to_le_bytes());
+            out.extend_from_slice(&x);
+        }
+        Ok(out)
     }
 
     pub fn load_bytes(bytes: &[u8]) -> Result<Dataset, String> {
@@ -452,8 +508,16 @@ impl Dataset {
             );
         }
         skills.sort();
-        let dbuffs = raw.dbuffs.0.into_iter().collect();
-        let mutaplasmids = raw.mutaplasmids.0.into_iter().collect();
+        let dbuffs: FxHashMap<u32, DbuffInfo> = raw.dbuffs.0.into_iter().collect();
+        let mutaplasmids: FxHashMap<u32, MutaInfo> = raw.mutaplasmids.0.into_iter().collect();
+        let skills_foldable = {
+            let skill_groups: Vec<u32> = groups.iter().filter(|(_, g)| g.category == 16).map(|(id, _)| *id).collect();
+            !effects.values().any(|e: &EffectInfo| {
+                e.mods.iter().any(|m| {
+                    m.domain == Domain::Char && (m.func == Func::Location || (m.func == Func::LocationGroup && skill_groups.contains(&m.extra)))
+                })
+            })
+        };
         let names_zh = raw
             .names
             .get("zh")
@@ -463,14 +527,15 @@ impl Dataset {
             build: raw.sde.build,
             release_date: raw.sde.release_date,
             sha256,
-            types: TypeTable::from_map(types),
+            types: TypeTable::from_map(types, |t| t.group),
             groups,
             attrs,
-            effects,
-            dbuffs,
-            mutaplasmids,
-            attr_by_name,
-            effect_by_name,
+            effects: LazyTable::from_map(effects, |_| 0),
+            dbuffs: LazyTable::from_map(dbuffs, |_| 0),
+            mutaplasmids: LazyTable::from_map(mutaplasmids, |_| 0),
+            attr_by_name: NameIndex::from_map(&attr_by_name),
+            effect_by_name: NameIndex::from_map(&effect_by_name),
+            skills_foldable,
             names: std::sync::OnceLock::from(Names { zh: names_zh, type_by_name }),
             names_blob: Vec::new(),
             skills,
@@ -478,11 +543,13 @@ impl Dataset {
         })
     }
 
+    #[inline]
     pub fn attr_id(&self, name: &str) -> u32 {
-        *self.attr_by_name.get(name).unwrap_or(&0)
+        self.attr_by_name.get(name).unwrap_or(0)
     }
+    #[inline]
     pub fn effect_id(&self, name: &str) -> u32 {
-        *self.effect_by_name.get(name).unwrap_or(&0)
+        self.effect_by_name.get(name).unwrap_or(0)
     }
     fn names(&self) -> &Names {
         self.names.get_or_init(|| bincode::deserialize(&self.names_blob).unwrap_or_default())
@@ -592,7 +659,7 @@ impl<'de> Deserialize<'de> for IdKey {
     }
 }
 
-const SNAPSHOT_VERSION: u32 = 3;
+const SNAPSHOT_VERSION: u32 = 4;
 
 /// Snapshot bytes: memory-mapped cache file (pages faulted in on use) or an owned buffer.
 pub enum Blob {
@@ -610,21 +677,24 @@ impl std::ops::Deref for Blob {
     }
 }
 
-/// Type table with the FxHashMap-like API the engine uses. Loaded from a snapshot, each TypeInfo stays
-/// bincode-encoded until first use (a calc touches a few hundred of ~10k types).
-pub struct TypeTable {
-    /// sorted type ids
+/// Id-keyed table with the FxHashMap-like API the engine uses. Loaded from a snapshot, each entry stays
+/// bincode-encoded until first use (a calc touches a few hundred of ~10k types / ~3k effects).
+pub struct LazyTable<T> {
+    /// sorted ids
     ids: Vec<u32>,
-    groups: Vec<u32>,
-    /// type id -> position + 1 (0 = absent); empty when ids are too sparse (binary search instead)
+    /// per-entry auxiliary key (types: group id), usable without decoding
+    aux: Vec<u32>,
+    /// id -> position + 1 (0 = absent); empty when ids are too sparse (binary search instead)
     dense: Vec<u32>,
-    slots: Vec<std::sync::OnceLock<TypeInfo>>,
-    blob: Blob,
-    /// (start, end) of each encoded TypeInfo in `blob`
+    slots: Vec<std::sync::OnceLock<T>>,
+    blob: std::sync::Arc<Blob>,
+    /// absolute (start, end) of each encoded entry in `blob`
     spans: Vec<(u32, u32)>,
 }
 
-impl TypeTable {
+pub type TypeTable = LazyTable<TypeInfo>;
+
+impl<T: serde::Serialize + serde::de::DeserializeOwned> LazyTable<T> {
     fn build_index(ids: &[u32]) -> Vec<u32> {
         let max = ids.last().copied().unwrap_or(0) as usize;
         if max >= 1 << 24 {
@@ -637,32 +707,31 @@ impl TypeTable {
         dense
     }
 
-    fn from_map(m: FxHashMap<u32, TypeInfo>) -> TypeTable {
-        let mut v: Vec<(u32, TypeInfo)> = m.into_iter().collect();
+    fn from_map(m: FxHashMap<u32, T>, aux: impl Fn(&T) -> u32) -> LazyTable<T> {
+        let mut v: Vec<(u32, T)> = m.into_iter().collect();
         v.sort_unstable_by_key(|x| x.0);
         let ids: Vec<u32> = v.iter().map(|x| x.0).collect();
-        let groups = v.iter().map(|x| x.1.group).collect();
+        let aux = v.iter().map(|x| aux(&x.1)).collect();
         let dense = Self::build_index(&ids);
         let slots = v.into_iter().map(|(_, t)| std::sync::OnceLock::from(t)).collect();
-        TypeTable { ids, groups, dense, slots, blob: Blob::Vec(Vec::new()), spans: Vec::new() }
+        LazyTable { ids, aux, dense, slots, blob: std::sync::Arc::new(Blob::Vec(Vec::new())), spans: Vec::new() }
     }
 
-    /// section: u32 n, n x (id, group, start, end) u32 LE (offsets relative to the section), then encoded types
+    /// section: u32 n, n x (id, aux, start, end) u32 LE (offsets relative to the section), then encoded entries
     fn encode(&self) -> Result<Vec<u8>, String> {
         let n = self.ids.len();
         let mut body = Vec::new();
         let mut spans = Vec::with_capacity(n);
         let head = 4 + n * 16;
         for p in 0..n {
-            let t = self.at(p);
             let start = head + body.len();
-            bincode::serialize_into(&mut body, t).map_err(|e| e.to_string())?;
+            bincode::serialize_into(&mut body, self.at(p)).map_err(|e| e.to_string())?;
             spans.push((start as u32, (head + body.len()) as u32));
         }
         let mut out = Vec::with_capacity(head + body.len());
         out.extend_from_slice(&(n as u32).to_le_bytes());
         for p in 0..n {
-            for x in [self.ids[p], self.groups[p], spans[p].0, spans[p].1] {
+            for x in [self.ids[p], self.aux[p], spans[p].0, spans[p].1] {
                 out.extend_from_slice(&x.to_le_bytes());
             }
         }
@@ -670,18 +739,22 @@ impl TypeTable {
         Ok(out)
     }
 
-    fn decode(blob: Blob, at: usize) -> Option<TypeTable> {
-        let u = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(blob.get(o..o + 4)?.try_into().ok()?)) };
+    fn decode(blob: &std::sync::Arc<Blob>, at: usize, end: usize) -> Option<LazyTable<T>> {
+        let b: &[u8] = blob;
+        let u = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?)) };
         let n = u(at)? as usize;
+        if at + 4 + n.checked_mul(16)? > end {
+            return None;
+        }
         let mut ids = Vec::with_capacity(n);
-        let mut groups = Vec::with_capacity(n);
+        let mut aux = Vec::with_capacity(n);
         let mut spans = Vec::with_capacity(n);
         for p in 0..n {
             let o = at + 4 + p * 16;
             ids.push(u(o)?);
-            groups.push(u(o + 4)?);
+            aux.push(u(o + 4)?);
             let (s, e) = (u(o + 8)? as usize + at, u(o + 12)? as usize + at);
-            if s > e || e > blob.len() || s > u32::MAX as usize || e > u32::MAX as usize {
+            if s > e || e > end || e > u32::MAX as usize {
                 return None;
             }
             spans.push((s as u32, e as u32));
@@ -691,7 +764,7 @@ impl TypeTable {
         }
         let dense = Self::build_index(&ids);
         let slots = (0..n).map(|_| std::sync::OnceLock::new()).collect();
-        Some(TypeTable { ids, groups, dense, slots, blob, spans })
+        Some(LazyTable { ids, aux, dense, slots, blob: blob.clone(), spans })
     }
 
     #[inline]
@@ -707,7 +780,7 @@ impl TypeTable {
     }
 
     #[inline]
-    fn at(&self, p: usize) -> &TypeInfo {
+    fn at(&self, p: usize) -> &T {
         self.slots[p].get_or_init(|| {
             let (s, e) = self.spans[p];
             bincode::deserialize(&self.blob[s as usize..e as usize]).expect("corrupt dataset snapshot")
@@ -715,7 +788,7 @@ impl TypeTable {
     }
 
     #[inline]
-    pub fn get(&self, id: &u32) -> Option<&TypeInfo> {
+    pub fn get(&self, id: &u32) -> Option<&T> {
         self.pos(*id).map(|p| self.at(p))
     }
     pub fn contains_key(&self, id: &u32) -> bool {
@@ -727,23 +800,137 @@ impl TypeTable {
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
-    /// all types in id order (decodes every type)
-    pub fn iter(&self) -> impl Iterator<Item = (&u32, &TypeInfo)> + '_ {
+    /// all entries in id order (decodes every entry)
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &T)> + '_ {
         self.ids.iter().enumerate().map(move |(p, id)| (id, self.at(p)))
     }
-    pub fn values(&self) -> impl Iterator<Item = &TypeInfo> + '_ {
+    pub fn values(&self) -> impl Iterator<Item = &T> + '_ {
         (0..self.ids.len()).map(move |p| self.at(p))
-    }
-    /// type ids of one group, without decoding other types
-    pub fn ids_in_group(&self, group: u32) -> impl Iterator<Item = u32> + '_ {
-        self.ids.iter().zip(&self.groups).filter(move |(_, g)| **g == group).map(|(id, _)| *id)
     }
 }
 
-impl std::ops::Index<&u32> for TypeTable {
-    type Output = TypeInfo;
-    fn index(&self, id: &u32) -> &TypeInfo {
-        self.get(id).expect("unknown type id")
+impl LazyTable<TypeInfo> {
+    /// type ids of one group, without decoding other types
+    pub fn ids_in_group(&self, group: u32) -> impl Iterator<Item = u32> + '_ {
+        self.ids.iter().zip(&self.aux).filter(move |(_, g)| **g == group).map(|(id, _)| *id)
+    }
+}
+
+impl<T: serde::Serialize + serde::de::DeserializeOwned> std::ops::Index<&u32> for LazyTable<T> {
+    type Output = T;
+    fn index(&self, id: &u32) -> &T {
+        self.get(id).expect("unknown id")
+    }
+}
+
+/// name -> id lookup over an open-addressing table stored in the snapshot (no allocation at load).
+/// Layout: u32 cap (power of two), cap x u32 (entry index + 1, 0 = empty), u32 n, n x (off, len, id), name bytes.
+pub struct NameIndex {
+    blob: std::sync::Arc<Blob>,
+    at: usize,
+    cap: usize,
+    entries: usize,
+    names: usize,
+}
+
+#[inline]
+fn fnv1a(b: &[u8]) -> u32 {
+    let mut h: u32 = 0x811c9dc5;
+    for &x in b {
+        h = (h ^ x as u32).wrapping_mul(0x01000193);
+    }
+    h
+}
+
+impl NameIndex {
+    fn encode(m: &FxHashMap<String, u32>) -> Vec<u8> {
+        let mut v: Vec<(&String, u32)> = m.iter().map(|(k, v)| (k, *v)).collect();
+        v.sort();
+        let cap = (v.len() * 2).next_power_of_two().max(8);
+        let mut table = vec![0u32; cap];
+        let mut bytes = Vec::new();
+        let mut ents = Vec::with_capacity(v.len());
+        for (i, (k, id)) in v.iter().enumerate() {
+            let mut h = fnv1a(k.as_bytes()) as usize & (cap - 1);
+            while table[h] != 0 {
+                h = (h + 1) & (cap - 1);
+            }
+            table[h] = i as u32 + 1;
+            ents.push((bytes.len() as u32, k.len() as u32, *id));
+            bytes.extend_from_slice(k.as_bytes());
+        }
+        let mut out = Vec::with_capacity(8 + cap * 4 + ents.len() * 12 + bytes.len());
+        out.extend_from_slice(&(cap as u32).to_le_bytes());
+        for t in table {
+            out.extend_from_slice(&t.to_le_bytes());
+        }
+        out.extend_from_slice(&(ents.len() as u32).to_le_bytes());
+        for (o, l, id) in ents {
+            for x in [o, l, id] {
+                out.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&bytes);
+        out
+    }
+
+    fn decode(blob: &std::sync::Arc<Blob>, at: usize, end: usize) -> Option<NameIndex> {
+        let b: &[u8] = blob;
+        let u = |o: usize| -> Option<usize> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize) };
+        let cap = u(at)?;
+        if !cap.is_power_of_two() {
+            return None;
+        }
+        let n_at = at + 4 + cap * 4;
+        let n = u(n_at)?;
+        let entries = n_at + 4;
+        let names = entries + n * 12;
+        if names > end {
+            return None;
+        }
+        // validate every entry once (bounds + UTF-8 are not needed for byte comparison, bounds are)
+        for i in 0..n {
+            let (o, l) = (u(entries + i * 12)?, u(entries + i * 12 + 4)?);
+            if names + o + l > end {
+                return None;
+            }
+        }
+        for s in 0..cap {
+            if u(at + 4 + s * 4)? > n {
+                return None;
+            }
+        }
+        Some(NameIndex { blob: blob.clone(), at, cap, entries, names })
+    }
+
+    #[inline]
+    fn rd(&self, o: usize) -> usize {
+        u32::from_le_bytes(self.blob[o..o + 4].try_into().unwrap()) as usize
+    }
+
+    #[inline]
+    pub fn get(&self, name: &str) -> Option<u32> {
+        let key = name.as_bytes();
+        let mut h = fnv1a(key) as usize & (self.cap - 1);
+        loop {
+            let e = self.rd(self.at + 4 + h * 4);
+            if e == 0 {
+                return None;
+            }
+            let eo = self.entries + (e - 1) * 12;
+            let (o, l) = (self.rd(eo), self.rd(eo + 4));
+            if l == key.len() && &self.blob[self.names + o..self.names + o + l] == key {
+                return Some(self.rd(eo + 8) as u32);
+            }
+            h = (h + 1) & (self.cap - 1);
+        }
+    }
+
+    fn from_map(m: &FxHashMap<String, u32>) -> NameIndex {
+        let bytes = NameIndex::encode(m);
+        let end = bytes.len();
+        let blob = std::sync::Arc::new(Blob::Vec(bytes));
+        NameIndex::decode(&blob, 0, end).expect("name index")
     }
 }
 
@@ -753,6 +940,7 @@ struct Names {
     type_by_name: FxHashMap<String, u32>,
 }
 
+/// The eagerly decoded part of a snapshot (everything else is a lazily decoded section).
 #[derive(serde::Serialize, Deserialize)]
 struct Snapshot {
     build: u64,
@@ -760,47 +948,8 @@ struct Snapshot {
     sha256: String,
     groups: FxHashMap<u32, GroupInfo>,
     attrs: FxHashMap<u32, AttrInfo>,
-    effects: FxHashMap<u32, EffectInfo>,
-    dbuffs: FxHashMap<u32, DbuffInfo>,
-    mutaplasmids: FxHashMap<u32, MutaInfo>,
-    attr_by_name: FxHashMap<String, u32>,
-    effect_by_name: FxHashMap<String, u32>,
     skills: Vec<u32>,
+    skills_foldable: bool,
 }
 
-impl Snapshot {
-    fn of(d: &Dataset) -> Snapshot {
-        Snapshot {
-            build: d.build,
-            release_date: d.release_date.clone(),
-            sha256: d.sha256.clone(),
-            groups: d.groups.clone(),
-            attrs: d.attrs.clone(),
-            effects: d.effects.clone(),
-            dbuffs: d.dbuffs.clone(),
-            mutaplasmids: d.mutaplasmids.clone(),
-            attr_by_name: d.attr_by_name.clone(),
-            effect_by_name: d.effect_by_name.clone(),
-            skills: d.skills.clone(),
-        }
-    }
-    fn into_dataset(self, names_blob: Vec<u8>, types: TypeTable) -> Dataset {
-        Dataset {
-            build: self.build,
-            release_date: self.release_date,
-            sha256: self.sha256,
-            types,
-            groups: self.groups,
-            attrs: self.attrs,
-            effects: self.effects,
-            dbuffs: self.dbuffs,
-            mutaplasmids: self.mutaplasmids,
-            attr_by_name: self.attr_by_name,
-            effect_by_name: self.effect_by_name,
-            names: std::sync::OnceLock::new(),
-            names_blob,
-            skills: self.skills,
-            prepared: std::sync::OnceLock::new(),
-        }
-    }
-}
+const SNAP_MAGIC: &[u8; 8] = b"EVEDVB04";
