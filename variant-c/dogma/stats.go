@@ -393,7 +393,8 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		dVol.add(v)
 		dDps.add(dps)
 		droneOut = append(droneOut, obj{"drone_index": optIdx(it.ReqIndex), "type_id": it.TypeID, "name": it.T.Name,
-			"count": n, "volley": v.json(), "dps": dps.json()})
+			"count": n, "volley": v.json(), "dps": dps.json(), "optimal_m": g(i, "maxRange"), "falloff_m": g(i, "falloff"),
+			"tracking": g(i, "trackingSpeed"), "max_velocity": g(i, "maxVelocity"), "signature_radius": g(i, "signatureRadius")})
 	}
 	var fVol, fDps dmg
 	fighterOut := []any{}
@@ -426,7 +427,8 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 			fVol.add(fv)
 			fDps.add(fd)
 			fighterOut = append(fighterOut, obj{"fighter_index": optIdx(it.ReqIndex), "type_id": it.TypeID, "name": it.T.Name,
-				"squadron_size": n, "volley": fv.json(), "dps": fd.json()})
+				"squadron_size": n, "volley": fv.json(), "dps": fd.json(), "max_velocity": g(i, "maxVelocity"),
+				"signature_radius": g(i, "signatureRadius")})
 		}
 	}
 	tVol, tDps := wVol, wDps
@@ -589,7 +591,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	// incoming neuts / nos / cap transfers (Pyfa fit.addDrain): no stagger, after the fit's own modules
 	sigNow := g(ship, "signatureRadius")
 	for _, ps := range f.ProjSpecials {
-		if ps.Rep {
+		if ps.Rep || ps.Ecm {
 			continue
 		}
 		need := f.Get(ps.Item, ps.Amount) * ps.Factor * ps.Sign
@@ -669,6 +671,44 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 			bestN, bestV = s[0], v
 		}
 	}
+	// ECM jam chance (Pyfa Fit.jamChance): strengths vs the strongest sensor type (tie -> multispectral -> 0)
+	jam := 0.0
+	{
+		maxS, ty := -1.0, ""
+		for _, t := range [4]string{"Magnetometric", "Ladar", "Radar", "Gravimetric"} {
+			if v := g(ship, "scan"+t+"Strength"); v > maxS {
+				maxS, ty = v, t
+			} else if v == maxS {
+				ty = ""
+			}
+		}
+		retain, any := 1.0, false
+		for _, ps := range f.ProjSpecials {
+			if !ps.Ecm {
+				continue
+			}
+			any = true
+			if ty == "" {
+				continue
+			}
+			attr := "scan" + ty + "StrengthBonus"
+			if ps.Fighter {
+				attr = "fighterAbilityECMStrength" + ty
+			}
+			st := g(ps.Item, attr) * ps.Factor
+			if ps.Resist != 0 {
+				if r := f.Get(ship, ps.Resist); r != 0 {
+					st *= r
+				}
+			}
+			if maxS > 0 {
+				retain *= 1 - math.Min(st/maxS, 1)
+			}
+		}
+		if any {
+			jam = (1 - retain) * 100
+		}
+	}
 	scanRes := g(ship, "scanResolution")
 	var probe any
 	if bestV > 0 {
@@ -681,7 +721,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	targeting := obj{
 		"max_targets": math.Min(g(ship, "maxLockedTargets"), math.Max(g(ch, "maxLockedTargets"), 0)),
 		"max_range_m": g(ship, "maxTargetRange"), "scan_resolution": scanRes, "sensor_strength": bestV, "sensor_type": bestN,
-		"probe_size": probe,
+		"jam_chance_percent": jam, "probe_size": probe,
 		"lock_time_s": obj{"sig_25m": lockTime(scanRes, 25), "sig_40m": lockTime(scanRes, 40), "sig_125m": lockTime(scanRes, 125),
 			"sig_400m": lockTime(scanRes, 400), "sig_target_profile": ltTP},
 	}

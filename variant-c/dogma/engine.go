@@ -78,6 +78,7 @@ type Item struct {
 	ReqSkills   []uint32
 	Effects     []TypeEffect
 	Abilities   []uint32 // fighter abilities in use
+	HasAbil     bool     // Abilities is meaningful (fighters, incl. projected): filter fighterAbility* effects
 	SideEffects []uint32 // booster side effects selected
 	Spool       *Spool
 	Distance    *float64
@@ -173,7 +174,9 @@ type Fit struct {
 // ProjSpecial is a projected effect that does not modify attributes but feeds tank or capacitor stats
 // (Pyfa: fit._armorRr, addDrain).
 type ProjSpecial struct {
-	Rep      bool    // true: remote repair; false: capacitor drain/fill
+	Rep      bool    // true: remote repair; false: capacitor drain/fill (or ECM when Ecm is set)
+	Ecm      bool    // ECM jammer: jam strength vs the target's strongest sensor type
+	Fighter  bool    // ECM from a fighter ability (strength attrs fighterAbilityECMStrength*)
 	Item     int     // projected item
 	Layer    int     // rep: 0 shield, 1 armor, 2 hull
 	Amount   uint32  // attribute with the amount per cycle
@@ -482,6 +485,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 		} else {
 			it.Abilities = defaultFighterAbilities(ds, it.Effects)
 		}
+		it.HasAbil = true
 		it.ReqIndex = i
 	}
 	for i, imp := range req.Implants {
@@ -551,6 +555,39 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 					it.Distance = p.DistanceM
 				}
 			}
+		case "fighter":
+			if fr := p.Fighter; fr != nil {
+				for k := uint32(0); k < max(p.Amount, 1); k++ {
+					idx, err := f.newItem(fr.TypeID, KProjected, LNowhere, ipath{"/projected/", i, ""})
+					if err != nil {
+						return nil, err
+					}
+					maxsq := uint32(1)
+					if v, ok := f.baseOK(idx, ds.AttrID("fighterSquadronMaxSize")); ok {
+						maxsq = max(uint32(v), 1)
+					}
+					it := &f.Items[idx]
+					it.Owned = false
+					it.State = Offline
+					if fr.Active {
+						it.State = Active
+					}
+					q := maxsq
+					if fr.Quantity != nil {
+						q = *fr.Quantity
+					}
+					it.Quantity = min(max(q, 1), maxsq)
+					it.ActiveCount = it.Quantity
+					it.Distance = p.DistanceM
+					it.ReqIndex = i
+					if fr.Abilities != nil {
+						it.Abilities = *fr.Abilities
+					} else {
+						it.Abilities = defaultFighterAbilities(ds, it.Effects)
+					}
+					it.HasAbil = true
+				}
+			}
 		case "fit":
 			// whole projected fit: compute the source fit on its own, then project each active module / drone as
 			// a frozen item carrying the source-modified values.
@@ -563,9 +600,12 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 					continue
 				}
 				type frozen struct {
-					typeID uint32
-					copies uint32
-					vals   attrSet
+					typeID  uint32
+					copies  uint32
+					vals    attrSet
+					fighter bool
+					qty     uint32
+					abil    []uint32
 				}
 				var fr []frozen
 				for si := range src.Items {
@@ -576,6 +616,8 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 						copies = 1
 					case it.Kind == KDrone:
 						copies = it.ActiveCount
+					case it.Kind == KFighter && it.State >= Active:
+						copies = 1
 					}
 					if copies == 0 {
 						continue
@@ -585,7 +627,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 					for k, a := range ids {
 						vals[k] = src.Get(si, a)
 					}
-					fr = append(fr, frozen{it.TypeID, copies, attrSet{ids, vals}})
+					fr = append(fr, frozen{it.TypeID, copies, attrSet{ids, vals}, it.Kind == KFighter, it.Quantity, it.Abilities})
 				}
 				src.Release()
 				for _, z := range fr {
@@ -600,6 +642,10 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 						it.Distance = p.DistanceM
 						it.ReqIndex = i
 						it.overlay = attrSet{append([]uint32(nil), z.vals.ids...), append([]float64(nil), z.vals.vals...)}
+						if z.fighter {
+							it.Quantity, it.ActiveCount = z.qty, z.qty
+							it.Abilities, it.HasAbil = z.abil, true
+						}
 					}
 				}
 			}
@@ -829,6 +875,15 @@ func (f *Fit) registerItem(i int) {
 		if !stateOK(e.Category, state) {
 			continue
 		}
+		if kind == KFighter && len(e.Mods) == 0 {
+			// fighter self abilities (Pyfa hand-written handlers, eos LGPL)
+			if fm := fighterSelfMods[e.Name]; fm != nil {
+				for _, x := range fm {
+					f.push(bItem, uint32(i), ds.AttrID(x.target), amod{op: x.op, kind: srcAttr, item: int32(i), attr: ds.AttrID(x.src), from: int32(i)}, srcCat)
+				}
+				continue
+			}
+		}
 		ship := uint32(f.Ship)
 		switch eid {
 		case id.eAB, id.eMWD:
@@ -874,6 +929,23 @@ func (f *Fit) registerItem(i int) {
 	}
 }
 
+type selfMod struct {
+	target, src string
+	op          int8
+}
+
+var fighterSelfMods = map[string][]selfMod{
+	"fighterAbilityMicroWarpDrive": {{"maxVelocity", "fighterAbilityMicroWarpDriveSpeedBonus", 6},
+		{"signatureRadius", "fighterAbilityMicroWarpDriveSignatureRadiusBonus", 6}},
+	"fighterAbilityAfterburner": {{"maxVelocity", "fighterAbilityAfterburnerSpeedBonus", 6}},
+	"fighterAbilityEvasiveManeuvers": {{"maxVelocity", "fighterAbilityEvasiveManeuversSpeedBonus", 6},
+		{"signatureRadius", "fighterAbilityEvasiveManeuversSignatureRadiusBonus", 6},
+		{"shieldEmDamageResonance", "fighterAbilityEvasiveManeuversEmResonance", 4},
+		{"shieldThermalDamageResonance", "fighterAbilityEvasiveManeuversThermResonance", 4},
+		{"shieldKineticDamageResonance", "fighterAbilityEvasiveManeuversKinResonance", 4},
+		{"shieldExplosiveDamageResonance", "fighterAbilityEvasiveManeuversExpResonance", 4}},
+}
+
 func (f *Fit) registerProjected(i int) {
 	ds := f.DS
 	it := &f.Items[i]
@@ -881,7 +953,13 @@ func (f *Fit) registerProjected(i int) {
 	ship := uint32(f.Ship)
 	for _, te := range it.Effects {
 		e := ds.effect(te.ID)
-		if e == nil || (e.Category != 2 && e.Category != 3) || it.State < Active {
+		if e == nil || (e.Category != 2 && e.Category != 3 && e.Name != "ECMBurstJammer") {
+			continue
+		}
+		if it.HasAbil && strings.HasPrefix(e.Name, "fighterAbility") && !containsU32(it.Abilities, te.ID) {
+			continue
+		}
+		if it.State < Active {
 			continue
 		}
 		opt, fo := 0.0, 0.0
@@ -894,10 +972,20 @@ func (f *Fit) registerProjected(i int) {
 		factor := RangeFactor(opt, fo, it.Distance, true)
 		resist := e.ResistanceAttr
 		if resist == 0 {
-			if v, ok := f.baseOK(i, ds.AttrID("remoteResistanceID")); ok {
-				resist = uint32(v)
+			look := func(n string) uint32 { v, _ := f.baseOK(i, ds.AttrID(n)); return uint32(v) }
+			if strings.HasPrefix(e.Name, "fighterAbility") {
+				if resist = look(e.Name + "ResistanceID"); resist == 0 {
+					resist = look(e.Name + "RemoteResistanceID")
+				}
+			} else {
+				resist = look("remoteResistanceID")
 			}
 		}
+		targetOffenseOK := true
+		if v, ok := f.baseOK(f.Ship, ds.AttrID("disallowOffensiveModifiers")); ok {
+			targetOffenseOK = v == 0
+		}
+		qty := float64(max(it.Quantity, 1))
 		push := func(target, src uint32, op int8) {
 			f.push(bItem, ship, target, amod{op: op, kind: srcProj, item: int32(i), ship: int32(f.Ship), attr: src,
 				c: factor, a2: resist, mul: op == 4 || op == 0, from: int32(i)}, srcCat)
@@ -912,6 +1000,26 @@ func (f *Fit) registerProjected(i int) {
 		}
 		a := ds.AttrID
 		n := e.Name
+		pbase := func(name string) float64 { v, _ := f.baseOK(i, a(name)); return v }
+		switch n {
+		case "fighterAbilityStasisWebifier":
+			if targetOffenseOK {
+				fac := RangeFactor(pbase("fighterAbilityStasisWebifierOptimalRange"), pbase("fighterAbilityStasisWebifierFalloffRange"), it.Distance, true) * qty
+				f.push(bItem, ship, a("maxVelocity"), amod{op: 6, kind: srcProj, item: int32(i), ship: int32(f.Ship),
+					attr: a("fighterAbilityStasisWebifierSpeedPenalty"), c: fac, a2: resist, from: int32(i)}, srcCat)
+			}
+			continue
+		case "fighterAbilityWarpDisruption":
+			d := 0.0
+			if it.Distance != nil {
+				d = *it.Distance
+			}
+			if targetOffenseOK && pbase("fighterAbilityWarpDisruptionRange") >= d {
+				f.push(bItem, ship, a("warpScrambleStatus"), amod{op: 2, kind: srcProj, item: int32(i), ship: int32(f.Ship),
+					attr: a("fighterAbilityWarpDisruptionPointStrength"), c: qty, a2: resist, from: int32(i)}, srcCat)
+			}
+			continue
+		}
 		switch {
 		case strings.HasPrefix(n, "remoteWebifier") || n == "structureModuleEffectStasisWebifier":
 			push(a("maxVelocity"), a("speedFactor"), 6)
@@ -972,8 +1080,31 @@ func (f *Fit) projSpecialFor(i int, name string, resist uint32) ([]ProjSpecial, 
 	drain := func(amt, dur string, factor, sign float64) []ProjSpecial {
 		return []ProjSpecial{{Item: i, Amount: a(amt), Duration: a(dur), Factor: factor, Resist: resist, Sign: sign}}
 	}
+	noOffense := false
+	if v, ok := f.baseOK(f.Ship, a("disallowOffensiveModifiers")); ok && v != 0 {
+		noOffense = true
+	}
+	ecm := func(fighter bool, factor float64) []ProjSpecial {
+		if noOffense {
+			return nil
+		}
+		return []ProjSpecial{{Ecm: true, Fighter: fighter, Item: i, Factor: factor, Resist: resist}}
+	}
+	qty := float64(max(it.Quantity, 1))
 	paste := it.Charge >= 0 && f.Items[it.Charge].T.Name == "Nanite Repair Paste"
 	switch name {
+	case "fighterAbilityEnergyNeutralizer":
+		fac := RangeFactor(base("fighterAbilityEnergyNeutralizerOptimalRange"), base("fighterAbilityEnergyNeutralizerFalloffRange"), dist, true)
+		return drain("fighterAbilityEnergyNeutralizerAmount", "fighterAbilityEnergyNeutralizerDuration", fac*qty, 1), true
+	case "remoteECMFalloff", "structureModuleEffectECM":
+		return ecm(false, falloff()), true
+	case "entityECMFalloff":
+		return ecm(false, gate(base("ECMRangeOptimal"))), true
+	case "ECMBurstJammer":
+		return ecm(false, gate(base("ecmBurstRange"))), true
+	case "fighterAbilityECM":
+		fac := RangeFactor(base("fighterAbilityECMRangeOptimal"), base("fighterAbilityECMRangeFalloff"), dist, true)
+		return ecm(true, fac*qty), true
 	case "shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster":
 		return rep(0, "shieldBonus", 1, falloff()), true
 	case "shipModuleRemoteArmorRepairer", "ShipModuleRemoteArmorMutadaptiveRepairer":

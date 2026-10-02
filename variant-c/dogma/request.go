@@ -175,6 +175,7 @@ type Projected struct {
 	Module    *ModuleReq  `json:"module"`
 	Drone     *DroneReq   `json:"drone"`
 	Fit       *FitRequest `json:"fit"`
+	Fighter   *FighterReq `json:"fighter"`
 	Amount    uint32      `json:"amount"`
 	DistanceM *float64    `json:"distance_m"`
 }
@@ -307,12 +308,13 @@ type wireCargo struct {
 }
 
 type wireProjected struct {
-	Kind      string     `json:"kind"`
-	Module    *ModuleReq `json:"module"`
-	Drone     *wireDrone `json:"drone"`
-	Fit       *wireFit   `json:"fit"`
-	Amount    *uint32    `json:"amount"`
-	DistanceM *float64   `json:"distance_m"`
+	Kind      string       `json:"kind"`
+	Module    *ModuleReq   `json:"module"`
+	Drone     *wireDrone   `json:"drone"`
+	Fit       *wireFit     `json:"fit"`
+	Fighter   *wireFighter `json:"fighter"`
+	Amount    *uint32      `json:"amount"`
+	DistanceM *float64     `json:"distance_m"`
 }
 
 type wireOptions struct {
@@ -375,6 +377,10 @@ func orU32(p *uint32, d uint32) uint32 {
 	return *p
 }
 
+func (x *wireFighter) to() FighterReq {
+	return FighterReq{TypeID: x.TypeID, Quantity: x.Quantity, Active: x.Active == nil || *x.Active, Abilities: x.Abilities}
+}
+
 func (d *wireDrone) to() DroneReq {
 	return DroneReq{TypeID: d.TypeID, Quantity: orU32(d.Quantity, 1), Active: d.Active, Mutation: d.Mutation}
 }
@@ -395,7 +401,7 @@ func (w *wireFit) to(r *FitRequest) {
 	if w.Fighters != nil {
 		r.Fighters = make([]FighterReq, len(w.Fighters))
 		for i, x := range w.Fighters {
-			r.Fighters[i] = FighterReq{TypeID: x.TypeID, Quantity: x.Quantity, Active: x.Active == nil || *x.Active, Abilities: x.Abilities}
+			r.Fighters[i] = x.to()
 		}
 	}
 	if w.Cargo != nil {
@@ -418,6 +424,10 @@ func (w *wireFit) to(r *FitRequest) {
 			if x.Drone != nil {
 				d := x.Drone.to()
 				p.Drone = &d
+			}
+			if x.Fighter != nil {
+				fr := x.Fighter.to()
+				p.Fighter = &fr
 			}
 			if x.Fit != nil {
 				p.Fit = &FitRequest{}
