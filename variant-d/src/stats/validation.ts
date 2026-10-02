@@ -26,7 +26,8 @@ export function validate(c: StatsCtx, used: ResourceTotals): object[] {
   if (l > g('launcherSlotsLeft')) push('LAUNCHER_HARDPOINTS', `launchers ${l} > hardpoints ${g('launcherSlotsLeft')}`, null);
   const shipT = ds.types.get(fit.items[ship].typeId)!;
   const { groupAttrs, typeAttrs, chargeGroups, reqSkill, reqLevel } = ids(ds);
-  const raw = (typeId: number, a: number): number | undefined => ds.types.get(typeId)!.rawAttrs[a];
+  // none of these attributes is a type field (mass/capacity/volume/radius), so the memoised Map equals rawAttrs
+  const raw = (typeId: number, a: number): number | undefined => ds.typeAttrs(typeId).get(a);
   const fittedGroup = new Map<number, number>(), fittedType = new Map<number, number>(), activeGroup = new Map<number, number>(), onlineGroup = new Map<number, number>();
   const inc = (m: Map<number, number>, k: number) => m.set(k, (m.get(k) ?? 0) + 1);
   for (const i of c.modules) {
