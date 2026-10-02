@@ -41,3 +41,13 @@
 - Perf: modifiers that target sets (location/group/skill) are now stored as deferred set references in `outgoing`, so
   an item's outgoing modifiers depend only on the item. `incoming` expands them through the index. That gives -11% Ir
   on the corpus (1.73G -> 1.54G for 295 fits) with byte-identical output.
+
+## 2026-10-03 ~06:30 CST — bench 1.8.0 (326 cases, frozen until 10:20)
+- Ported from A 9f8579c:
+  - weather / AoE cloud beacon buffs in the fleet-buff pool, including the unpenalised weather buffs and drone targets;
+  - incursion system effects (OffensiveDefensiveReduction);
+  - full-strength burst projectors (web/paint/damp/track, plus neut/ECM as stats sources);
+  - the Standup weapon disruptor and Breach Pod damage control.
+- Result: 326/326, 21,051/21,051, EFT export 326/326.
+- Perf: salsa durability. Skill and character specs, the slot ids, and the fit core are HIGH durability, so the
+  ~400 skill memos are shallow-verified when only modules or the ship change. That is -10% Ir on the corpus.

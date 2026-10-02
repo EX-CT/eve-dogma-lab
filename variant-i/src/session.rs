@@ -5,7 +5,7 @@ use crate::engine::{self, Consts, Ctx, Db, FitIn, ItemIn, F};
 use crate::request::{FitRequest, Resists};
 use crate::spec::{self, ItemKey, ItemSpec, Kind};
 use rustc_hash::FxHashMap;
-use salsa::Setter;
+use salsa::{Durability, Setter};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -268,7 +268,10 @@ impl Session {
                 let s = self.slots.len() as u32;
                 self.slot_of.insert(*k, s);
                 let placeholder = b.items[0].clone();
-                self.slots.push(ItemIn::new(&self.db, s, placeholder));
+                // slot ids never change; skill / character specs rarely do (HIGH durability lets salsa skip
+                // deep-verifying the ~400 skill memos on every request that changed only modules)
+                let d = if matches!(k, ItemKey::Skill(_) | ItemKey::Char) { Durability::HIGH } else { Durability::LOW };
+                self.slots.push(ItemIn::builder(s, placeholder).slot_durability(Durability::HIGH).spec_durability(d).new(&self.db));
             }
         }
         let slot_of: Vec<u32> = b.keys.iter().map(|k| self.slot_of[k]).collect();
@@ -284,14 +287,15 @@ impl Session {
             let h = self.slots[slot_of[i] as usize];
             let old = h.spec(&self.db);
             if !Arc::ptr_eq(old, &sp) && **old != *sp {
-                h.set_spec(&mut self.db).to(sp);
+                let d = if matches!(b.keys[i], ItemKey::Skill(_) | ItemKey::Char) { Durability::HIGH } else { Durability::LOW };
+                h.set_spec(&mut self.db).with_durability(d).to(sp);
             }
         }
         let ctx = Arc::new(make_ctx(&self.db.ds, req, slot_of[0], slot_of.get(1).copied().unwrap_or(slot_of[0]), b.is_structure, offers));
         let core = engine::Core { ship: ctx.ship, char: ctx.char, is_structure: ctx.is_structure };
         match self.fit {
             None => {
-                let f = FitIn::new(&self.db, self.slots.clone(), slot_of, ctx, core);
+                let f = FitIn::builder(self.slots.clone(), slot_of, ctx, core).core_durability(Durability::HIGH).new(&self.db);
                 self.fit = Some(f);
                 f
             }
@@ -306,7 +310,7 @@ impl Session {
                     f.set_ctx(&mut self.db).to(ctx);
                 }
                 if f.core(&self.db) != core {
-                    f.set_core(&mut self.db).to(core);
+                    f.set_core(&mut self.db).with_durability(Durability::HIGH).to(core);
                 }
                 f
             }
@@ -378,7 +382,7 @@ fn proj_special_for(ds: &Dataset, b: &spec::Built, i: usize, out: &mut Vec<ProjS
     let no_offense = b.items[0].base(a("disallowOffensiveModifiers")).map(|x| x != 0.0).unwrap_or(false);
     let qty = it.quantity.max(1) as f64;
     for e in engine::proj_effects(ds, it) {
-        if !e.mods.is_empty() {
+        if !e.mods.is_empty() && !e.name.starts_with("doomsdayAOE") {
             continue;
         }
         let resist = engine::proj_resist(ds, it, e);
@@ -420,6 +424,8 @@ fn proj_special_for(ds: &Dataset, b: &spec::Built, i: usize, out: &mut Vec<ProjS
                 let f = crate::stats::range_factor(base("fighterAbilityECMRangeOptimal"), base("fighterAbilityECMRangeFalloff"), dist, true);
                 ecm(out, true, f * qty)
             }
+            "doomsdayAOENeut" => drain(out, "energyNeutralizerAmount", "duration", 1.0, 1.0),
+            "doomsdayAOEECM" => ecm(out, false, 1.0),
             "energyNosferatuFalloff" => drain(out, "powerTransferAmount", "duration", falloff_factor(), 1.0),
             "structureEnergyNeutralizerFalloff" => drain(out, "energyNeutralizerAmount", "duration", 1.0, 1.0),
             "entityEnergyNeutralizerFalloff" => drain(out, "energyNeutralizerAmount", "energyNeutralizerDuration", gate(base("energyNeutralizerRangeOptimal")), 1.0),

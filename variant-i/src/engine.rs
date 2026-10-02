@@ -257,6 +257,7 @@ pub struct TKey<'db> {
 /// actually targets changes (e.g. a skill bonus to "modules requiring Gunnery" when a turret is added).
 #[salsa::tracked(returns(ref))]
 pub fn target_set<'db>(db: &'db dyn Db, fit: FitIn, k: TKey<'db>) -> Arc<Vec<u32>> {
+    qcount(0);
     Arc::new(index(db, fit).sets.get(&(k.kind(db), k.extra(db))).cloned().unwrap_or_default())
 }
 
@@ -269,6 +270,7 @@ pub struct Core {
 
 #[salsa::tracked(returns(ref))]
 pub fn index(db: &dyn Db, fit: FitIn) -> Arc<Index> {
+    qcount(1);
     let slots = fit.slots(db);
     let mut items = Vec::with_capacity(fit.order(db).len());
     let mut sets: FxHashMap<(u8, u32), Vec<u32>> = FxHashMap::default();
@@ -308,6 +310,7 @@ pub fn index(db: &dyn Db, fit: FitIn) -> Arc<Index> {
 /// charge/parent links (slot ids) - separate query so link changes don't touch everything else
 #[salsa::tracked(returns(copy))]
 pub fn links(db: &dyn Db, item: ItemIn) -> (Option<u32>, Option<u32>) {
+    qcount(2);
     let sp = item.spec(db);
     (sp.charge.map(|c| c as u32), sp.parent.map(|p| p as u32))
 }
@@ -403,6 +406,7 @@ fn effective_state(db: &dyn Db, fit: FitIn, sp: &ItemSpec) -> State {
 /// Modifiers emitted by one item (its effects applied to their targets), in registration order.
 #[salsa::tracked(returns(ref))]
 pub fn outgoing(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<Vec<Out>> {
+    qcount(3);
     Arc::new(outgoing_impl(db, fit, item))
 }
 
@@ -451,6 +455,10 @@ fn outgoing_impl(db: &dyn Db, fit: FitIn, item: ItemIn) -> Vec<Out> {
         }
         // Pyfa 'active' handlers for SDE effects without modifiers (some are target-category in the SDE)
         if e.mods.is_empty() && kind == Kind::Module && state >= State::Active && local_special(ds, &sp, i, ship, e.name.as_str(), src_cat, &mut out) {
+            continue;
+        }
+        if kind == Kind::Beacon && e.name == "OffensiveDefensiveReduction" {
+            incursion_effect(db, fit, i, ship, &mut out);
             continue;
         }
         if !state_ok(e.category, state) {
@@ -555,6 +563,9 @@ fn local_special(ds: &Dataset, sp: &ItemSpec, i: u32, ship: u32, name: &str, src
                 push(ship, a(&format!("scan{t}Strength")), 6, at(&format!("scan{t}StrengthPercent")), src_cat);
             }
         }
+        "moduleBonusBreacherPodDamageControl" => {
+            push(ship, a("breacherPodDamageResistance"), 6, at("breacherPodActivatedDamageReceivedPercentage"), 6);
+        }
         "microJumpPortalDrive" | "microJumpPortalDriveCapital" => {
             push(ship, a("signatureRadius"), 6, at("signatureRadiusBonusPercent"), src_cat);
         }
@@ -578,12 +589,53 @@ fn local_special(ds: &Dataset, sp: &ItemSpec, i: u32, ship: u32, name: &str, src
     true
 }
 
+/// Sansha / Drifter incursion system effects (Pyfa Effect4728 OffensiveDefensiveReduction, LGPL; re-expressed as in
+/// eve-dogma-rs): unpenalised PostPercent of missile-charge and smartbomb damage, turret and drone damageMultiplier by
+/// systemEffectDamageReduction, and of the ship's armor/shield resonances by the beacon's resistance bonuses.
+fn incursion_effect(db: &dyn Db, fit: FitIn, b: u32, ship: u32, out: &mut Vec<Out>) {
+    let ds = db.ds();
+    let a = |n: &str| ds.attr_id(n);
+    let mut push = |target: u32, attr: u32, src: Src| out.push(Out { target, attr, m: AMod { op: 6, penalized: penalized(ds, attr, 6), src } });
+    let red = a("systemEffectDamageReduction");
+    let mls = ds.type_by_name("Missile Launcher Operation").unwrap_or(0);
+    let gunnery = ds.type_by_name("Gunnery").unwrap_or(0);
+    let smartbomb = ds.groups.iter().find(|(_, g)| g.name == "Smart Bomb").map(|(k, _)| *k).unwrap_or(0);
+    for it in index(db, fit).items.iter() {
+        if !it.owned || it.loc != Loc::Ship && it.kind != Kind::Drone {
+            continue;
+        }
+        let (mut dmg, mut mult) = (false, false);
+        match it.kind {
+            Kind::Charge => dmg = it.req_skills.contains(&mls),
+            Kind::Module => {
+                dmg = it.group == smartbomb;
+                mult = it.req_skills.contains(&gunnery);
+            }
+            Kind::Drone => mult = true,
+            _ => {}
+        }
+        if dmg {
+            for d in ["em", "thermal", "kinetic", "explosive"] {
+                push(it.slot, a(&format!("{d}Damage")), Src::Attr { item: b, attr: red });
+            }
+        }
+        if mult {
+            push(it.slot, a("damageMultiplier"), Src::Attr { item: b, attr: red });
+        }
+    }
+    for d in ["Em", "Thermal", "Kinetic", "Explosive"] {
+        for l in ["armor", "shield"] {
+            push(ship, a(&format!("{l}{d}DamageResonance")), Src::Attr { item: b, attr: a(&format!("{l}{d}DamageResistanceBonus")) });
+        }
+    }
+}
+
 /// Effects of a projected item that take part in projection (category / state / fighter-ability filters).
 pub fn proj_effects<'a>(ds: &'a Dataset, sp: &ItemSpec) -> Vec<&'a crate::data::EffectInfo> {
     let mut v = Vec::new();
     for &(eid, _) in &sp.effects {
         let Some(e) = ds.effects.get(&eid) else { continue };
-        if e.category != 2 && e.category != 3 && e.name != "ECMBurstJammer" {
+        if e.category != 2 && e.category != 3 && e.name != "ECMBurstJammer" && !e.name.starts_with("doomsdayAOE") {
             continue;
         }
         if let Some(ab) = &sp.fighter_abilities {
@@ -623,6 +675,8 @@ fn is_basic_projection(name: &str) -> bool {
         || name == "shipModuleGuidanceDisruptor"
         || name == "shipModuleRemoteTrackingComputer"
         || name == "npcEntityWeaponDisruptor"
+        || name == "structureModuleEffectWeaponDisruption"
+        || matches!(name, "doomsdayAOEWeb" | "doomsdayAOEPaint" | "doomsdayAOEDamp" | "doomsdayAOENeut" | "doomsdayAOEECM" | "doomsdayAOEBubble" | "doomsdayAOEGuide" | "doomsdayAOETrack")
 }
 
 fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &mut Vec<Out>) {
@@ -642,7 +696,10 @@ fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &m
             out.push(Out { target: ship, attr: target_attr, m: AMod { op: op as i8, penalized: penalized(ds, target_attr, src_cat), src } });
         };
         let pj = |src_attr: u32, op: i32| Src::Projected { item: i, attr: src_attr, factor: F(factor), target: ship, resist, mul: op == 4 || op == 0 };
-        if !e.mods.is_empty() {
+        // burst projectors and the Standup weapon disruptor stay engine-side even if a dataset revision gives
+        // them modifiers (as eve-dogma-rs): the generic path has no AoE full-strength rule
+        let engine_side = e.name.starts_with("doomsdayAOE") || e.name == "structureModuleEffectWeaponDisruption";
+        if !e.mods.is_empty() && !engine_side {
             for m in &e.mods {
                 if matches!(m.domain, Domain::TargetId | Domain::Target | Domain::Ship) && m.func == Func::Item {
                     push(out, m.modified, m.op, pj(m.modifying, m.op));
@@ -652,6 +709,26 @@ fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &m
         }
         let name = e.name.as_str();
         let pbase = |n: &str| sp.base(ds.attr_id(n)).unwrap_or(0.0);
+        // burst projectors (Pyfa Effect6476-6482/6513): full strength on every ship in the AoE (no range factor)
+        match name {
+            "doomsdayAOEWeb" | "doomsdayAOEPaint" | "doomsdayAOEDamp" => {
+                if target_offense_ok {
+                    let pairs: &[(&str, &str)] = match name {
+                        "doomsdayAOEWeb" => &[("maxVelocity", "speedFactor")],
+                        "doomsdayAOEPaint" => &[("signatureRadius", "signatureRadiusBonus")],
+                        _ => &[("maxTargetRange", "maxTargetRangeBonus"), ("scanResolution", "scanResolutionBonus")],
+                    };
+                    for (t, sa) in pairs {
+                        push(out, ds.attr_id(t), 6, Src::Projected { item: i, attr: ds.attr_id(sa), factor: F(1.0), target: ship, resist, mul: false });
+                    }
+                }
+                continue;
+            }
+            // neut / ECM bursts feed stats (ProjSpecial); bubble / guidance bursts do nothing here
+            "doomsdayAOENeut" | "doomsdayAOEECM" | "doomsdayAOEBubble" | "doomsdayAOEGuide" => continue,
+            _ => {}
+        }
+        let weapon_disruption = name == "doomsdayAOETrack" || name == "structureModuleEffectWeaponDisruption";
         if name == "fighterAbilityStasisWebifier" {
             if target_offense_ok {
                 let f = crate::stats::range_factor(pbase("fighterAbilityStasisWebifierOptimalRange"), pbase("fighterAbilityStasisWebifierFalloffRange"), sp.distance, true) * qty;
@@ -674,6 +751,29 @@ fn projected(db: &dyn Db, fit: FitIn, sp: &ItemSpec, i: u32, ctx: &Core, out: &m
         } else if name.starts_with("remoteSensorDamp") || name == "structureModuleEffectRemoteSensorDampener" {
             push(out, c.max_target_range, 6, pj(c.max_target_range_bonus, 6));
             push(out, c.scan_res, 6, pj(c.scan_res_bonus, 6));
+        } else if weapon_disruption {
+            // AoE weapon disruption burst (full strength) / Standup Weapon Disruptor (range factor): turrets and missiles
+            if target_offense_ok {
+                let tf = if name == "doomsdayAOETrack" { 1.0 } else { crate::stats::range_factor(pbase("maxRange"), pbase("falloffEffectiveness"), sp.distance, true) };
+                let (gun, mls) = (ds.type_by_name("Gunnery").unwrap_or(0), ds.type_by_name("Missile Launcher Operation").unwrap_or(0));
+                for it in index(db, fit).items.iter() {
+                    if it.loc != Loc::Ship || !it.owned {
+                        continue;
+                    }
+                    let pairs: &[(&str, &str)] = if it.kind == Kind::Module && it.req_skills.contains(&gun) {
+                        &[("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"), ("falloffBonus", "falloff")]
+                    } else if it.kind == Kind::Charge && it.req_skills.contains(&mls) {
+                        &[("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"), ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay")]
+                    } else {
+                        continue;
+                    };
+                    for (sa, ta) in pairs {
+                        let a = ds.attr_id(ta);
+                        let src = Src::Projected { item: i, attr: ds.attr_id(sa), factor: F(tf), target: ship, resist, mul: false };
+                        out.push(Out { target: it.slot, attr: a, m: AMod { op: 6, penalized: penalized(ds, a, src_cat), src } });
+                    }
+                }
+            }
         } else if name == "shipModuleTrackingDisruptor" || name == "shipModuleGuidanceDisruptor" || name == "shipModuleRemoteTrackingComputer" || name == "npcEntityWeaponDisruptor" {
             // Pyfa Effect6424 / Effect6423 / shipModuleRemoteTrackingComputer / Effect6694: modify the target's gunnery
             // modules (TD, remote tracking computer, TD drones) / missile charges (GD)
@@ -749,9 +849,36 @@ fn buff_mods(db: &dyn Db, fit: FitIn, ctx: Core, id: u32, src: Src, out: &mut Ve
     let ds = db.ds();
     let Some(info) = ds.dbuffs.get(&id) else { return };
     let op = info.op as i8;
-    let mut push = |t: u32, a: u32| out.push(Out { target: t, attr: a, m: AMod { op, penalized: penalized(ds, a, 0), src } });
+    // Pyfa applies most buffs stacking-penalised; the abyssal weather resistance/HP/velocity buffs are not
+    let cat = if matches!(id, 90 | 93 | 94 | 95 | 96 | 98 | 99) { 6 } else { 0 };
+    let mut push = |t: u32, a: u32| out.push(Out { target: t, attr: a, m: AMod { op, penalized: penalized(ds, a, cat), src } });
     for &a in &info.item {
         push(ctx.ship, a);
+    }
+    // AoE cloud / weather buffs also hit drones that require the Drones skill (Pyfa fit.py commandBonus)
+    let drone_attrs: &[&str] = match id {
+        79 => &["signatureRadius"],
+        90 => &["shieldEmDamageResonance", "armorEmDamageResonance", "emDamageResonance"],
+        93 => &["shieldExplosiveDamageResonance", "armorExplosiveDamageResonance", "explosiveDamageResonance"],
+        95 => &["shieldThermalDamageResonance", "armorThermalDamageResonance", "thermalDamageResonance"],
+        99 => &["shieldKineticDamageResonance", "armorKineticDamageResonance", "kineticDamageResonance"],
+        94 => &["shieldCapacity"],
+        96 => &["armorHP"],
+        97 => &["maxRange", "falloff"],
+        98 => &["maxVelocity"],
+        _ => &[],
+    };
+    if !drone_attrs.is_empty() {
+        for it in index(db, fit).items.iter() {
+            if it.kind == Kind::Drone && it.req_skills.contains(&3436) {
+                for n in drone_attrs {
+                    let a = ds.attr_id(n);
+                    if a != 0 {
+                        push(it.slot, a);
+                    }
+                }
+            }
+        }
     }
     let mut tg = Vec::new();
     for &a in &info.location {
@@ -782,6 +909,7 @@ pub type ModMap = FxHashMap<u32, Vec<AMod>>;
 /// Layer-0 modifiers per target slot.
 #[salsa::tracked(returns(ref))]
 pub fn incoming(db: &dyn Db, fit: FitIn) -> Arc<Vec<Arc<ModMap>>> {
+    qcount(4);
     let slots = fit.slots(db);
     let mut maps: Vec<ModMap> = vec![ModMap::default(); slots.len()];
     let idx = index(db, fit);
@@ -806,12 +934,14 @@ pub fn incoming(db: &dyn Db, fit: FitIn) -> Arc<Vec<Arc<ModMap>>> {
 
 #[salsa::tracked(returns(ref))]
 pub fn item_mods(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<ModMap> {
+    qcount(5);
     incoming(db, fit)[item.slot(db) as usize].clone()
 }
 
 /// Local command bursts (need evaluated warfareBuffNID at layer 0).
 #[salsa::tracked(returns(ref))]
 pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
+    qcount(6);
     let c = db.consts();
     let ctx = fit.ctx(db);
     let core = fit.core(db);
@@ -841,6 +971,27 @@ pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
             }
             let v = value(db, fit, s, vala, 0);
             offer(&mut best, id, v, Src::Attr { item: s, attr: vala });
+        }
+    }
+    // abyssal weather / AoE cloud beacons (Pyfa weather_* / aoe_beacon_* effects): warfareBuff1/2 of the
+    // environment item join the same command-bonus pool (strongest |value| per buff id)
+    let ds = db.ds();
+    for &s in fit.order(db) {
+        let sp = slots[s as usize].spec(db);
+        if sp.kind != Kind::Beacon {
+            continue;
+        }
+        let weather = sp.effects.iter().any(|(e, _)| ds.effects.get(e).is_some_and(|ei| ei.name.starts_with("weather_") || ei.name.starts_with("aoe_beacon_")));
+        if !weather {
+            continue;
+        }
+        for &(ida, vala) in &c.warfare[..2] {
+            let id = if has(db, fit, s, ida) { value(db, fit, s, ida, 0) as u32 } else { 0 };
+            if id == 0 || explicit(id) {
+                continue;
+            }
+            let v = value(db, fit, s, vala, 0);
+            offer(&mut best, id, v, Src::Const(F(v)));
         }
     }
     for &(id, v) in &ctx.booster_offers {
@@ -874,6 +1025,7 @@ pub struct Plan {
 
 #[salsa::tracked(returns(ref))]
 pub fn plan(db: &dyn Db, fit: FitIn) -> Plan {
+    qcount(7);
     let c = db.consts();
     let slots = fit.slots(db);
     let rah: Vec<u32> = if c.e_rah == 0 {
@@ -898,6 +1050,7 @@ pub type LayerMap = FxHashMap<(u32, u32), Vec<AMod>>;
 /// Modifiers introduced at layer L (>0): local bursts, then one layer per RAH.
 #[salsa::tracked(returns(ref))]
 pub fn layer_mods<'db>(db: &'db dyn Db, fit: FitIn, l: LKey<'db>) -> Arc<LayerMap> {
+    qcount(8);
     let layer = l.layer(db);
     let p = plan(db, fit);
     let mut m = LayerMap::default();
@@ -1022,6 +1175,7 @@ fn src_value(db: &dyn Db, fit: FitIn, s: &Src, layer: u32) -> f64 {
 
 #[salsa::tracked(returns(copy), cycle_result = attr_cycle)]
 pub fn attr_value<'db>(db: &'db dyn Db, fit: FitIn, k: AKey<'db>) -> F {
+    qcount(9);
     let (item, attr_id, layer) = (k.item(db), k.attr(db), k.layer(db));
     let ds = db.ds();
     let it = fit.slots(db)[item as usize];
@@ -1113,4 +1267,14 @@ pub fn attr_value<'db>(db: &'db dyn Db, fit: FitIn, k: AKey<'db>) -> F {
         }
     }
     F(val)
+}
+
+pub static QCOUNT: [std::sync::atomic::AtomicU64; 10] = [const { std::sync::atomic::AtomicU64::new(0) }; 10];
+#[inline]
+fn qcount(i: usize) {
+    QCOUNT[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn qcount_report() -> String {
+    let names = ["target_set", "index", "links", "outgoing", "incoming", "item_mods", "burst_mods", "plan", "layer_mods", "attr_value"];
+    names.iter().enumerate().map(|(i, n)| format!("{n}={}", QCOUNT[i].load(std::sync::atomic::Ordering::Relaxed))).collect::<Vec<_>>().join(" ")
 }

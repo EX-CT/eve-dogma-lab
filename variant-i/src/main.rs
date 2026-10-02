@@ -225,6 +225,9 @@ fn main() {
                 }
                 writeln!(out, "{}", eve_dogma_salsa::calc_json_ws(&mut ws, &line)).unwrap();
             }
+            if std::env::var_os("EVE_I_PROF").is_some() {
+                eprintln!("{}", eve_dogma_salsa::engine::qcount_report());
+            }
         }
         "serve-stdio" => {
             let ds = load(dataset);
