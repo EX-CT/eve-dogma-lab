@@ -112,6 +112,47 @@ pub struct MutaMapping {
     pub output: u32,
 }
 
+/// What a skill's modifiers can reach (used to leave out skills that cannot affect a given fit).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkillReach {
+    /// some modifier targets the ship / character / everything located somewhere: always relevant
+    pub always: bool,
+    /// required-skill filters of its modifiers (relevant when a fit item requires one of these)
+    pub req: Vec<u32>,
+    /// group filters of its modifiers (relevant when a fit item is in one of these groups)
+    pub groups: Vec<u32>,
+}
+
+fn skill_reach_of(types: &FxHashMap<u32, TypeInfo>, effects: &FxHashMap<u32, EffectInfo>, skill_effect: u32) -> FxHashMap<u32, SkillReach> {
+    let mut out = FxHashMap::default();
+    for t in types.values().filter(|t| t.category == 16) {
+        let mut r = SkillReach::default();
+        for &(eid, _) in &t.effects {
+            if eid == skill_effect {
+                continue;
+            }
+            let Some(eff) = effects.get(&eid) else { continue };
+            if eff.mods.is_empty() {
+                r.always = true; // handled by name somewhere: keep
+            }
+            for m in &eff.mods {
+                if m.func == Func::EffectStopper || m.op == 9 || matches!(m.domain, Domain::TargetId | Domain::Target | Domain::Item) {
+                    continue;
+                }
+                let req_f = matches!(m.func, Func::LocationRequiredSkill | Func::OwnerRequiredSkill);
+                let extra = if m.extra == 0 && req_f { t.id } else { m.extra };
+                match (m.domain, m.func) {
+                    (Domain::Ship | Domain::Structure, Func::LocationGroup) => r.groups.push(extra),
+                    (Domain::Ship | Domain::Structure | Domain::Char, Func::LocationRequiredSkill | Func::OwnerRequiredSkill) => r.req.push(extra),
+                    _ => r.always = true,
+                }
+            }
+        }
+        out.insert(t.id, r);
+    }
+    out
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Dataset {
     pub build: u64,
@@ -130,6 +171,7 @@ pub struct Dataset {
     pub published_skills: Vec<u32>,
     /// tactical destroyer modes (group 1306): (lowercased name, id), sorted by id
     pub t3d_modes: Vec<(String, u32)>,
+    pub skill_reach: FxHashMap<u32, SkillReach>,
     pub a: crate::ids::AttrIds,
     pub e: crate::ids::EffectIds,
 }
@@ -371,6 +413,7 @@ impl Dataset {
         t3d_modes.sort_by_key(|x| x.1);
         let a = crate::ids::AttrIds::resolve(&attr_by_name);
         let e = crate::ids::EffectIds::resolve(&effect_by_name);
+        let skill_reach = skill_reach_of(&types, &effects, e.skill_effect);
         Ok(Dataset {
             build: raw.sde.build,
             sha256,
@@ -386,6 +429,7 @@ impl Dataset {
             type_by_name,
             published_skills,
             t3d_modes,
+            skill_reach,
             a,
             e,
         })
