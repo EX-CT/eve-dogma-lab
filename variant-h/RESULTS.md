@@ -2,24 +2,28 @@
 
 ## Official bench (`bench.py --only H`, full run)
 
-Bench **1.6.0+a814f99** (297 cases, 19 103 Pyfa-expected values, including projected remote tracking computers),
-run at 05:51 CST:
+Bench **1.7.0+a5bb40e** (306 cases, 19 621 Pyfa-expected values: doomsday sub-cycles, WDFG / EHE / entosis / MJFG /
+superweapon local effects, Python `round(v, 2)` for cpu/power, TD drones). Scored at 06:12 CST on commit f4d4b88; the
+scorecard is committed in [`scorecards/bench-1.7.0.md`](scorecards/bench-1.7.0.md) (+ `.json`).
 
 | | cases | values |
 |---|---|---|
-| vs Pyfa (bench 1.6.0) | **297/297** | **19103/19103 (100.00 %)** |
-| vs Pyfa (bench 1.5.0, 05:33 CST) | 295/295 | 18978/18978 |
-| eft export column (EFT export vs Pyfa `exportEft` after `fill()`, informational) | **297/297** | |
+| vs Pyfa (bench 1.7.0) | **306/306** | **19621/19621 (100.00 %)** |
+| vs Pyfa (bench 1.6.0, 05:51 CST) | 297/297 | 19103/19103 |
+| eft export column (EFT export vs Pyfa `exportEft` after `fill()`, informational) | **306/306** | |
 
-| perf (combined scorecard, box load ~10) | H @ 1.6.0 05:51 | H @ 1.5.0 05:33 | A @ 1.6.0 05:42 |
+| perf (bench harness, shared box under load) | H @ 1.7.0 06:12 | H @ 1.6.0 05:51 | A @ 1.6.0 05:42 |
 |---|---|---|---|
-| ms/fit (exct_rifter latency) | **0.308** | 0.412 | 0.432 |
-| batch throughput, fits/s | **2863** | 2321 | 1777 |
-| cold ms (one process per case) | **6** | 9.8 | 138 |
+| ms/fit (exct_rifter latency) | **0.255** | 0.308 | 0.432 |
+| batch throughput, fits/s | **3033** | 2863 | 1777 |
+| cold ms (one process per case, median) | **6.2** | 8.9 | 138 |
+| startup + one calc, ms | **6.0** | 7.8 | |
 | deterministic | yes | yes | yes |
 
-Cold-start gains since 1.5.0: the derived cache and the dataset (for the cache-key hash) are now mmapped instead of
-read, and release builds are stripped with fat LTO and `panic = "abort"` (2.2 MB binary instead of 29 MB). The
+Cold-start gains since 1.5.0 (a cold rifter calc went from ~5.3 ms to ~2.7 ms wall when measured directly; `meta`
+takes 1.5 ms, against 1.1 ms for a bare exec of the binary): the derived cache and the dataset (for the cache-key hash) are now mmapped instead of
+read; lazy tables are zero-copy (ids, offsets and the dense index are read from the mapping, and record cells are
+allocated in 64-record chunks on first touch); and release builds are stripped with fat LTO and `panic = "abort"` (2.2 MB binary instead of 29 MB). The
 `profiling` cargo profile keeps debuginfo for callgrind.
 
 The box is shared and loaded, so wall times are noisy. The instruction counts below are the stable measure.
