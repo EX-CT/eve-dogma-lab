@@ -121,23 +121,32 @@ RAH, cap sim with Pyfa heap ordering, nos income, passive shield regen peak `10/
 builds its objects in a fixed key order and floats are rounded to 1e-6 (same as eve-dogma-rs), so output is
 byte-stable for a given request (verified by the bench's determinism check).
 
-### 7. Cold start: the VDC2 dataset cache
+### 7. Cold start: the VDC3 dataset cache and the CLI bundle
 
 One process per request is dominated by loading the 5 MB dataset (gunzip + `JSON.parse` of ~25 MB + building maps).
-`node dist/cli.js cache --dataset X` (run by the bench `build` step) writes `.cache/<hash(path)>-<size>-<mtime>.vdc`,
-a pure re-layout of the same dataset: a small header JSON (sde info, sha256, attributes, effects, groups, dbuffs,
-mutaplasmids and one compact row per type: name/group/category/mass/... + offset/length) followed by a body of
-per-type `[attrs, effects]` JSON slices and the zh name table. `rawAttrs`/`effects` of a type are decoded on first
-access and memoised (same array identity, which the per-type plan WeakMap relies on), so a typical fit decodes only
-the few hundred types it touches. The CLI uses the cache when present for that exact file (size + mtime key) and
-falls back to the dataset otherwise (`EVE_DOGMA_TS_NO_CACHE=1` forces the fallback). Load: ~380 ms → ~110–150 ms on
-the shared box; per-process median in the bench 469 → 256 ms.
+`node dist-cli/eve-dogma-ts.cjs cache --dataset X` (bench `build` step) writes
+`.cache/<hash(path)>-<size>-<mtime>.vdc3`, a pure re-layout of the same dataset: a header JSON (sde info, sha256,
+attributes, effects, groups, categories, dbuffs, mutaplasmids), a columnar type table (id/group/category/mass/... as
+arrays + byte offsets) and a body of per-type `[attrs, effects]` JSON slices, the type-name array and the zh table.
+`ds.types` is a `TypeStore` interface: a Map on the JSON path, a `TypeTable` of lazily created `LazyType` objects on
+the cache path; `rawAttrs`/`effects` are decoded on first access and memoised (same array identity, which the per-type
+plan WeakMap relies on); the name index is built on first name lookup; zlib is loaded only when a .gz is read.
+Load ≈ 45 ms. The CLI is also shipped as one CommonJS file (`dist-cli/eve-dogma-ts.cjs`: tsc AMD outFile + a 20-line
+loader mapping `node:*` to `require`), which avoids ESM resolution/translation (~25 ms). Cold calc ≈ 200 ms vs bare
+`node -e 0` ≈ 90 ms on the shared box.
+
+### 8. V8 notes (what mattered for speed)
+- Objects keep one hidden class: double fields (`Item.ovV`, `Mod.v`, `Cell.val`) start as `NaN`, never as a small
+  integer, otherwise V8 migrates maps on the first fractional write (Fit.build went 1.0 → 0.4 ms).
+- Per-dataset memo tables (plans, skill reach tests, attribute post-processing) instead of per-fit state.
+- The capacitor simulator keeps the processed event at the heap top and re-sifts once (same order as Pyfa's
+  heappop/heappush because the event order is a strict total order).
 
 ## Trade-offs vs the other variants
 
 | | D (TS) | A (Rust, eve-dogma-rs) |
 |---|---|---|
-| Runs in browser | natively, ~60 KB JS | needs wasm build |
+| Runs in browser | natively, ~160 KB JS bundle, zero deps | needs wasm build |
 | Runs in MCP (TS) | in-process import | subprocess / wasm |
 | Raw speed | JIT, GC; expect 1.5–4× slower than Rust | fastest |
 | Contributor friendliness | highest (TS) | medium |

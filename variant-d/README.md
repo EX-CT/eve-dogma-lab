@@ -7,16 +7,18 @@ latest bench scorecard: [bench-results/scorecard.md](bench-results/scorecard.md)
 ```sh
 npm ci && npm run build
 node dist/cli.js cache --dataset ../../data/dataset-3569502.json.gz   # optional: fast cold-start cache (.cache/)
+node dist-cli/eve-dogma-ts.cjs calc --dataset ...                     # same CLI as one CommonJS file (faster start)
 node dist/cli.js calc  --dataset ../../data/dataset-3569502.json.gz < request.json
 node dist/cli.js batch --dataset ... < requests.ndjson                # one request per line
 node dist/cli.js serve-stdio --dataset ...                            # JSON-RPC over stdio
-node dist/test/parity.js --dataset ...                                # 249 cases / 13812 values vs pyfa oracle
+node dist/test/parity.js --dataset ...                                # eve-dogma-rs fixtures vs pyfa oracle
+python3 score_bench.py                                                # bench cases vs Pyfa (306/306 at 1.7.0)
 ```
 
 Library: `import { calc, search, typeInfo } from './dist/index.js'` with a `Dataset` from
 `dist/node.js` (`loadDatasetFile`) or `dist/browser.js` (`loadDatasetUrl`, uses DecompressionStream + SubtleCrypto).
-The cache (`VDC2`) is a pure re-layout of the dataset (header JSON + lazily decoded per-type bodies); set
-`EVE_DOGMA_TS_NO_CACHE=1` to bypass it.
+The cache (`VDC3`) is a pure re-layout of the dataset (columnar type table + lazily decoded per-type bodies); set
+`EVE_DOGMA_TS_NO_CACHE=1` to bypass it, `EVE_DOGMA_TS_CACHE_DIR` to move it (library default `~/.cache/eve-dogma-ts`).
 
 ## Browser
 
