@@ -1,0 +1,4 @@
+#!/bin/sh
+# graph-batch for the bench: engine primitives (Go) + portable evaluator (TypeScript, compiled to dist/)
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+exec node "$DIR/dist/cli/graph-batch.js" --engine "$DIR/../variant-c/bin/eve-dogma-go" "$@"

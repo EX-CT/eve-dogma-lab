@@ -324,6 +324,15 @@ func main() {
 			j = runtime.NumCPU()
 		}
 		pipeline(os.Stdin, out, j, func(line []byte) []byte { return dogma.Marshal(rpc(ds, line)) })
+	case "graph-primitives":
+		// round 2 (G2): GraphRequest JSONL in -> graph primitives JSONL out (evaluated by graphs-g2/evaluator)
+		ds := load(dsPath)
+		jv, _ := takeFlag(&args, "-j")
+		j, _ := strconv.Atoi(jv)
+		if j <= 0 {
+			j = runtime.NumCPU()
+		}
+		pipeline(os.Stdin, out, j, func(line []byte) []byte { return dogma.GraphPrimitivesJSON(ds, line) })
 	case "serve-http":
 		addr, ok := takeFlag(&args, "-addr")
 		if !ok {
