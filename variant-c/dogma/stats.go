@@ -803,13 +803,13 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 	if bw > g(ship, "droneBandwidth")+1e-9 {
 		push("DRONE_BANDWIDTH", fmt.Sprintf("Drone bandwidth used %v > %v", bw, g(ship, "droneBandwidth")), -1)
 	}
-	var modules []int
+	modules := make([]int, 0, len(f.Items))
 	for i := range f.Items {
 		if f.Items[i].Kind == KModule {
 			modules = append(modules, i)
 		}
 	}
-	slotNamesV := map[Slot]string{SlotHigh: "High", SlotMid: "Mid", SlotLow: "Low", SlotRig: "Rig", SlotSubsystem: "Subsystem", SlotService: "Service"}
+	slotNamesV := [...]string{SlotHigh: "High", SlotMid: "Mid", SlotLow: "Low", SlotRig: "Rig", SlotSubsystem: "Subsystem", SlotService: "Service"}
 	for _, sa := range []struct {
 		s Slot
 		a string
@@ -841,18 +841,11 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 		push("LAUNCHER_HARDPOINTS", fmt.Sprintf("launchers %v > hardpoints %v", l, g(ship, "launcherSlotsLeft")), -1)
 	}
 	shipT := f.Items[ship].T
-	var groupAttrs, typeAttrs []uint32
-	for k := 1; k <= 20; k++ {
-		if a := ds.AttrID(canFitGroupNames[k-1]); a != 0 {
-			groupAttrs = append(groupAttrs, a)
-		}
-	}
-	for k := 1; k <= 11; k++ {
-		if a := ds.AttrID(canFitTypeNames[k-1]); a != 0 {
-			typeAttrs = append(typeAttrs, a)
-		}
-	}
-	fittedGroup, fittedType, activeGroup, onlineGroup := map[uint32]uint32{}, map[uint32]uint32{}, map[uint32]uint32{}, map[uint32]uint32{}
+	groupAttrs, typeAttrs := ds.canFitGroupA, ds.canFitTypeA
+	nm := len(modules)
+	fittedGroup, fittedType, activeGroup, onlineGroup := make(map[uint32]uint32, nm), make(map[uint32]uint32, nm), make(map[uint32]uint32, nm), make(map[uint32]uint32, nm)
+	var grBuf [20]uint32
+	var tyBuf [11]uint32
 	for _, i := range modules {
 		it := &f.Items[i]
 		idx := it.ReqIndex
@@ -861,7 +854,7 @@ func (f *Fit) validate(cpu, pg, calib, bw float64) []any {
 		if it.Slot == SlotNone {
 			push("NOT_FITTABLE", fmt.Sprintf("%s is not a fittable module", name), idx)
 		}
-		var gr, ty []uint32
+		gr, ty := grBuf[:0], tyBuf[:0]
 		for _, a := range groupAttrs {
 			if x, ok := mt.Attr(a); ok && uint32(x) != 0 {
 				gr = append(gr, uint32(x))

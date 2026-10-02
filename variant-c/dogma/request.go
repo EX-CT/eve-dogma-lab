@@ -1,7 +1,6 @@
 package dogma
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -21,10 +20,16 @@ var stateNames = [...]string{"offline", "online", "active", "overheated"}
 func (s State) String() string               { return stateNames[s] }
 func (s State) MarshalJSON() ([]byte, error) { return json.Marshal(stateNames[s]) }
 func (s *State) UnmarshalJSON(b []byte) error {
+	if n := len(b); n >= 2 && b[0] == '"' && b[n-1] == '"' {
+		for i, name := range stateNames {
+			if string(b[1:n-1]) == name { // no allocation: the conversion is only compared
+				*s = State(i)
+				return nil
+			}
+		}
+	}
 	var v string
-	if n := len(b); n >= 2 && b[0] == '"' && b[n-1] == '"' && bytes.IndexByte(b[1:n-1], '\\') < 0 {
-		v = string(b[1 : n-1]) // fast path: plain string without escapes
-	} else if err := json.Unmarshal(b, &v); err != nil {
+	if err := json.Unmarshal(b, &v); err != nil {
 		return err
 	}
 	for i, n := range stateNames {
@@ -62,6 +67,14 @@ func (s *Slot) UnmarshalJSON(b []byte) error {
 	if string(b) == "null" {
 		*s = SlotNone
 		return nil
+	}
+	if n := len(b); n >= 2 && b[0] == '"' && b[n-1] == '"' {
+		for i, name := range slotNames {
+			if i > 0 && string(b[1:n-1]) == name {
+				*s = Slot(i)
+				return nil
+			}
+		}
 	}
 	var v string
 	if err := json.Unmarshal(b, &v); err != nil {

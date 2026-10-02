@@ -203,6 +203,8 @@ type Dataset struct {
 	PublishedSkills []uint32
 	typesByGroup    map[uint32][]uint32
 	ids             wellKnown
+	canFitGroupA    []uint32 // canFitShipGroup01..20 attribute ids present in the dataset
+	canFitTypeA     []uint32 // canFitShipType1..11
 
 	maxAttr uint32 // largest attribute id (dense per-fit registry size)
 	// dense id-indexed views of Attrs/Effects/Types/Groups for the hot paths (nil = absent)
@@ -471,6 +473,17 @@ func (ds *Dataset) index() {
 	ds.PublishedSkills = skills
 	ds.attrD, ds.effectD, ds.typeD, ds.groupD = dense(ds.Attrs), dense(ds.Effects), dense(ds.Types), dense(ds.Groups)
 	ds.ids = newWellKnown(ds)
+	ds.canFitGroupA, ds.canFitTypeA = nil, nil
+	for _, n := range canFitGroupNames {
+		if a := ds.AttrID(n); a != 0 {
+			ds.canFitGroupA = append(ds.canFitGroupA, a)
+		}
+	}
+	for _, n := range canFitTypeNames {
+		if a := ds.AttrID(n); a != 0 {
+			ds.canFitTypeA = append(ds.canFitTypeA, a)
+		}
+	}
 }
 
 // betterNamed decides which of two same-named types wins the name lookup: published first, then lowest id.
