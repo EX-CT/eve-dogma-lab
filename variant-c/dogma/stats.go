@@ -18,7 +18,7 @@ func RangeFactor(optimal, falloff float64, distance *float64, restricted bool) f
 		if restricted && d > optimal+3*falloff {
 			return 0
 		}
-		x := math.Max(d-optimal, 0) / falloff
+		x := max(d-optimal, 0) / falloff
 		return math.Pow(0.5, x*x)
 	}
 	if d <= optimal {
@@ -32,7 +32,7 @@ func lockTime(scanRes, sig float64) any {
 		return nil
 	}
 	a := math.Asinh(sig)
-	return math.Min(40000/scanRes/(a*a), 1800)
+	return min(40000/scanRes/(a*a), 1800)
 }
 
 func floatUnerr(v float64) float64 { return math.Round(v*1e9) / 1e9 }
@@ -57,13 +57,13 @@ func Spoolup(maxV, step, cycleS float64, sp Spool) (float64, float64, float64) {
 	case "cycle_scale":
 		cycles = math.Round(sp.Amount * math.Ceil(floatUnerr(maxV/step)))
 	case "time":
-		cycles = math.Min(math.Floor(floatUnerr(sp.Amount/cycleS)), math.Ceil(floatUnerr(maxV/step)))
+		cycles = min(math.Floor(floatUnerr(sp.Amount/cycleS)), math.Ceil(floatUnerr(maxV/step)))
 	case "cycles":
-		cycles = math.Min(math.Floor(sp.Amount), math.Ceil(floatUnerr(maxV/step)))
+		cycles = min(math.Floor(sp.Amount), math.Ceil(floatUnerr(maxV/step)))
 	default: // spool_scale
 		cycles = math.Ceil(floatUnerr(maxV * sp.Amount / step))
 	}
-	return math.Min(cycles*step, maxV), cycles, cycles * cycleS
+	return min(cycles*step, maxV), cycles, cycles * cycleS
 }
 
 type dmg struct{ em, th, ki, ex float64 }
@@ -94,9 +94,9 @@ func (f *Fit) g(i int, name string) float64 { return f.Get(i, f.DS.AttrID(name))
 
 func (f *Fit) rawCycleMs(i int) float64 {
 	w := &f.DS.ids
-	v := math.Max(f.Get(i, w.speed), f.Get(i, w.duration))
+	v := max(f.Get(i, w.speed), f.Get(i, w.duration))
 	for _, a := range w.durationExtra {
-		v = math.Max(v, f.Get(i, a))
+		v = max(v, f.Get(i, a))
 	}
 	return v
 }
@@ -346,17 +346,17 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 					ft := floatUnerr(g(c, "explosionDelay")/1000 + radius/vel)
 					accelCap := g(c, "mass") * g(c, "agility") / 1e6
 					rangeAt := func(t float64) float64 {
-						acc := math.Min(t, accelCap)
+						acc := min(t, accelCap)
 						return vel/2*acc + vel*(t-acc)
 					}
 					lt, ht := math.Floor(ft), math.Ceil(ft)
 					lr, hr := rangeAt(lt), rangeAt(ht)
 					if f.hasEffect(c, ds.EffectID("fofMissileLaunching")) {
 						if lim := g(c, "maxFOFTargetRange"); lim > 0 {
-							lr, hr = math.Min(lr, lim), math.Min(hr, lim)
+							lr, hr = min(lr, lim), min(hr, lim)
 						}
 					}
-					lr, hr = math.Max(lr-radius, 0), math.Max(hr-radius, 0)
+					lr, hr = max(lr-radius, 0), max(hr-radius, 0)
 					hc := ft - lt
 					wo["range_m"] = lr*(1-hc) + hr*hc
 				}
@@ -448,7 +448,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	if req.DamagePattern != nil {
 		dp = *req.DamagePattern
 	}
-	dpTot := math.Max(dp.EM+dp.Thermal+dp.Kinetic+dp.Explosive, 1e-12)
+	dpTot := max(dp.EM+dp.Thermal+dp.Kinetic+dp.Explosive, 1e-12)
 	layer := func(prefix string) [4]float64 {
 		if prefix == "" {
 			return [4]float64{g(ship, "emDamageResonance"), g(ship, "thermalDamageResonance"), g(ship, "kineticDamageResonance"), g(ship, "explosiveDamageResonance")}
@@ -598,7 +598,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 			need *= f.Get(ship, ps.Resist)
 		}
 		if sres := g(ps.Item, "energyNeutralizerSignatureResolution"); sres != 0 {
-			need *= math.Min(sigNow/sres, 1)
+			need *= min(sigNow/sres, 1)
 		}
 		if dur := f.Get(ps.Item, ps.Duration); need != 0 && dur > 0 {
 			if need > 0 {
@@ -625,7 +625,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		stable := r.Stable && st > 0
 		capj["stable"] = stable
 		if stable {
-			capj["stable_percent"] = math.Min(st*100, 100)
+			capj["stable_percent"] = min(st*100, 100)
 		} else {
 			capj["depletes_in_s"] = r.TS
 		}
@@ -701,7 +701,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 				}
 			}
 			if maxS > 0 {
-				retain *= 1 - math.Min(st/maxS, 1)
+				retain *= 1 - min(st/maxS, 1)
 			}
 		}
 		if any {
@@ -711,14 +711,14 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	scanRes := g(ship, "scanResolution")
 	var probe any
 	if bestV > 0 {
-		probe = math.Max(sig/bestV, 1.08)
+		probe = max(sig/bestV, 1.08)
 	}
 	var ltTP any
 	if tp.SignatureRadius != nil {
 		ltTP = lockTime(scanRes, *tp.SignatureRadius)
 	}
 	targeting := obj{
-		"max_targets": math.Min(g(ship, "maxLockedTargets"), math.Max(g(ch, "maxLockedTargets"), 0)),
+		"max_targets": min(g(ship, "maxLockedTargets"), max(g(ch, "maxLockedTargets"), 0)),
 		"max_range_m": g(ship, "maxTargetRange"), "scan_resolution": scanRes, "sensor_strength": bestV, "sensor_type": bestN,
 		"jam_chance_percent": jam, "probe_size": probe,
 		"lock_time_s": obj{"sig_25m": lockTime(scanRes, 25), "sig_40m": lockTime(scanRes, 40), "sig_125m": lockTime(scanRes, 125),
@@ -1076,7 +1076,7 @@ func (f *Fit) sustainableTank(tank obj, stable, factorReload bool, modules []int
 				reload = f.Get(i, w.reload)
 			}
 			cyc := f.rawCycleMs(i)
-			sustain := math.Min((totalPeak-used)/r.capUse, 1)
+			sustain := min((totalPeak-used)/r.capUse, 1)
 			amount := g(i, r.attr)
 			if f.Items[i].Charge < 0 {
 				adj[r.l] += sustain * amount / (cyc / 1000)

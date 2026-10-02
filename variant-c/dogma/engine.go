@@ -279,7 +279,7 @@ func (f *Fit) applyMutation(idx int, m *Mutation) {
 					mn, mx = b, a
 				}
 				if bv != 0 {
-					v = math.Min(math.Max(v, mn), mx)
+					v = min(max(v, mn), mx)
 				}
 			}
 		}
@@ -1176,9 +1176,9 @@ func (f *Fit) registerBuffs(req *FitRequest) {
 			cur = b.Value
 		}
 		if info.Aggregate != nil && *info.Aggregate == "Minimum" {
-			cur = math.Min(cur, b.Value)
+			cur = min(cur, b.Value)
 		} else {
-			cur = math.Max(cur, b.Value)
+			cur = max(cur, b.Value)
 		}
 		agg[b.BuffID] = cur
 	}
@@ -1351,7 +1351,7 @@ func (f *Fit) applyRAH(req *FitRequest) {
 					c2 = -(c0 + c1) / 2
 					c3 = c2
 				} else {
-					c0, c1 = math.Min(shift, 1-t[0].res), math.Min(shift, 1-t[1].res)
+					c0, c1 = min(shift, 1-t[0].res), min(shift, 1-t[1].res)
 					c2 = -(c0 + c1) / 2
 					c3 = c2
 				}
@@ -1515,10 +1515,10 @@ func (f *Fit) Get(i int, attr uint32) float64 {
 	info := f.DS.attr(attr)
 	if info != nil {
 		if info.MinAttr != 0 {
-			val = math.Max(val, f.Get(i, info.MinAttr))
+			val = max(val, f.Get(i, info.MinAttr))
 		}
 		if info.MaxAttr != 0 {
-			val = math.Min(val, f.Get(i, info.MaxAttr))
+			val = min(val, f.Get(i, info.MaxAttr))
 		}
 		if info.round2 {
 			val = math.Round(val*100) / 100
@@ -1612,9 +1612,9 @@ func (f *Fit) fold(attr uint32, val float64, ms []*amod) float64 {
 				if !hasAssign {
 					assign, hasAssign = v, true
 				} else if hig {
-					assign = math.Max(assign, v)
+					assign = max(assign, v)
 				} else {
-					assign = math.Min(assign, v)
+					assign = min(assign, v)
 				}
 			case 2:
 				val += v

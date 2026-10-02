@@ -195,7 +195,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		} else {
 			d.CapNeed *= float64(n)
 		}
-		dur := uint64(math.Max(math.Round(d.Duration), 1))
+		dur := uint64(max(math.Round(d.Duration), 1))
 		period = period / gcd(period, dur) * dur
 		h.push(capEv{0, d.Duration, d.CapNeed, d.ReloadMs, 0, d.ClipSize, seq, false})
 		seq++
@@ -283,7 +283,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 			break
 		}
 		if tNow > tLast && capMax > 0 && tau > 0 {
-			x := math.Sqrt(math.Max(cap/capMax, 0))
+			x := math.Sqrt(max(cap/capMax, 0))
 			y := 1 + (x-1)*expOf(tLast-tNow)
 			cap = y * y * capMax
 		}
@@ -314,7 +314,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 		}
 		if ev.capNeed > cap && cap < capMax {
 			for len(awaiting) > 0 && ev.capNeed > cap && capMax > cap {
-				need := math.Min(ev.capNeed-cap, capMax-cap)
+				need := min(ev.capNeed-cap, capMax-cap)
 				pick := -1
 				for i := range awaiting {
 					if -awaiting[i].capNeed >= need && (pick < 0 || -awaiting[i].capNeed < -awaiting[pick].capNeed) {
@@ -330,11 +330,11 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 				}
 				inj := awaiting[pick]
 				awaiting = append(awaiting[:pick], awaiting[pick+1:]...)
-				cap = math.Min(cap-inj.capNeed, capMax)
+				cap = min(cap-inj.capNeed, capMax)
 				reschedule(inj, tNow)
 			}
 		}
-		cap = math.Min(cap-ev.capNeed, capMax)
+		cap = min(cap-ev.capNeed, capMax)
 		if cap < capLowest {
 			if cap < 0 {
 				ranOut = true
@@ -357,7 +357,7 @@ func SimulateCap(capacity, rechargeMs float64, drains []Drain, startFrac float64
 			}
 			inj := awaiting[pick]
 			awaiting = append(awaiting[:pick], awaiting[pick+1:]...)
-			cap = math.Min(cap-inj.capNeed, capMax)
+			cap = min(cap-inj.capNeed, capMax)
 			reschedule(inj, tNow)
 		}
 		next(&ev, tNow)
