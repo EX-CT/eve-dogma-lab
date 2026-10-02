@@ -64,7 +64,7 @@ id_table!(AttrIds {
     mass_bonus_pct = "massBonusPercentage", speed_boost_factor_bonus = "speedBoostFactorBonus",
     speed_factor_bonus = "speedFactorBonus", siege_warp_status = "siegeModeWarpStatus",
     dd_duration = "doomsdayDamageDuration", dd_cycle = "doomsdayDamageCycleTime",
-    sys_dmg_reduction = "systemEffectDamageReduction",
+    sys_dmg_reduction = "systemEffectDamageReduction", dot_max_dmg = "dotMaxDamagePerTick",
 } arrays {
     armor_res_bonus: [4] = ["Em", "Thermal", "Kinetic", "Explosive"].map(|s| format!("armor{s}DamageResistanceBonus")),
     shield_res_bonus: [4] = ["Em", "Thermal", "Kinetic", "Explosive"].map(|s| format!("shield{s}DamageResistanceBonus")),

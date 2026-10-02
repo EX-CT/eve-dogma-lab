@@ -49,7 +49,8 @@ pub fn spoolup(max: f64, step: f64, cycle_s: f64, spool: Spool) -> f64 {
 }
 
 #[derive(Default, Clone, Copy)]
-struct Dmg([f64; 4]);
+/// em, thermal, kinetic, explosive, breacher (untyped DoT damage, ignores resists)
+struct Dmg([f64; 5]);
 impl Dmg {
     fn total(&self) -> f64 {
         self.0.iter().sum()
@@ -58,12 +59,12 @@ impl Dmg {
         Dmg(self.0.map(|x| x * k))
     }
     fn add(&mut self, o: &Dmg) {
-        for k in 0..4 {
+        for k in 0..5 {
             self.0[k] += o.0[k];
         }
     }
     fn vs(&self, r: &Resists) -> f64 {
-        self.0[0] * (1.0 - r.em) + self.0[1] * (1.0 - r.thermal) + self.0[2] * (1.0 - r.kinetic) + self.0[3] * (1.0 - r.explosive)
+        self.0[0] * (1.0 - r.em) + self.0[1] * (1.0 - r.thermal) + self.0[2] * (1.0 - r.kinetic) + self.0[3] * (1.0 - r.explosive) + self.0[4]
     }
     fn json(&self) -> Value {
         json!({"em": self.0[0], "thermal": self.0[1], "kinetic": self.0[2], "explosive": self.0[3], "total": self.total()})
@@ -190,7 +191,14 @@ impl<'f, 'a> Ctx<'f, 'a> {
         if kind == "missile" && ch.is_some() {
             mult *= self.g(self.fit.char, a.missile_dmg_mult);
         }
-        Dmg(a.dmg.map(|d| self.g(src, d) * mult))
+        if let Some(c) = ch {
+            // breacher pods: one tick of the modified max damage per tick (no target HP known)
+            if a.dot_max_dmg != 0 && self.c.has(c, a.dot_max_dmg) && self.g(c, a.dot_max_dmg) > 0.0 {
+                return Dmg([0.0, 0.0, 0.0, 0.0, self.g(c, a.dot_max_dmg)]);
+            }
+        }
+        let d = a.dmg.map(|d| self.g(src, d) * mult);
+        Dmg([d[0], d[1], d[2], d[3], 0.0])
     }
 }
 
@@ -318,7 +326,8 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         if sub <= 0.0 {
             continue;
         }
-        let dps = if cyc > 0.0 { vol.scale(sub * 1000.0 / cyc) } else { Dmg::default() };
+        // breacher DoT ticks once per second while the (non-stacking) DoT runs
+        let dps = if vol.0[4] > 0.0 { vol.scale(1.0) } else if cyc > 0.0 { vol.scale(sub * 1000.0 / cyc) } else { Dmg::default() };
         w_vol.add(&vol);
         w_dps.add(&dps);
         let mut w = json!({
@@ -359,7 +368,8 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             continue;
         }
         let mult = if x.c.has(d, a.dmg_mult) { g(d, a.dmg_mult) } else { 1.0 };
-        let v = Dmg(a.dmg.map(|k| g(d, k))).scale(mult * n);
+        let dd = a.dmg.map(|k| g(d, k));
+        let v = Dmg([dd[0], dd[1], dd[2], dd[3], 0.0]).scale(mult * n);
         // damage cycle follows `speed` (rate of fire) when the drone has one, even if a
         // secondary effect (e.g. a web) carries a longer `duration`
         let sp = g(d, a.speed);
@@ -390,7 +400,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             }
             let m = g(f, at[0]);
             let m = if m == 0.0 { 1.0 } else { m };
-            let v = Dmg([g(f, at[1]), g(f, at[2]), g(f, at[3]), g(f, at[4])]).scale(m * n);
+            let v = Dmg([g(f, at[1]), g(f, at[2]), g(f, at[3]), g(f, at[4]), 0.0]).scale(m * n);
             let dur = g(f, at[5]);
             fv.add(&v);
             if dur > 0.0 {
