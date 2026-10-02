@@ -8,7 +8,9 @@ USAGE = """eve-dogma-g <command> [--dataset PATH] [args]
 
   calc [FILE]          FitRequest JSON (file or stdin) -> FitStats JSON
   batch [--chunk N]    JSONL FitRequests on stdin -> JSONL FitStats (evaluated N at a time as one NumPy batch)
-  serve-stdio          JSONL RPC {"id","method","params"} -> {"id","result"}; methods calc, meta, type, search
+  serve-stdio          JSONL RPC {"id","method","params"} -> {"id","result"};
+                       methods calc, eft_parse {text}, eft_export {fit,name?}, meta, type, search
+  eft [FILE] [--calc] [--skills N]   EFT text (file or stdin) -> FitRequest JSON (--calc: FitStats)
   meta                 dataset info
   type ID|NAME         type with base attributes
   search QUERY         search types by name
@@ -109,6 +111,21 @@ def main(argv=None):
             mid, meth, params = m.get("id"), m.get("method") or "calc", m.get("params")
             if meth == "calc":
                 res = calc(ds, params)
+            elif meth == "eft_parse":
+                from . import eft
+                try:
+                    t_ = params.get("text") if isinstance(params, dict) else None
+                    res = eft.parse(ds, t_ if isinstance(t_, str) else "")
+                except eft.EftError as e:
+                    res = {"error": {"code": "EFT_PARSE", "message": str(e)}}
+            elif meth == "eft_export":
+                from . import eft
+                p_ = params if isinstance(params, dict) else {}
+                try:
+                    res = {"text": eft.export(ds, p_.get("fit"), p_.get("name") if isinstance(p_.get("name"), str)
+                                              else "EXCT fit")}
+                except eft.RequestError as e:
+                    res = {"error": {"code": "BAD_REQUEST", "message": e.message}}
             elif meth == "meta":
                 res = _meta(ds)
             elif meth == "type":
@@ -119,6 +136,30 @@ def main(argv=None):
                 res = {"error": {"code": "UNKNOWN_METHOD", "message": str(meth)}}
             sys.stdout.write(dumps({"id": mid, "result": res}) + "\n")
             sys.stdout.flush()
+    elif cmd == "eft":
+        from . import eft
+        skills = None
+        if "--skills" in rest:
+            k = rest.index("--skills")
+            skills = rest[k + 1] if k + 1 < len(rest) else None
+            del rest[k:k + 2]
+        do_calc = "--calc" in rest
+        rest = [a for a in rest if a != "--calc"]
+        src = open(rest[0]).read() if rest and rest[0] != "-" else sys.stdin.read()
+        ds = _load(dpath)
+        try:
+            req = eft.parse(ds, src)
+        except eft.EftError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(2)
+        if skills is not None:
+            try:
+                lv = int(skills)
+                req["character"]["skills"]["default_level"] = lv if 0 <= lv <= 255 else None
+            except ValueError:
+                req["character"]["skills"]["default_level"] = None
+        out = calc(ds, req) if do_calc else req
+        print(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False))
     elif cmd == "meta":
         print(json.dumps(_meta(_load(dpath)), indent=1))
     elif cmd == "type":

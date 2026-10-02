@@ -1,0 +1,13 @@
+[Vexor, abyssal]
+Large Armor Repairer II [1]
+Medium Armor Repairer II [2]
+Hammerhead II x2 [3]
+
+[1] Medium Armor Repairer II
+  Gravid Medium Armor Repairer Mutaplasmid
+  armorDamageAmount 650.5, capacitorNeed 120, duration 9000.25
+[2] Medium Armor Repairer II
+  Decayed Medium Armor Repairer Mutaplasmid
+[3] Hammerhead II
+  Exigent Medium Drone Firepower Mutaplasmid
+  damageMultiplier 1.95

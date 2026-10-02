@@ -30,6 +30,7 @@ def main():
     ap.add_argument("--bench", default="/workspace/exct-eve/eve-dogma-bench")
     ap.add_argument("--dataset", default=os.environ.get("EVE_DOGMA_DATASET", "/workspace/exct-eve/data/dataset-3569502.json.gz"))
     a = ap.parse_args()
+    DATASET_PATH = a.dataset
     ds = dataset.load(a.dataset)
     bench = pathlib.Path(a.bench)
     sys.path.insert(0, str(bench / "tools"))
@@ -110,6 +111,22 @@ def main():
         bad += a != b
     check(bad == 0, f"capsim fast path differs in {bad}/300 random cases")
     print("unit checks done")
+
+    # 7. EFT import: outputs recorded from the reference engine (eve-dogma-rs 0e5a1ce) for tests/eft/*.txt
+    import glob as _g, subprocess as _sp
+    eft_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eft")
+    exe = os.path.join(os.path.dirname(eft_dir), "..", "bin", "eve-dogma-g")
+    n_ok = n_all = 0
+    for f in sorted(_g.glob(os.path.join(eft_dir, "*.txt"))):
+        r = _sp.run([exe, "--dataset", DATASET_PATH, "eft", f], capture_output=True, text=True)
+        got = r.stdout + f"rc {r.returncode}\n"
+        exp = open(f[:-4] + ".expected").read()
+        err_f = f[:-4] + ".expected_err"
+        exp_err = open(err_f).read() if os.path.exists(err_f) else ""
+        n_all += 1
+        n_ok += got == exp and r.stderr == exp_err
+    check(n_ok == n_all, f"EFT import {n_ok}/{n_all} identical to reference")
+    print(f"eft import: {n_ok}/{n_all} identical to reference")
     print("FAILED" if FAILS else "ALL OK", len(FAILS))
     sys.exit(1 if FAILS else 0)
 

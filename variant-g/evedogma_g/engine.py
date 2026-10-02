@@ -1088,6 +1088,8 @@ class Values:
         self._items = {}
         self._bases = {}
         self._full = ev.full.tolist()
+        self._defs = batch.ds._attr_def_list
+        self._n_def = len(self._defs)
         # item -> [lo, hi) range of its nodes
         it = ev.keys >> ATTR_BITS
         self._starts = np.searchsorted(it, np.arange(batch.n_items + 1))
@@ -1114,7 +1116,11 @@ class Values:
         if d is None:
             d = self.item_dict(item)
         v = d.get(attr)
-        return v if v is not None else self.ds.attr_default(attr)
+        if v is not None:
+            return v
+        if 0 <= attr < self._n_def:
+            return self._defs[attr]
+        return 0.0
 
     def has(self, item, attr):
         return attr in self.item_dict(item)

@@ -1,0 +1,89 @@
+{
+  "boosters": [],
+  "cargo": [],
+  "character": {
+    "security_status": null,
+    "skills": {
+      "default_level": null,
+      "levels": {}
+    }
+  },
+  "damage_pattern": null,
+  "drones": [
+    {
+      "active": 2,
+      "mutation": {
+        "attributes": {
+          "64": 1.95
+        },
+        "base_type_id": 2185,
+        "mutaplasmid_type_id": 60473
+      },
+      "quantity": 2,
+      "type_id": 60479
+    }
+  ],
+  "environment": {
+    "effect_type_ids": [],
+    "system_security": null
+  },
+  "fighters": [],
+  "fleet": {
+    "booster_fits": [],
+    "buffs": []
+  },
+  "implants": [],
+  "modules": [
+    {
+      "charge_type_id": null,
+      "mutation": {
+        "attributes": {
+          "6": 120.0,
+          "73": 9000.25,
+          "84": 650.5
+        },
+        "base_type_id": 3530,
+        "mutaplasmid_type_id": 47772
+      },
+      "slot": "low",
+      "spool": null,
+      "state": "active",
+      "type_id": 47773
+    },
+    {
+      "charge_type_id": null,
+      "mutation": {
+        "attributes": {},
+        "base_type_id": 3530,
+        "mutaplasmid_type_id": 47770
+      },
+      "slot": "low",
+      "spool": null,
+      "state": "active",
+      "type_id": 47773
+    }
+  ],
+  "options": {
+    "cap_sim": {
+      "max_time_s": null,
+      "reload": false,
+      "stagger": false
+    },
+    "default_spool": null,
+    "factor_reload": false,
+    "include_attributes": null,
+    "nos_no_target_cap": false,
+    "rah": null,
+    "sources": false,
+    "validate": true
+  },
+  "overrides": [],
+  "projected": [],
+  "schema_version": 1,
+  "ship": {
+    "mode_type_id": null,
+    "type_id": 626
+  },
+  "target_profile": null
+}
+rc 0

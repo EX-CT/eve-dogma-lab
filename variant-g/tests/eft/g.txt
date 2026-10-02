@@ -1,0 +1,3 @@
+[Rifter, x]
+Damage Control II
+200mm AutoCannon II,  Nonexistent Ammo
