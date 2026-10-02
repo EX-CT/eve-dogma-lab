@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "AMD",
+    "moduleResolution": "node10",
+    "outFile": "dist-web/eve-dogma-ts.amd.js",
+    
+    "declaration": false,
+    "sourceMap": false,
+    "rootDir": "src",
+    "lib": ["ES2022", "DOM"],
+    "types": []
+  },
+  "files": ["src/browser.ts"],
+  "include": []
+}

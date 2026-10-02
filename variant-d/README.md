@@ -17,3 +17,14 @@ Library: `import { calc, search, typeInfo } from './dist/index.js'` with a `Data
 `dist/node.js` (`loadDatasetFile`) or `dist/browser.js` (`loadDatasetUrl`, uses DecompressionStream + SubtleCrypto).
 The cache (`VDC2`) is a pure re-layout of the dataset (header JSON + lazily decoded per-type bodies); set
 `EVE_DOGMA_TS_NO_CACHE=1` to bypass it.
+
+## Browser
+
+```sh
+npm run build:web     # dist-web/eve-dogma-ts.js (classic script, global EveDogma) + eve-dogma-ts.mjs (ES module)
+npm run check:web     # bundle vs Node build: byte-identical output on all bench cases
+```
+Zero-dependency bundle: `tsc` emits one AMD file (tsconfig.browser.json) and `tools/bundle.mjs` wraps it with a
+20-line loader (~155 KB unminified). `web/index.html` is a demo page (serve the repo root, e.g.
+`python3 -m http.server`, open `variant-d/web/index.html?dataset=<url of dataset .json.gz>`); `?selftest=1` prints a
+one-line verdict (verified with headless Chrome: same values and dataset sha256 as the CLI).
