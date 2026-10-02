@@ -39,7 +39,8 @@ def main(argv=None):
     from evedogma_g import cli as gcli
     from .graph import Engine
     ds = gcli._load(dpath)
-    eng = Engine(ds, cache=not no_cache)
+    eng = Engine(ds, cache=not no_cache,
+                 dataset_path=dpath or os.environ.get("EVE_DOGMA_DATASET") or "dataset.json.gz")
     gc.disable()
     if cmd == "graph":
         src = open(rest[1]).read() if len(rest) > 1 and rest[1] != "-" else sys.stdin.read()

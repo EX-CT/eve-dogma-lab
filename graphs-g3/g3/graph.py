@@ -31,8 +31,9 @@ def _num(v):
 
 
 class Engine:
-    def __init__(self, ds, cache=True):
+    def __init__(self, ds, cache=True, dataset_path=None):
         self.ds = ds
+        self.dataset_path = dataset_path
         self.cache = FitCache(ds, enabled=cache)
 
     def graph(self, req):
