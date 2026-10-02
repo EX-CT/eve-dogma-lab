@@ -18,31 +18,48 @@ def _debug_err(e):
 def _batch(ds, parsed):
     """parsed requests -> (batch, values, fits-or-errors). Fleet booster fits of every request are evaluated
     first as one extra batch; their active burst modules become constant buff offers."""
-    boosters = []  # (owner request index, booster index, request)
+    subs = []  # (tag, owner request index, sub index, request): booster fits and projected source fits
     for k, p in enumerate(parsed):
         if isinstance(p, RequestError):
             continue
         for j, b in enumerate(p["fleet"]["booster_fits"]):
             bb = dict(b)
             bb["fleet"] = {"buffs": b["fleet"]["buffs"], "booster_fits": []}
-            boosters.append((k, j, bb))
-    offers = {}
-    warn = {}
-    if boosters:
-        bbatch, bvals, bfits = _batch(ds, [b[2] for b in boosters])
+            subs.append(("b", k, j, bb))
+        for j, pr in enumerate(p["projected"]):
+            if pr["kind"] == "fit" and pr["fit"] is not None:
+                sr = dict(pr["fit"])
+                sr["projected"] = []
+                subs.append(("p", k, j, sr))
+    offers, warn, frozen = {}, {}, {}
+    if subs:
+        sbatch, svals, sfits = _batch(ds, [x[3] for x in subs])
         pairs = [(ds.a(i), ds.a(v)) for i, v in engine.WARFARE_PAIRS]
-        for (k, j, _), f in zip(boosters, bfits):
+        for (tag, k, j, _), f in zip(subs, sfits):
+            if tag == "p":
+                if isinstance(f, RequestError):
+                    frozen.setdefault(k, {})[j] = _debug_err(f)
+                    continue
+                lst = []
+                for i in f.items:
+                    m = sbatch.meta[i]
+                    copies = 1 if (m["kind"] == engine.MODULE and m["state"] >= engine.ACTIVE) else \
+                        (m["active_count"] if m["kind"] == engine.DRONE else 0)
+                    if copies:
+                        lst.append((m["type_id"], copies, svals.item_dict(i)))
+                frozen.setdefault(k, {})[j] = lst
+                continue
             if isinstance(f, RequestError):
                 warn.setdefault(k, []).append(f"fleet.booster_fits[{j}]: {_debug_err(f)}")
                 continue
             lst = offers.setdefault(k, [])
             for i in f.modules:
-                if bbatch.meta[i]["state"] < engine.ACTIVE:
+                if sbatch.meta[i]["state"] < engine.ACTIVE:
                     continue
                 for ida, vala in pairs:
-                    bid = int(bvals.get(i, ida)) if bvals.has(i, ida) else 0
+                    bid = int(svals.get(i, ida)) if svals.has(i, ida) else 0
                     if bid:
-                        lst.append((bid, bvals.get(i, vala)))
+                        lst.append((bid, svals.get(i, vala)))
     batch = engine.Batch(ds)
     fits = []
     for k, p in enumerate(parsed):
@@ -50,7 +67,7 @@ def _batch(ds, parsed):
             fits.append(p)
             continue
         try:
-            f = batch.add_fit(p)
+            f = batch.add_fit(p, frozen.get(k))
         except RequestError as e:
             fits.append(e)
             continue

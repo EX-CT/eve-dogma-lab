@@ -1,8 +1,8 @@
 {
- "cases": 226,
- "identical_cases": 226,
- "leaf_total": 62991,
+ "cases": 249,
+ "identical_cases": 249,
+ "leaf_total": 71507,
  "leaf_mismatch": 0,
- "batch_s": 1.4657666209968738,
+ "batch_s": 2.1209699179962627,
  "cases_diff": {}
 }

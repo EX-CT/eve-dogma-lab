@@ -73,6 +73,32 @@ def _join(qkeys, tkeys_sorted, tvals_sorted):
     return q, tvals_sorted[pos]
 
 
+DAMAGE_EFFECTS = frozenset((
+    "projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack", "missileLaunchingForEntity",
+    "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente",
+    "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching"))
+
+
+class BaseOverrides(dict):
+    """(item, attr) -> base value, with a per-item index"""
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self._by_item = {}
+        for (i, at), v in self.items():
+            self._by_item.setdefault(i, {})[at] = v
+
+    def __setitem__(self, key, v):
+        super().__setitem__(key, v)
+        self._by_item.setdefault(key[0], {})[key[1]] = v
+
+    def of_item(self, i):
+        return self._by_item.get(i, {})
+
+    def copy(self):
+        return BaseOverrides(self)
+
+
 class Fit:
     """per-fit metadata (Python side). Item indices are global batch indices."""
 
@@ -80,6 +106,7 @@ class Fit:
         self.req = req
         self.index = index
         self.warnings = []
+        self.proj_special = []  # incoming remote reps / cap drains (stats)
         self.items = []  # non-skill items, global indices
         self.modules, self.drones, self.fighters = [], [], []
         self.error = None
@@ -94,7 +121,7 @@ class Batch:
         self.meta = []  # per item dict (slot, req_index, quantity, ...) - None for skills
         self.skill_blocks = []  # (fit, first item index, type idx array, level array)
         self.n_items = 0
-        self.overrides = {}  # (item, attr) -> base value
+        self.overrides = BaseOverrides()  # (item, attr) -> base value
         self.custom_effects = {}  # item -> list[(eff, default)] (mutated items)
         self.custom_reqskills = {}
         self.extra_rows = []  # (item, type idx, excluded effects) template rows from a mutation base type
@@ -168,13 +195,14 @@ class Batch:
                     val = min(max(val, min(a, b)), max(a, b))
             self.overrides[(i, aid)] = val
 
-    def add_fit(self, req):
+    def add_fit(self, req, projected_frozen=None):
         """Create all items of one request (no modifiers yet). Raises RequestError for unknown types."""
         ds = self.ds
         fit = Fit(req, len(self.fits))
+        fit.projected_frozen = projected_frozen
         n_items0, n_meta0 = self.n_items, len(self.meta)
         cols_len0 = {k: len(v) for k, v in self._cols.items()}
-        n_ov0 = dict(self.overrides)
+        n_ov0 = self.overrides.copy()
         try:
             self._add_fit_items(fit, req)
         except RequestError:
@@ -322,6 +350,30 @@ class Batch:
                         self._set_state(idx, m["state"] if m["state"] is not None else ACTIVE)
                         self.meta[idx]["distance"] = p["distance_m"]
                         self.meta[idx]["req_index"] = i
+                        if m["charge_type_id"] is not None:
+                            cidx = self._new_item(fit, m["charge_type_id"], CHARGE, L_NOWHERE,
+                                                  f"/projected/{i}/module/charge_type_id", owned=False)
+                            self._cols["parent"][cidx] = idx
+                            self._cols["charge"][idx] = cidx
+                            self.meta[cidx]["parent"] = idx
+                            self.meta[idx]["charge"] = cidx
+            elif p["kind"] == "fit":
+                # whole projected fit, computed beforehand on its own (calc._batch): active modules and drones
+                # are projected as frozen items carrying the source fit's modified attribute values
+                frozen = (getattr(fit, "projected_frozen", None) or {}).get(i)
+                if frozen is None:
+                    continue
+                if isinstance(frozen, str):
+                    fit.warnings.append(f"projected[{i}] fit: {frozen}")
+                    continue
+                for type_id, copies, vals in frozen:
+                    for _ in range(copies * max(p["amount"], 1)):
+                        idx = self._new_item(fit, type_id, PROJECTED, L_NOWHERE, f"/projected/{i}", owned=False)
+                        self._set_state(idx, ACTIVE)
+                        self.meta[idx]["distance"] = p["distance_m"]
+                        self.meta[idx]["req_index"] = i
+                        for at, v in vals.items():
+                            self.overrides[(idx, at)] = v
             elif p["kind"] == "drone":
                 if p["drone"]:
                     d = p["drone"]
@@ -588,9 +640,7 @@ class Batch:
         if it["state"] < ACTIVE:
             return
         base = ds.type_attrs(it["ti"])
-        for (k_item, k_attr), v in self.overrides.items():
-            if k_item == i:
-                base[k_attr] = v
+        base.update(self.overrides.of_item(i))
         for en, (eid, _) in enumerate(it["effects"]):
             e = ds.eff_info.get(eid)
             if e is None or e["category"] not in (2, 3):
@@ -617,12 +667,65 @@ class Batch:
                 push(a("maxVelocity"), a("speedFactor"), 6)
             elif nm.startswith("remoteTargetPaint") or nm == "structureModuleEffectTargetPainter":
                 push(a("signatureRadius"), a("signatureRadiusBonus"), 6)
-            elif nm.startswith("remoteSensorDamp") or nm == "structureModuleEffectRemoteSensorDampener" \
-                    or nm.startswith("remoteSensorBoost"):
+            elif nm.startswith("remoteSensorDamp") or nm == "structureModuleEffectRemoteSensorDampener":
                 push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
                 push(a("scanResolution"), a("scanResolutionBonus"), 6)
+            elif nm.startswith("remoteSensorBoost"):
+                push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
+                push(a("scanResolution"), a("scanResolutionBonus"), 6)
+                for t in ("Gravimetric", "Ladar", "Magnetometric", "Radar"):
+                    push(a(f"scan{t}Strength"), a(f"scan{t}StrengthPercent"), 6)
             else:
-                fit.warnings.append(f"projected effect '{nm}' not modelled yet")
+                ps = self._proj_special(fit, i, nm, resist, base)
+                if ps is not None:
+                    fit.proj_special.extend(ps)
+                elif nm not in DAMAGE_EFFECTS:
+                    fit.warnings.append(f"projected effect '{nm}' not modelled yet")
+
+    def _proj_special(self, fit, i, nm, resist, base):
+        """projected effects that feed tank / capacitor stats instead of attributes (Pyfa: remote reps, addDrain)"""
+        ds = self.ds
+        a = ds.a
+        it = self.meta[i]
+        b = lambda n: base.get(a(n), 0.0)  # noqa: E731
+        dist = it["distance"]
+        falloff = lambda: range_factor(b("maxRange"), b("falloffEffectiveness"), dist, True)  # noqa: E731
+        gate = lambda opt: 0.0 if opt < (dist or 0.0) else 1.0  # noqa: E731
+        ship = fit.ship
+        da = a("disallowAssistance")
+        sb = self.overrides.get((ship, da))
+        if sb is None:
+            sb = ds.type_attr(self.meta[ship]["ti"], da)
+        no_assist = sb is not None and sb != 0.0
+        rep = lambda layer, amt, mult, factor: [] if no_assist else [("rep", i, layer, a(amt), mult, factor)]  # noqa: E731
+        drain = lambda amt, dur, factor, sign: [("drain", i, a(amt), a(dur), factor, resist, sign)]  # noqa: E731
+        c = it["charge"]
+        paste = c is not None and ds.t_name[self.meta[c]["ti"]] == "Nanite Repair Paste"
+        if nm in ("shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster"):
+            return rep(0, "shieldBonus", 1.0, falloff())
+        if nm in ("shipModuleRemoteArmorRepairer", "ShipModuleRemoteArmorMutadaptiveRepairer"):
+            return rep(1, "armorDamageAmount", 1.0, falloff())
+        if nm == "shipModuleAncillaryRemoteArmorRepairer":
+            return rep(1, "armorDamageAmount", 3.0 if paste else 1.0, falloff())
+        if nm == "shipModuleRemoteHullRepairer":
+            return rep(2, "structureDamageAmount", 1.0, falloff())
+        if nm == "npcEntityRemoteShieldBooster":
+            return rep(0, "shieldBonus", 1.0, gate(b("maxRange")))
+        if nm == "npcEntityRemoteArmorRepairer":
+            return rep(1, "armorDamageAmount", 1.0, gate(b("maxRange")))
+        if nm == "npcEntityRemoteHullRepairer":
+            return rep(2, "structureDamageAmount", 1.0, gate(b("maxRange")))
+        if nm == "shipModuleRemoteCapacitorTransmitter":
+            return [] if no_assist else drain("powerTransferAmount", "duration", gate(b("maxRange")), -1.0)
+        if nm == "energyNeutralizerFalloff":
+            return drain("energyNeutralizerAmount", "duration", falloff(), 1.0)
+        if nm == "energyNosferatuFalloff":
+            return drain("powerTransferAmount", "duration", falloff(), 1.0)
+        if nm == "structureEnergyNeutralizerFalloff":
+            return drain("energyNeutralizerAmount", "duration", 1.0, 1.0)
+        if nm == "entityEnergyNeutralizerFalloff":
+            return drain("energyNeutralizerAmount", "energyNeutralizerDuration", gate(b("energyNeutralizerRangeOptimal")), 1.0)
+        return None
 
     def loc_ship_items(self, fit):
         return [i for i in fit.items if self.meta[i]["kind"] in (SHIP, MODULE, CHARGE)]
@@ -947,6 +1050,13 @@ class Values:
     def base(self, item, attr):
         p = self._pos(item, attr)
         return float(self.ev.base[p]) if p >= 0 else self.ds.attr_default(attr)
+
+    def item_dict(self, i):
+        """all evaluated attributes of one item {attr: value}"""
+        lo = int(np.searchsorted(self._keys, i << ATTR_BITS))
+        hi = int(np.searchsorted(self._keys, (i + 1) << ATTR_BITS))
+        mask = (1 << ATTR_BITS) - 1
+        return {k & mask: v for k, v in zip(self._keys[lo:hi].tolist(), self.ev.val[lo:hi].tolist())}
 
     def many(self, items, attr):
         """vector get for many items, same attribute"""

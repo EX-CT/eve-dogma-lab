@@ -227,7 +227,27 @@ class FitStats:
                 w["tracking"] = g(i, "trackingSpeed")
             elif kind == "missile":
                 if c is not None:
-                    w["range_m"] = g(c, "maxVelocity") * (g(c, "explosionDelay") / 1000.0)
+                    vel = g(c, "maxVelocity")
+                    if vel > 0.0:
+                        # Pyfa missile range: flight time + ship radius, acceleration phase, floor/ceil blend,
+                        # FoF limit, centre-to-surface
+                        radius = g(ship, "radius")
+                        ft = float_unerr(g(c, "explosionDelay") / 1000.0 + radius / vel)
+                        accel_cap = g(c, "mass") * g(c, "agility") / 1e6
+
+                        def range_at(t):
+                            acc = min(t, accel_cap)
+                            return vel / 2.0 * acc + vel * (t - acc)
+
+                        lt, ht = math.floor(ft), math.ceil(ft)
+                        lr, hr = range_at(lt), range_at(ht)
+                        if self.has_eff(c, ("fofMissileLaunching",)):
+                            lim = g(c, "maxFOFTargetRange")
+                            if lim > 0.0:
+                                lr, hr = min(lr, lim), min(hr, lim)
+                        lr, hr = max(lr - radius, 0.0), max(hr - radius, 0.0)
+                        hc = ft - lt
+                        w["range_m"] = lr * (1.0 - hc) + hr * hc
                     w["explosion_radius"] = g(c, "aoeCloudSize")
                     w["explosion_velocity"] = g(c, "aoeVelocity")
             elif kind == "smartbomb":
@@ -325,6 +345,27 @@ class FitStats:
                 armor_rep += g(i, "armorDamageAmount") * (3.0 if paste else 1.0) / dur
             if self.has_eff(i, ("structureRepair",)):
                 hull_rep += g(i, "structureDamageAmount") / dur
+        # incoming remote repairs (Pyfa's diminishing-returns formula for stacked remote reps)
+        lists = ([], [], [])
+        for ps in fit.proj_special:
+            if ps[0] == "rep":
+                _, item, layer, amount, mult, factor = ps
+                dur = g(item, "duration") / 1000.0
+                if dur > 0.0:
+                    lists[layer].append((v.get(item, amount) * mult * factor, dur))
+
+        def applied(lst):
+            total = sum(a_ / math.trunc(c_) for a_, c_ in lst)
+            out_ = 0.0
+            for a_, c_ in lst:
+                rrps = a_ / math.trunc(c_)
+                m_ = 7000.0 + rrps * 20.0
+                out_ += (1.0 - (((rrps + m_) / (total + m_)) - 1.0) ** 2) * a_ / c_
+            return out_
+
+        shield_rep += applied(lists[0])
+        armor_rep += applied(lists[1])
+        hull_rep += applied(lists[2])
         srr = g(ship, "shieldRechargeRate") / 1000.0
         passive = 10.0 / srr * 0.5 * 0.5 * hp_s if srr > 0.0 else 0.0
         defense = {
@@ -368,6 +409,20 @@ class FitStats:
                 drains.append((float(math.trunc(full)), cap_need, self.num_shots(i), g(i, "reloadTime"), is_inj,
                                self.has_eff(i, ("turretFitted",))))
             rows.append(row)
+        # incoming neuts / nos / cap transfers: extra simulation drains after the fit's own modules
+        sig_now = g(ship, "signatureRadius")
+        for ps in fit.proj_special:
+            if ps[0] == "drain":
+                _, item, amount, duration, factor, resist, sign = ps
+                need = v.get(item, amount) * factor * sign
+                if resist:
+                    need *= v.get(ship, resist)
+                sres = g(item, "energyNeutralizerSignatureResolution")
+                if sres != 0.0:
+                    need *= min(sig_now / sres, 1.0)
+                dur = v.get(item, duration)
+                if need != 0.0 and dur > 0.0:
+                    drains.append((float(math.trunc(dur)), need, 0, 0.0, False, False))
         capj = {"capacity": cap, "recharge_time_s": rr / 1000.0, "peak_recharge_gj_s": peak, "use_gj_s": cap_used,
                 "injected_gj_s": cap_added, "delta_gj_s": peak + cap_added - cap_used}
         if not drains:
