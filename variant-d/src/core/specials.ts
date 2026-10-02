@@ -52,6 +52,9 @@ ACTIVE.set('entosisLink', ({ fit, item, cat }) => {
 const portal: SpecialHandler = ({ fit, item, cat }) => {
   fit.pushAttr(fit.ship, fit.ds.attrId('signatureRadius'), 6, item, fit.ds.attrId('signatureRadiusBonusPercent'), cat);
 };
+ACTIVE.set('moduleBonusBreacherPodDamageControl', ({ fit, item }) => {
+  fit.pushAttr(fit.ship, fit.ds.attrId('breacherPodDamageResistance'), 6, item, fit.ds.attrId('breacherPodActivatedDamageReceivedPercentage'), 6);
+});
 ACTIVE.set('microJumpPortalDrive', portal);
 ACTIVE.set('microJumpPortalDriveCapital', portal);
 ACTIVE.set('warpDisruptSphere', ({ fit, item }) => {

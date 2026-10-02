@@ -391,6 +391,10 @@ export class Fit extends AttrGraph {
           const used = it.fighterAbilities !== null ? it.fighterAbilities.includes(eid) : pe.isDefault;
           if (!used) continue;
         }
+        if (kind === Kind.Beacon && e.name === 'OffensiveDefensiveReduction') {
+          this.incursionEffect(i);
+          continue;
+        }
         // Pyfa 'active' handlers for module effects without modifiers (some are target-category in the SDE)
         if (pe.active !== null && kind === Kind.Module && state >= State.Active) {
           pe.active({ fit: this, item: i, cat });
@@ -451,7 +455,7 @@ export class Fit extends AttrGraph {
     const look = (n: string) => { const a = ds.attrId(n); return this.has(i, a) ? Math.trunc(this.base(i, a)) : 0; };
     for (const [eid] of it.effects) {
       const e = ds.effects.get(eid);
-      if (!e || (e.category !== 2 && e.category !== 3 && e.name !== 'ECMBurstJammer')) continue;
+      if (!e || (e.category !== 2 && e.category !== 3 && e.name !== 'ECMBurstJammer' && !e.name.startsWith('doomsdayAOE'))) continue;
       const isFighterAbility = e.name.startsWith('fighterAbility');
       if (it.fighterAbilities !== null && isFighterAbility && !it.fighterAbilities.includes(eid)) continue;
       if (it.state < State.Active) continue;
@@ -464,13 +468,51 @@ export class Fit extends AttrGraph {
       else resist = look('remoteResistanceID');
       const push = (targetAttr: number, srcAttr: number, op: number) =>
         this.push(ship, targetAttr, op, { k: SrcK.Projected, item: i, attr: srcAttr, v: factor, a2: resist, a3: ship, mul: op === 4 || op === 0 }, i, it.category);
-      if (e.mods.length > 0) {
+      // burst projectors and the Standup weapon disruptor stay engine-side even if a dataset revision gives them
+      // modifiers (the generic path has no AoE full-strength rule)
+      const engineSide = e.name.startsWith('doomsdayAOE') || e.name === 'structureModuleEffectWeaponDisruption';
+      if (e.mods.length > 0 && !engineSide) {
         for (const m of e.mods) {
           if ((m.domain === Domain.TargetId || m.domain === Domain.Target || m.domain === Domain.Ship) && m.func === Func.Item) push(m.modified, m.modifying, m.op);
         }
         continue;
       }
       const pbase = (n: string) => { const a = ds.attrId(n); return this.has(i, a) ? this.base(i, a) : 0; };
+      // burst projectors (Pyfa Effect6476-6482/6513): full strength on every ship in the AoE (no range factor)
+      const full = (t: number, ta: string, sa: string) =>
+        this.push(t, ds.attrId(ta), 6, { k: SrcK.Projected, item: i, attr: ds.attrId(sa), v: 1, a2: resist, a3: ship, mul: false }, i, it.category);
+      switch (e.name) {
+        case 'doomsdayAOEWeb': if (targetOffenseOk) full(ship, 'maxVelocity', 'speedFactor'); continue;
+        case 'doomsdayAOEPaint': if (targetOffenseOk) full(ship, 'signatureRadius', 'signatureRadiusBonus'); continue;
+        case 'doomsdayAOEDamp':
+          if (targetOffenseOk) { full(ship, 'maxTargetRange', 'maxTargetRangeBonus'); full(ship, 'scanResolution', 'scanResolutionBonus'); }
+          continue;
+        case 'doomsdayAOENeut':
+          this.projSpecial.push({ kind: 'drain', item: i, amount: ds.attrId('energyNeutralizerAmount'), duration: ds.attrId('duration'), factor: 1, resist, sign: 1 });
+          continue;
+        case 'doomsdayAOEECM':
+          if (targetOffenseOk) this.projSpecial.push({ kind: 'ecm', item: i, fighter: false, factor: 1, resist });
+          continue;
+        case 'doomsdayAOEBubble': case 'doomsdayAOEGuide': continue;
+      }
+      if (e.name === 'doomsdayAOETrack' || e.name === 'structureModuleEffectWeaponDisruption') {
+        // AoE weapon disruption burst (full strength) / Standup Weapon Disruptor (range factor): turrets and missiles
+        if (targetOffenseOk) {
+          const tf = e.name === 'doomsdayAOETrack' ? 1 : rangeFactor(pbase('maxRange'), pbase('falloffEffectiveness'), it.distance, true);
+          const gun = ds.typeByName('Gunnery') ?? 0, mls = ds.typeByName('Missile Launcher Operation') ?? 0;
+          const n = this.items.length;
+          for (let t = 0; t < n; t++) {
+            const ti = this.items[t];
+            if (ti.loc !== Loc.Ship || !ti.owned) continue;
+            const pairs = ti.kind === Kind.Module && ti.reqSkills.includes(gun) ? TD_PAIRS : ti.kind === Kind.Charge && ti.reqSkills.includes(mls) ? GD_PAIRS : null;
+            if (pairs === null) continue;
+            for (const [sa, ta] of pairs) {
+              this.push(t, ds.attrId(ta), 6, { k: SrcK.Projected, item: i, attr: ds.attrId(sa), v: tf, a2: resist, a3: ship, mul: false }, i, it.category);
+            }
+          }
+        }
+        continue;
+      }
       if (e.name === 'fighterAbilityStasisWebifier') {
         if (targetOffenseOk) {
           const f = rangeFactor(pbase('fighterAbilityStasisWebifierOptimalRange'), pbase('fighterAbilityStasisWebifierFalloffRange'), it.distance, true) * qty;
@@ -495,9 +537,7 @@ export class Fit extends AttrGraph {
         if (allowed) {
           const td = e.name !== 'shipModuleGuidanceDisruptor';
           const sk = ds.typeByName(td ? 'Gunnery' : 'Missile Launcher Operation') ?? 0;
-          const pairs = td
-            ? [['trackingSpeedBonus', 'trackingSpeed'], ['maxRangeBonus', 'maxRange'], ['falloffBonus', 'falloff']]
-            : [['aoeCloudSizeBonus', 'aoeCloudSize'], ['aoeVelocityBonus', 'aoeVelocity'], ['missileVelocityBonus', 'maxVelocity'], ['explosionDelayBonus', 'explosionDelay']];
+          const pairs = td ? TD_PAIRS : GD_PAIRS;
           // TD drones (Pyfa Effect6694): full strength inside maxRange, nothing beyond
           const tf = e.name === 'npcEntityWeaponDisruptor'
             ? (pbase('maxRange') < (it.distance ?? 0) ? 0 : 1)
@@ -521,6 +561,35 @@ export class Fit extends AttrGraph {
       const feed = projectedFeed(this, i, e.name, resist);
       if (feed !== null) this.projSpecial.push(...feed);
       else if (!PROJECTED_DAMAGE_EFFECTS.has(e.name)) this.warnings.push(`projected effect '${e.name}' not modelled yet`);
+    }
+  }
+
+  /**
+   * Sansha / Drifter incursion system effects (Pyfa Effect4728 OffensiveDefensiveReduction, LGPL; re-expressed):
+   * unpenalised PostPercent of missile-charge and smartbomb damage, turret and drone damageMultiplier by
+   * systemEffectDamageReduction, and of the ship's armor/shield resonances by the beacon's resistance bonuses.
+   */
+  private incursionEffect(b: number): void {
+    const ds = this.ds;
+    const a = (n: string) => ds.attrId(n);
+    const red = a('systemEffectDamageReduction');
+    const mls = ds.typeByName('Missile Launcher Operation') ?? 0;
+    const gunnery = ds.typeByName('Gunnery') ?? 0;
+    let smartbomb = 0;
+    for (const [k, g] of ds.groups) if (g.name === 'Smart Bomb') { smartbomb = k; break; }
+    const n = this.items.length;
+    for (let t = 0; t < n; t++) {
+      const it = this.items[t];
+      if (!it.owned || (it.loc !== Loc.Ship && it.kind !== Kind.Drone)) continue;
+      let dmg = false, mult = false;
+      if (it.kind === Kind.Charge) dmg = it.reqSkills.includes(mls);
+      else if (it.kind === Kind.Module) { dmg = it.group === smartbomb; mult = it.reqSkills.includes(gunnery); }
+      else if (it.kind === Kind.Drone) mult = true;
+      if (dmg) for (const d of ['em', 'thermal', 'kinetic', 'explosive']) this.pushAttr(t, a(`${d}Damage`), 6, b, red, 6);
+      if (mult) this.pushAttr(t, a('damageMultiplier'), 6, b, red, 6);
+    }
+    for (const d of ['Em', 'Thermal', 'Kinetic', 'Explosive']) {
+      for (const l of ['armor', 'shield']) this.pushAttr(this.ship, a(`${l}${d}DamageResonance`), 6, b, a(`${l}${d}DamageResistanceBonus`), 6);
     }
   }
 
@@ -556,6 +625,18 @@ export class Fit extends AttrGraph {
       }
     };
     scan(this, true);
+    // abyssal weather / AoE cloud beacons (Pyfa weather_* / aoe_beacon_* effects): warfareBuff1/2 of the environment
+    // item join the same pool (strongest |value| per buff id)
+    for (const it of this.items) {
+      if (it.kind !== Kind.Beacon) continue;
+      if (!it.effects.some(([e]) => { const n = ds.effects.get(e)?.name ?? ''; return n.startsWith('weather_') || n.startsWith('aoe_beacon_'); })) continue;
+      for (const [ida, vala] of pairs.slice(0, 2)) {
+        const id = this.has(it.idx, ida) ? Math.trunc(this.get(it.idx, ida)) : 0;
+        if (id === 0 || agg.has(id)) continue;
+        const v = this.get(it.idx, vala);
+        offer(id, v, { k: SrcK.Const, v }, it.idx);
+      }
+    }
     req.fleet.booster_fits.forEach((bf, k) => {
       try {
         scan(Fit.build(ds, normalize({ ...bf, fleet: { ...(bf.fleet ?? {}), booster_fits: [] } })), false);
@@ -576,13 +657,32 @@ export class Fit extends AttrGraph {
     if (!info) return;
     const op = info.op;
     const ship = this.ship;
-    const cat = 0; // buffs are never exempt
+    // Pyfa applies most buffs stacking-penalised; the abyssal weather resistance/HP/velocity buffs are not
+    const cat = WEATHER_UNPENALISED.has(id) ? 6 : 0;
     for (const a of info.item) this.push(ship, a, op, s, sourceItem, cat);
+    // AoE cloud / weather buffs also hit drones that require the Drones skill (Pyfa fit.py commandBonus)
+    const droneAttrs = BUFF_DRONE_ATTRS[id];
+    if (droneAttrs !== undefined) {
+      for (const d of this.items) {
+        if (d.kind !== Kind.Drone || !d.reqSkills.includes(3436)) continue;
+        for (const n of droneAttrs) { const a = this.ds.attrId(n); if (a !== 0) this.push(d.idx, a, op, s, sourceItem, cat); }
+      }
+    }
     for (const a of info.location) for (const t of this.targets(ship, Func.Location, Domain.Ship, 0)) this.push(t, a, op, s, sourceItem, cat);
     for (const [a, g] of info.location_group) for (const t of this.targets(ship, Func.LocationGroup, Domain.Ship, g)) this.push(t, a, op, s, sourceItem, cat);
     for (const [a, sk] of info.location_skill) for (const t of this.targets(ship, Func.LocationRequiredSkill, Domain.Ship, sk)) this.push(t, a, op, s, sourceItem, cat);
   }
 }
+
+const WEATHER_UNPENALISED = new Set([90, 93, 94, 95, 96, 98, 99]);
+const BUFF_DRONE_ATTRS: Record<number, string[]> = {
+  79: ['signatureRadius'],
+  90: ['shieldEmDamageResonance', 'armorEmDamageResonance', 'emDamageResonance'],
+  93: ['shieldExplosiveDamageResonance', 'armorExplosiveDamageResonance', 'explosiveDamageResonance'],
+  95: ['shieldThermalDamageResonance', 'armorThermalDamageResonance', 'thermalDamageResonance'],
+  99: ['shieldKineticDamageResonance', 'armorKineticDamageResonance', 'kineticDamageResonance'],
+  94: ['shieldCapacity'], 96: ['armorHP'], 97: ['maxRange', 'falloff'], 98: ['maxVelocity'],
+};
 
 /** Pyfa default fighter abilities: standard attack on; others (except MWD/evasive/MJD) only before it in effect id order. */
 function defaultFighterAbilities(ds: Dataset, effects: [number, number][]): number[] {
@@ -675,6 +775,10 @@ function skillReach(plan: Plan): Reach {
   const always = plan.hasSpecial || checks.some((m) => (m.domain === Domain.Ship || m.domain === Domain.Char) && (m.func === Func.Item || m.func === Func.Location));
   return { always, checks };
 }
+
+/** [source bonus attribute, target attribute] of weapon disruption: turrets (TD/RTC) and missile charges (GD) */
+const TD_PAIRS: [string, string][] = [['trackingSpeedBonus', 'trackingSpeed'], ['maxRangeBonus', 'maxRange'], ['falloffBonus', 'falloff']];
+const GD_PAIRS: [string, string][] = [['aoeCloudSizeBonus', 'aoeCloudSize'], ['aoeVelocityBonus', 'aoeVelocity'], ['missileVelocityBonus', 'maxVelocity'], ['explosionDelayBonus', 'explosionDelay']];
 
 function planFor(ds: Dataset, typeId: number, effects: [number, number][], eBastion: number): Plan {
   let p = PLANS.get(effects);
