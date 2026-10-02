@@ -23,6 +23,9 @@ Commands:
 
 Dataset: --dataset PATH, or $EVE_DOGMA_DATASET, or ./dataset.json.gz`;
 
+/** sample request (bench case exct_rifter) used to warm the code cache in `cache` */
+const WARMUP_REQUEST = '{"character":{"skills":{"default_level":5}},"drones":[{"active":2,"quantity":2,"type_id":2488}],"modules":[{"slot":"low","state":"active","type_id":2048},{"slot":"low","state":"active","type_id":519},{"slot":"low","state":"active","type_id":20347},{"slot":"mid","state":"active","type_id":438},{"slot":"mid","state":"active","type_id":448},{"slot":"mid","state":"active","type_id":527},{"charge_type_id":21898,"slot":"high","state":"active","type_id":2889},{"charge_type_id":21898,"slot":"high","state":"active","type_id":2889},{"charge_type_id":21898,"slot":"high","state":"active","type_id":2889},{"charge_type_id":24473,"slot":"high","state":"active","type_id":10631},{"slot":"rig","state":"online","type_id":31674},{"slot":"rig","state":"online","type_id":31686},{"slot":"rig","state":"online","type_id":31015}],"ship":{"type_id":587}}';
+
 const args = process.argv.slice(2);
 function takeFlag(f: string): string | null {
   const p = args.indexOf(f);
@@ -128,6 +131,14 @@ async function main() {
     case 'cache': {
       // precompute the fast-start cache for the dataset (pure re-layout of the same data)
       out(writeCache(datasetPath(datasetArg)));
+      // launcher bundle: run one sample calc on the cached dataset, then save V8's code cache for the engine
+      const cc = (globalThis as any).__eveDogmaCodeCache as (() => string | null) | undefined;
+      if (cc) {
+        const ds = load();
+        for (let k = 0; k < 3; k++) calcJson(ds, WARMUP_REQUEST);
+        const f = cc();
+        if (f) out(f);
+      }
       break;
     }
     case 'search': out(JSON.stringify(search(load(), args.slice(1).join(' '), 25), null, 2)); break;
