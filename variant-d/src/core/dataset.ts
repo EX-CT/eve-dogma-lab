@@ -38,6 +38,15 @@ export interface TypeInfo {
   effects: [number, number][];
 }
 
+/** Read-only id -> TypeInfo store (a Map for the JSON loader, a lazily materialising table for the cache). */
+export interface TypeStore {
+  get(id: number): TypeInfo | undefined;
+  has(id: number): boolean;
+  readonly size: number;
+  /** ascending type id order */
+  [Symbol.iterator](): IterableIterator<[number, TypeInfo]>;
+}
+
 export interface GroupInfo { name: string; category: number }
 export interface DbuffInfo {
   name: string | null; aggregate: string | null; op: number;
@@ -52,7 +61,7 @@ export class Dataset {
   build = 0;
   releaseDate: string | null = null;
   sha256 = '';
-  types = new Map<number, TypeInfo>();
+  types: TypeStore = new Map<number, TypeInfo>();
   groups = new Map<number, GroupInfo>();
   /** category id -> name */
   categories = new Map<number, string>();
@@ -66,7 +75,7 @@ export class Dataset {
   publishedSkills: number[] = [];
   private attrByName = new Map<string, number>();
   private effectByName = new Map<string, number>();
-  private typeByNameMap = new Map<string, number>();
+  private typeByNameMap: Map<string, number> | null = null;
   private typeAttrCache = new Map<number, Map<number, number>>();
   private reqSkillCache = new Map<number, number[]>();
   private modeCache = new Map<number, number | null>();
@@ -145,15 +154,7 @@ export class Dataset {
   /** register one type (raw dataset shape, or a cache record exposing the same fields); ids ascending */
   addType(id: number, t: any): void {
     const name: string = t.name ?? '';
-    const key = name.toLowerCase();
-    const prev = this.typeByNameMap.get(key);
-    // prefer published types; among equals keep the lowest id (deterministic)
-    if (prev === undefined || (t.published && !this.types.get(prev)!.published)) this.typeByNameMap.set(key, id);
     if (t.category === 16) this.skills.push(id);
-    if (t instanceof Object && 'rawAttrs' in t) {
-      this.types.set(id, t as TypeInfo);
-      return;
-    }
     // reuse the parsed raw object in place (no per-type allocation)
     t.id = id;
     t.name = name;
@@ -163,7 +164,7 @@ export class Dataset {
     t.variationParent = t.variation_parent ?? null;
     t.rawAttrs = t.attrs ?? {};
     t.effects ??= [];
-    this.types.set(id, t as TypeInfo);
+    (this.types as Map<number, TypeInfo>).set(id, t as TypeInfo);
   }
 
   finishTypes(): void {
@@ -184,7 +185,19 @@ export class Dataset {
 
   attrId(name: string): number { return this.attrByName.get(name) ?? 0; }
   effectId(name: string): number { return this.effectByName.get(name) ?? 0; }
-  typeByName(name: string): number | undefined { return this.typeByNameMap.get(name.trim().toLowerCase()); }
+  typeByName(name: string): number | undefined {
+    if (this.typeByNameMap === null) {
+      // built on first use; prefer published types, among equals keep the lowest id (deterministic)
+      const m = new Map<string, number>();
+      for (const [id, t] of this.types) {
+        const key = t.name.toLowerCase();
+        const prev = m.get(key);
+        if (prev === undefined || (t.published && !this.types.get(prev)!.published)) m.set(key, id);
+      }
+      this.typeByNameMap = m;
+    }
+    return this.typeByNameMap.get(name.trim().toLowerCase());
+  }
   /** attribute default values indexed by id (dense; built in initCommon) */
   private defArr = new Float64Array(0);
   attrDefault(id: number): number { return id < this.defArr.length ? this.defArr[id] : 0; }

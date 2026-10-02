@@ -1,15 +1,18 @@
-/** Node-only helpers (file + gzip + sha256 + VDC2 cache). The core never imports this. */
+/** Node-only helpers (file + gzip + sha256 + VDC3 cache). The core never imports this. */
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gunzipSync } from 'node:zlib';
 import { buildCache, datasetFromCache, isCache } from './core/cache.js';
 import { Dataset } from './core/dataset.js';
 
 function readJsonBytes(path: string): Buffer {
   let bytes: Buffer = readFileSync(path);
-  if (bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = gunzipSync(bytes);
+  if (bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    // zlib is loaded only when needed (~20 ms of startup otherwise; the cache path never needs it)
+    const zlib = (process as any).getBuiltinModule('node:zlib') as typeof import('node:zlib');
+    bytes = zlib.gunzipSync(bytes);
+  }
   return bytes;
 }
 
@@ -19,24 +22,24 @@ export function cachePath(datasetFile: string): string {
   const st = statSync(abs);
   const key = createHash('sha1').update(abs).digest('hex').slice(0, 16);
   const pkg = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  return join(pkg, '.cache', `${key}-${st.size}-${Math.trunc(st.mtimeMs)}.vdc2`);
+  return join(pkg, '.cache', `${key}-${st.size}-${Math.trunc(st.mtimeMs)}.vdc3`);
 }
 
-/** Load a dataset: a VDC2 cache file, a prebuilt cache for this dataset file if present, else the gz/JSON itself. */
+/** Load a dataset: a VDC3 cache file, a prebuilt cache for this dataset file if present, else the gz/JSON itself. */
 export function loadDatasetFile(path: string, useCache = true): Dataset {
   if (useCache && !process.env.EVE_DOGMA_TS_NO_CACHE) {
     try {
       const cp = cachePath(path);
-      if (existsSync(cp)) return datasetFromCache(readFileSync(cp, 'utf8'));
+      if (existsSync(cp)) return datasetFromCache(readFileSync(cp));
     } catch { /* fall back to the full load */ }
   }
   const bytes = readJsonBytes(path);
-  if (bytes.length > 4 && bytes.subarray(0, 5).toString() === 'VDC2\n') return datasetFromCache(bytes.toString('utf8'));
+  if (isCache(bytes)) return datasetFromCache(bytes);
   const sha = createHash('sha256').update(bytes).digest('hex');
   return Dataset.fromJson(JSON.parse(bytes.toString('utf8')), sha);
 }
 
-/** Build (or rebuild) the VDC2 cache for a dataset file; returns its path. */
+/** Build (or rebuild) the VDC3 cache for a dataset file; returns its path. */
 export function writeCache(path: string): string {
   const bytes = readJsonBytes(path);
   const sha = createHash('sha256').update(bytes).digest('hex');
