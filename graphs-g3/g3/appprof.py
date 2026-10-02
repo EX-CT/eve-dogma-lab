@@ -6,6 +6,7 @@ and the source's webs / painters enter through a sampled, linearly interpolated 
 import gzip
 import json
 import math
+import os
 from bisect import bisect_right
 
 import numpy as np
@@ -21,11 +22,29 @@ _META = {}
 
 
 def _meta_groups(ds, path):
+    """type id -> meta group (only in the raw dataset JSON); memoised in-process and in a sidecar next to
+    variant G's dataset cache, keyed by the dataset sha256"""
     m = _META.get(ds.sha256)
-    if m is None:
+    if m is not None:
+        return m
+    from evedogma_g.dataset import default_cache_dir
+    side = os.path.join(default_cache_dir(), f"g3-metagroups-{ds.sha256}.json")
+    try:
+        with open(side) as f:
+            m = {int(k): v for k, v in json.load(f).items()}
+    except (OSError, ValueError):
         with gzip.open(path) as f:
             d = json.load(f)
-        m = _META[ds.sha256] = {int(k): t.get("meta_group") for k, t in d["types"].items()}
+        m = {int(k): t.get("meta_group") for k, t in d["types"].items()}
+        try:
+            os.makedirs(os.path.dirname(side), exist_ok=True)
+            tmp = side + f".{os.getpid()}.tmp"
+            with open(tmp, "w") as f:
+                json.dump({k: v for k, v in m.items() if v is not None}, f)
+            os.replace(tmp, side)
+        except OSError:
+            pass
+    _META[ds.sha256] = m
     return m
 
 

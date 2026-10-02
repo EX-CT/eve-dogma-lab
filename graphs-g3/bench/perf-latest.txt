@@ -1,0 +1,5 @@
+a) corpus: 111 requests, 1274 points; cold-cache 318 ms = 4,010 points/s; warm-cache 45.2 ms = 28,214 points/s
+b) dense damage/distance 500 pts (kronos): cold fit 3.3 ms, warm fit 0.42 ms
+d) damage/distance 100k pts warm: 52 ms = 1,905,090 points/s (incl. JSON-ready lists)
+c) cold start + one damage request (process wall): 184 ms
+e) --no-cache identical output: 111/111
