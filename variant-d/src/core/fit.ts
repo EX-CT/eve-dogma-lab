@@ -321,6 +321,7 @@ export class Fit extends AttrGraph {
 
   /** every attribute id present on an item (type, base overrides, modified cells) */
   attrKeys(i: number): number[] {
+    this.flushDeferred(i);
     const it = this.items[i];
     const keys = new Set<number>(it.tattrs.keys());
     if (it.base) for (const k of it.base.keys()) keys.add(k);
@@ -369,6 +370,8 @@ export class Fit extends AttrGraph {
     const ds = this.ds;
     const eBastion = ds.effectId('moduleBonusBastionModule');
     const structureOk = new Set(STRUCTURE_SKILL_EFFECT_NAMES.map((n) => ds.effectId(n)));
+    const ship = this.ship;
+    const shipAttrs = this.items[ship].tattrs;
     const n = this.items.length;
     for (let i = 0; i < n; i++) {
       const it = this.items[i];
@@ -409,7 +412,13 @@ export class Fit extends AttrGraph {
         for (const m of pe.mods) {
           const c = m.bastion ? 6 : cat;
           const ts = this.targets(i, m.func, m.domain, m.extra);
-          for (let k = 0; k < ts.length; k++) this.pushAttrNS(ts[k], m.modified, m.op, i, m.modifying, c, m.nonStack);
+          for (let k = 0; k < ts.length; k++) {
+            const t = ts[k];
+            // skill bonus to a ship attribute the hull does not have: deferred until that attribute is touched
+            if (kind === Kind.Skill && t === ship && !shipAttrs.has(m.modified) && this.canDefer(t, m.modified)) {
+              this.deferAttrMod(m.modified, m.op, i, m.modifying, m.nonStack && !EXEMPT_CATEGORIES.has(c));
+            } else this.pushAttrNS(t, m.modified, m.op, i, m.modifying, c, m.nonStack);
+          }
         }
       }
     }

@@ -49,6 +49,7 @@ export function computeStats(fit: Fit, req: NormRequest): unknown {
 }
 
 export function dumpAttrs(fit: Fit, i: number): Record<string, number> {
+  fit.flushDeferred(i);
   const it = fit.items[i];
   const keys = new Set<number>(it.tattrs.keys());
   if (it.base) for (const k of it.base.keys()) keys.add(k);

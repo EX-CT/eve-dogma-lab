@@ -74,6 +74,7 @@ interface AttrPost { min: number | null; max: number | null; round2: boolean; hi
 /** per-dataset memo of AttrPost by attribute id (shared by all fits of a dataset) */
 interface PostTable { post: (AttrPost | null)[]; known: Uint8Array }
 const POST = new WeakMap<Dataset, PostTable>();
+const NO_MARK = new Uint8Array(0);
 /** evaluation stack for modifier source values (see evalCell) */
 let scratch = new Float64Array(1024);
 let scratchTop = 0;
@@ -104,7 +105,8 @@ export class AttrGraph {
 
   has(i: number, a: number): boolean {
     const it = this.items[i];
-    return it.ovA === a || (it.base !== null && it.base.has(a)) || it.tattrs.has(a) || (it.cells !== null && it.cells.has(a));
+    return it.ovA === a || (it.base !== null && it.base.has(a)) || it.tattrs.has(a) || (it.cells !== null && it.cells.has(a)) ||
+      (i === this.defItem && a < this.defMark.length && this.defMark[a] === 1);
   }
 
   setBase(i: number, a: number, v: number): void {
@@ -122,8 +124,59 @@ export class AttrGraph {
     }
   }
 
+  // ------------------------------------------------------------------ deferred modifiers
+  // Attribute-sourced modifiers onto one item (the ship: skill bonuses to ship attributes its type does not have,
+  // e.g. every other race's shipBonus*) are kept as plain columns and only become Mods/cells when that attribute is
+  // touched at all: read (get/has), given a cell by another modifier, or listed (attrKeys/dumpAttrs). Deferring
+  // happens only while the attribute has no cell, so the order of mods in every cell is the same as without it.
+  private defItem = -1;
+  private defMark: Uint8Array = NO_MARK;
+  /** deferred modifiers, 4 numbers each: target attribute (-1 = done), source item, source attribute, (op + 1) | 64 if penalised */
+  defs: number[] = [];
+
+  /** can a modifier onto (i, a) be deferred: i is the deferral item and (i, a) has no cell yet */
+  canDefer(i: number, a: number): boolean {
+    if (this.defItem === -1) this.defItem = i;
+    else if (i !== this.defItem) return false;
+    const it = this.items[i];
+    return it.cells === null || !it.cells.has(a);
+  }
+
+  deferAttrMod(a: number, op: number, srcItem: number, srcAttr: number, pen: boolean): void {
+    if (a >= this.defMark.length) {
+      const n = new Uint8Array(Math.max(a + 1, this.defMark.length * 2, 4096));
+      n.set(this.defMark);
+      this.defMark = n;
+    }
+    this.defMark[a] = 1;
+    this.defs.push(a, srcItem, srcAttr, (op + 1) | (pen ? 64 : 0));
+  }
+
+  /** turn the deferred modifiers of attribute a (or all, a = -1) into Mods, in registration order */
+  private materialize(a: number): void {
+    const d = this.defs, mark = this.defMark, i = this.defItem;
+    for (let k = 0; k < d.length; k += 4) {
+      const x = d[k];
+      if (x < 0 || (a >= 0 && x !== a)) continue;
+      d[k] = -1;
+      mark[x] = 0;
+      const src = d[k + 1], o = d[k + 3];
+      this.cellRaw(i, x).mods.push({ op: (o & 63) - 1, pen: o >= 64, k: SrcK.Attr, item: src, attr: d[k + 2], v: NaN, a2: 0, a3: -1, mul: false, src });
+    }
+  }
+
+  /** materialise every deferred modifier of item i (before listing its attributes) */
+  flushDeferred(i: number): void {
+    if (i === this.defItem) this.materialize(-1);
+  }
+
   // ------------------------------------------------------------------ modifiers
   cell(i: number, a: number): Cell {
+    if (i === this.defItem && a < this.defMark.length && this.defMark[a] === 1) this.materialize(a);
+    return this.cellRaw(i, a);
+  }
+
+  private cellRaw(i: number, a: number): Cell {
     const it = this.items[i];
     if (it.cells === null) it.cells = new Map();
     let c = it.cells.get(a);
@@ -165,7 +218,11 @@ export class AttrGraph {
   /** Modified value; missing attribute -> attribute default (no post-processing), like eve-dogma-rs. */
   get(i: number, a: number): number {
     const it = this.items[i];
-    const c = it.cells !== null ? it.cells.get(a) : undefined;
+    let c = it.cells !== null ? it.cells.get(a) : undefined;
+    if (c === undefined && i === this.defItem && a < this.defMark.length && this.defMark[a] === 1) {
+      this.materialize(a);
+      c = it.cells!.get(a);
+    }
     if (c !== undefined) return this.evalCell(i, a, c);
     if (!this.has(i, a)) return this.ds.attrDefault(a);
     const v = this.base(i, a);
