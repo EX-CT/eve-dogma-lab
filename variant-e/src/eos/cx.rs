@@ -114,6 +114,7 @@ pub enum Kind {
     Mode,
     ProjModule,
     ProjDrone,
+    ProjFighter,
 }
 
 pub struct Item<'a> {
@@ -164,6 +165,7 @@ pub struct Fit<'a> {
     pub default_level: u8,
     pub proj_modules: Vec<It>,
     pub proj_drones: Vec<It>,
+    pub proj_fighters: Vec<It>,
     pub structure: bool,
     pub factor_reload: bool,
     pub pilot_sec: Option<f64>,
@@ -177,6 +179,10 @@ pub struct Fit<'a> {
     pub rr: Vec<(usize, f64, f64)>,
     /// set while running gang effects of a command fit: bonuses go here instead of the fit
     pub gang_sink: Option<Vec<CommandBonus>>,
+    /// Fit.__ecmProjectedList
+    pub ecm: Vec<f64>,
+    /// afflictions of the local repair extras (tank kind 0 shield / 1 armor / 2 hull, afflictor), in order
+    pub rep_afflictions: Vec<(usize, It)>,
     pub warnings: Vec<String>,
     // ---- current handler context
     pub ctx_flags: u16,
@@ -427,6 +433,18 @@ impl<'a> Fit<'a> {
 
     pub fn extra_increase(&mut self, a: u32, v: f64) {
         let s = self.ship;
+        if v != 0.0 && self.modifier != NONE {
+            let k = match crate::generated::effects::EXTRA_ATTRS.iter().find(|x| x.0 == a).map(|x| x.1) {
+                Some("shieldRepair") => 0,
+                Some("armorRepair") => 1,
+                Some("hullRepair") => 2,
+                _ => 9,
+            };
+            if k < 9 {
+                let m = self.modifier;
+                self.rep_afflictions.push((k, m));
+            }
+        }
         self.op(s, Op::Increase, a, v, O::default());
     }
     pub fn extra_boost(&mut self, a: u32, v: f64) {

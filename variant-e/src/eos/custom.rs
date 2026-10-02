@@ -98,6 +98,36 @@ pub fn run(cx: &mut Cx, eid: u32, me: It) -> bool {
             amount *= cx.resistance();
             add_drain(cx, me, time, amount);
         }
+        // ECM: fit.addProjectedEcm
+        6437 | 6470 | 6513 | 6685 | 6695 | 6714 => {
+            if !cx.ctx(Ctx::Projected) || cx.g(cx.ship, "disallowOffensiveModifiers") != 0.0 {
+                return true;
+            }
+            let st = ["Magnetometric", "Ladar", "Radar", "Gravimetric", "Multispectral"][cx.scan_type()];
+            let pr = cx.proj_range.unwrap_or(0.0);
+            let mut strength;
+            match eid {
+                6437 => {
+                    let p = "fighterAbilityECM";
+                    strength = cx.g(me, &format!("{p}Strength{st}")) * cx.items[me].amount as f64;
+                    strength *= rf(cx, me, &format!("{p}RangeOptimal"), &format!("{p}RangeFalloff"));
+                }
+                _ => {
+                    if eid == 6695 && cx.gd(me, "ECMRangeOptimal", 0.0) < pr {
+                        return true;
+                    }
+                    if eid == 6714 && cx.gd(me, "ecmBurstRange", 0.0) < pr {
+                        return true;
+                    }
+                    strength = cx.g(me, &format!("scan{st}StrengthBonus"));
+                    if eid == 6470 || eid == 6685 {
+                        strength *= rf(cx, me, "maxRange", "falloffEffectiveness");
+                    }
+                }
+            }
+            strength *= cx.resistance();
+            cx.ecm.push(strength);
+        }
         6434 => {
             if !cx.ctx(Ctx::Projected) {
                 return true;

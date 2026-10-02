@@ -68,6 +68,9 @@ fn one() -> u32 {
 fn yes() -> bool {
     true
 }
+fn null_true<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(Option::<bool>::deserialize(d)?.unwrap_or(true))
+}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct DroneReq {
@@ -80,15 +83,21 @@ pub struct DroneReq {
     pub mutation: Option<Mutation>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct FighterReq {
     pub type_id: u32,
     #[serde(default)]
     pub quantity: Option<u32>,
-    #[serde(default = "yes")]
+    #[serde(default = "yes", deserialize_with = "null_true")]
     pub active: bool,
     #[serde(default)]
     pub abilities: Option<Vec<u32>>,
+}
+
+impl Default for FighterReq {
+    fn default() -> Self {
+        FighterReq { type_id: 0, quantity: None, active: true, abilities: None }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -142,6 +151,8 @@ pub struct Projected {
     pub module: Option<ModuleReq>,
     #[serde(default)]
     pub drone: Option<DroneReq>,
+    #[serde(default)]
+    pub fighter: Option<FighterReq>,
     #[serde(default)]
     pub fit: Option<Box<FitRequest>>,
     #[serde(default = "one")]

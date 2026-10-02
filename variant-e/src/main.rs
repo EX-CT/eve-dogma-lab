@@ -25,9 +25,9 @@ fn meta(ds: &Dataset) -> Value {
 }
 
 fn out(v: &Value) {
-    let mut o = std::io::stdout().lock();
-    let _ = serde_json::to_writer(&mut o, v);
-    let _ = o.write_all(b"\n");
+    let mut buf = serde_json::to_vec(v).unwrap_or_default();
+    buf.push(b'\n');
+    let _ = std::io::stdout().lock().write_all(&buf);
 }
 
 fn main() {
@@ -80,13 +80,17 @@ fn main() {
         }
         "batch" => {
             let stdin = std::io::stdin();
+            let mut w = std::io::BufWriter::with_capacity(1 << 16, std::io::stdout().lock());
             for line in stdin.lock().lines() {
                 let Ok(line) = line else { break };
                 if line.trim().is_empty() {
                     continue;
                 }
-                out(&api::calc_str(&ds, &line));
+                let v = api::calc_str(&ds, &line);
+                let _ = serde_json::to_writer(&mut w, &v);
+                let _ = w.write_all(b"\n");
             }
+            let _ = w.flush();
         }
         "serve-stdio" => {
             let stdin = std::io::stdin();

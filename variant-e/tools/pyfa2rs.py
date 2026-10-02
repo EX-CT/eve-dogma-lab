@@ -591,7 +591,14 @@ class Fn:
             raise Untranslatable(f"fit.{meth}")
         if base.kind == "extra":
             if meth == "increase":
-                self.emit(f"cx.extra_increase({attr_id(pyval(self.expr(args[0])))}, {as_num(self.expr(args[1]))});")
+                amt = as_num(self.expr(args[1]))
+                for k in n.keywords:
+                    if k.arg == "skill":
+                        sv = self.expr(k.value)
+                        if sv.const is None:
+                            raise Untranslatable("extra skill kw")
+                        amt = f"({amt}) * cx.skill_level({type_id(sv.const)})"
+                self.emit(f"cx.extra_increase({attr_id(pyval(self.expr(args[0])))}, {amt});")
                 return V("none")
             if meth == "boost":
                 self.emit(f"cx.extra_boost({attr_id(pyval(self.expr(args[0])))}, {as_num(self.expr(args[1]))});")

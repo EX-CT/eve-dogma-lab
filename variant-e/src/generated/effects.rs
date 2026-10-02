@@ -5803,7 +5803,7 @@ fn e912(cx: &mut Cx, me: It) {
 }
 /// shipDronesMaxGC2
 fn e918(cx: &mut Cx, me: It) {
-    cx.extra_increase(352, cx.attr(me, 658));
+    cx.extra_increase(352, (cx.attr(me, 658)) * cx.skill_level(3332));
 }
 /// shipHybridTrackingGC2
 fn e919(cx: &mut Cx, me: It) {
@@ -6001,7 +6001,7 @@ fn e1080(cx: &mut Cx, me: It) {
 }
 /// eliteBonusHeavyGunshipDroneControlRange1
 fn e1084(cx: &mut Cx, me: It) {
-    cx.extra_increase(1000007, cx.attr(me, 692));
+    cx.extra_increase(1000007, (cx.attr(me, 692)) * cx.skill_level(16591));
 }
 /// eliteBonusHeavyGunshipProjectileDmg2
 fn e1087(cx: &mut Cx, me: It) {

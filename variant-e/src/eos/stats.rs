@@ -6,7 +6,7 @@ use super::capsim::{self, Drain};
 use super::cx::*;
 use super::fit::{extra_attr, meta};
 use crate::request::{FitRequest, SlotReq, Spool, SpoolType};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 const INF: f64 = f64::INFINITY;
 
@@ -31,7 +31,7 @@ impl Dmg {
         Dmg { em: self.em * f, th: self.th * f, ki: self.ki * f, ex: self.ex * f }
     }
     fn json(&self) -> Value {
-        json!({"em": self.em, "thermal": self.th, "kinetic": self.ki, "explosive": self.ex, "total": self.total()})
+        obj(vec![("em", Value::from(self.em)), ("thermal", Value::from(self.th)), ("kinetic", Value::from(self.ki)), ("explosive", Value::from(self.ex)), ("total", Value::from(self.total()))])
     }
     fn vs(&self, r: [f64; 4]) -> Value {
         let d = Dmg { em: self.em * (1.0 - r[0]), th: self.th * (1.0 - r[1]), ki: self.ki * (1.0 - r[2]), ex: self.ex * (1.0 - r[3]) };
@@ -518,6 +518,131 @@ impl<'a> Fit<'a> {
         }
     }
 
+    /// Drone.maxRange
+    fn drone_max_range(&self, d: It) -> Option<f64> {
+        for a in ["shieldTransferRange", "powerTransferRange", "energyDestabilizationRange", "empFieldRange", "ecmBurstRange", "maxRange", "ECMRangeOptimal"] {
+            let v = self.g(d, a);
+            if v != 0.0 {
+                return Some(v);
+            }
+        }
+        let c = self.items[d].charge;
+        if c != NONE {
+            return Some(self.g(c, "explosionDelay") / 1000.0 * self.g(c, "maxVelocity"));
+        }
+        None
+    }
+    fn drone_falloff(&self, d: It) -> Option<f64> {
+        for a in ["falloff", "falloffEffectiveness"] {
+            let v = self.g(d, a);
+            if v != 0.0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    /// Fit.calculateSustainableTank: local repairers limited by capacitor (shield, armor, hull)
+    fn sustainable_tank(&self, base: [f64; 3], cap_stable: bool, cap_used: f64, cap_recharge: f64) -> [f64; 3] {
+        let mut out = base;
+        if cap_stable && !self.factor_reload {
+            return out;
+        }
+        let ds = self.ds;
+        let gattr = |g: &str| -> Option<&'static str> {
+            match g {
+                "Shield Booster" | "Ancillary Shield Booster" => Some("shieldBonus"),
+                "Armor Repair Unit" | "Ancillary Armor Repairer" => Some("armorDamageAmount"),
+                "Hull Repair Unit" => Some("structureDamageAmount"),
+                _ => None,
+            }
+        };
+        let gstore = |g: &str| -> usize {
+            match g {
+                "Shield Booster" | "Ancillary Shield Booster" => 0,
+                "Armor Repair Unit" | "Ancillary Armor Repairer" => 1,
+                _ => 2,
+            }
+        };
+        let mut adj = [0.0f64; 3];
+        let mut repairers: Vec<It> = Vec::new();
+        let mut cap_used = cap_used;
+        for kind in 0..3 {
+            for &(k, a) in &self.rep_afflictions {
+                if k != kind {
+                    continue;
+                }
+                let it = &self.items[a];
+                if !matches!(it.kind, Kind::Module) {
+                    continue;
+                }
+                let gname = ds.group_name(it.t.group);
+                let Some(attr) = gattr(gname) else { continue };
+                let cu = self.cap_use(a);
+                let uses_cap = cu != 0.0;
+                if uses_cap {
+                    cap_used -= cu;
+                }
+                let c = it.charge;
+                let ct = self.raw_cycle_time(a);
+                if uses_cap && c == NONE {
+                    adj[kind] -= self.g(a, attr) / (ct / 1000.0);
+                    repairers.push(a);
+                } else if uses_cap {
+                    let mult = if self.items[c].t.name == "Nanite Repair Paste" {
+                        let m = self.g(a, "chargedArmorDamageMultiplier");
+                        if m != 0.0 { m } else { 1.0 }
+                    } else {
+                        1.0
+                    };
+                    adj[kind] -= self.g(a, attr) * mult / (ct / 1000.0);
+                    repairers.push(a);
+                } else if gname == "Ancillary Shield Booster" || gname == "Ancillary Remote Shield Booster" {
+                    let rt = if self.factor_reload && c != NONE { self.reload_time(a) } else { 0.0 };
+                    let off = rt / ((self.num_shots(a).max(1.0) * ct) + rt);
+                    adj[kind] -= self.g(a, attr) * off / (ct / 1000.0);
+                }
+            }
+        }
+        let key = |m: It| {
+            let attr = gattr(ds.group_name(self.items[m].t.group)).unwrap_or("");
+            let cm = self.g(m, "chargedArmorDamageMultiplier");
+            self.g(m, attr) * (if cm != 0.0 { cm } else { 1.0 }) / self.g(m, "capacitorNeed")
+        };
+        // Python sort(reverse=True) is stable
+        repairers.sort_by(|a, b| key(*b).partial_cmp(&key(*a)).unwrap_or(std::cmp::Ordering::Equal));
+        for &a in &repairers {
+            if cap_used > cap_recharge {
+                break;
+            }
+            let c = self.items[a].charge;
+            let rt = if self.factor_reload && c != NONE { self.reload_time(a) } else { 0.0 };
+            let ct = self.raw_cycle_time(a);
+            let cps = self.cap_use(a);
+            let sustain = ((cap_recharge - cap_used) / cps).min(1.0);
+            let gname = ds.group_name(self.items[a].t.group);
+            let amount = self.g(a, gattr(gname).unwrap_or(""));
+            if c == NONE {
+                adj[gstore(gname)] += sustain * amount / (ct / 1000.0);
+            } else {
+                let mult = if self.items[c].t.name == "Nanite Repair Paste" {
+                    let m = self.g(a, "chargedArmorDamageMultiplier");
+                    if m != 0.0 { m } else { 1.0 }
+                } else {
+                    1.0
+                };
+                let ns = self.num_shots(a).max(1.0);
+                let on = (ns * ct) / ((ns * ct) + rt);
+                adj[gstore(gname)] += sustain * amount * on * mult / (ct / 1000.0);
+            }
+            cap_used += cps;
+        }
+        for i in 0..3 {
+            out[i] += adj[i];
+        }
+        out
+    }
+
     /// Module.maxRange
     pub fn max_range(&self, m: It) -> Option<f64> {
         for a in ["maxRange", "shieldTransferRange", "powerTransferRange", "energyDestabilizationRange", "empFieldRange",
@@ -619,7 +744,7 @@ impl<'a> Fit<'a> {
             .iter()
             .map(|c| ds.types.get(&c.type_id).and_then(|t| t.attr(161)).unwrap_or(0.0) * c.quantity as f64)
             .sum();
-        let usage = |u: f64, t: f64| json!({"used": u, "total": t});
+        let usage = |u: f64, t: f64| obj(vec![("used", Value::from(u)), ("total", Value::from(t))]);
         let count = |sl: SlotReq| mods.iter().filter(|&&m| self.slot_of(m) == Some(sl)).count() as f64;
         let hp_used = |h: u8| mods.iter().filter(|&&m| self.hardpoint(m) == h).count() as f64;
         let fclass = |m: It| -> &'static str {
@@ -635,30 +760,7 @@ impl<'a> Fit<'a> {
         };
         let factive: Vec<It> = self.fighters.iter().copied().filter(|&f| self.items[f].active).collect();
         let fcls = |c: &str| factive.iter().filter(|&&f| fclass(f) == c).count() as f64;
-        let resources = json!({
-            "cpu": usage(cpu_used, s("cpuOutput")),
-            "power": usage(pg_used, s("powerOutput")),
-            "calibration": usage(calib, s("upgradeCapacity")),
-            "drone_bandwidth": usage(bw, s("droneBandwidth")),
-            "drone_bay": usage(bay, s("droneCapacity")),
-            "fighter_bay": usage(fbay, s("fighterCapacity")),
-            "cargo": usage(cargo, s("capacity")),
-            "slots": {
-                "high": usage(count(SlotReq::High), s("hiSlots")),
-                "mid": usage(count(SlotReq::Mid), s("medSlots")),
-                "low": usage(count(SlotReq::Low), s("lowSlots")),
-                "rig": usage(count(SlotReq::Rig), s("rigSlots")),
-                "subsystem": usage(count(SlotReq::Subsystem), s("maxSubSystems")),
-                "service": usage(count(SlotReq::Service), s("serviceSlots")),
-            },
-            "hardpoints": {"turret": usage(hp_used(1), s("turretSlotsLeft")), "launcher": usage(hp_used(2), s("launcherSlotsLeft"))},
-            "fighter_tubes": {
-                "total": usage(factive.len() as f64, s("fighterTubes")),
-                "light": usage(fcls("light"), s("fighterLightSlots") + s("fighterStandupLightSlots")),
-                "support": usage(fcls("support"), s("fighterSupportSlots") + s("fighterStandupSupportSlots")),
-                "heavy": usage(fcls("heavy"), s("fighterHeavySlots") + s("fighterStandupHeavySlots")),
-            },
-        });
+        let resources = obj(vec![("cpu", Value::from(usage(cpu_used, s("cpuOutput")))), ("power", Value::from(usage(pg_used, s("powerOutput")))), ("calibration", Value::from(usage(calib, s("upgradeCapacity")))), ("drone_bandwidth", Value::from(usage(bw, s("droneBandwidth")))), ("drone_bay", Value::from(usage(bay, s("droneCapacity")))), ("fighter_bay", Value::from(usage(fbay, s("fighterCapacity")))), ("cargo", Value::from(usage(cargo, s("capacity")))), ("slots", obj(vec![("high", Value::from(usage(count(SlotReq::High), s("hiSlots")))), ("mid", Value::from(usage(count(SlotReq::Mid), s("medSlots")))), ("low", Value::from(usage(count(SlotReq::Low), s("lowSlots")))), ("rig", Value::from(usage(count(SlotReq::Rig), s("rigSlots")))), ("subsystem", Value::from(usage(count(SlotReq::Subsystem), s("maxSubSystems")))), ("service", Value::from(usage(count(SlotReq::Service), s("serviceSlots"))))])), ("hardpoints", obj(vec![("turret", Value::from(usage(hp_used(1), s("turretSlotsLeft")))), ("launcher", Value::from(usage(hp_used(2), s("launcherSlotsLeft"))))])), ("fighter_tubes", obj(vec![("total", Value::from(usage(factive.len() as f64, s("fighterTubes")))), ("light", Value::from(usage(fcls("light"), s("fighterLightSlots") + s("fighterStandupLightSlots")))), ("support", Value::from(usage(fcls("support"), s("fighterSupportSlots") + s("fighterStandupSupportSlots")))), ("heavy", Value::from(usage(fcls("heavy"), s("fighterHeavySlots") + s("fighterStandupHeavySlots"))))]))]);
 
         // ---------------- offense
         let spool = req.options.default_spool.or(Some(Spool { kind: SpoolType::SpoolScale, amount: 1.0 }));
@@ -671,19 +773,17 @@ impl<'a> Fit<'a> {
             w_dps.add(&d);
             if self.items[m].state >= ACTIVE && d.total() > 0.0 {
                 let c = self.items[m].charge;
-                let mut w = json!({"module_index": self.items[m].req_index, "type_id": self.items[m].t.id, "name": self.items[m].t.name,
-                    "charge_type_id": if c != NONE { Some(self.items[c].t.id) } else { None },
-                    "volley": v.json(), "dps": d.json(), "cycle_time_ms": self.cycle_avg(m, None)});
+                let mut w = obj(vec![("module_index", Value::from(self.items[m].req_index)), ("type_id", Value::from(self.items[m].t.id)), ("name", Value::from(self.items[m].t.name.clone())), ("charge_type_id", Value::from(if c != NONE { Some(self.items[c].t.id) } else { None })), ("volley", Value::from(v.json())), ("dps", Value::from(d.json())), ("cycle_time_ms", Value::from(self.cycle_avg(m, None)))]);
                 match self.hardpoint(m) {
                     1 => {
-                        w["optimal_m"] = json!(self.max_range(m));
-                        w["falloff_m"] = json!(self.falloff(m));
-                        w["tracking"] = json!(self.g(m, "trackingSpeed"));
+                        w["optimal_m"] = Value::from(self.max_range(m));
+                        w["falloff_m"] = Value::from(self.falloff(m));
+                        w["tracking"] = Value::from(self.g(m, "trackingSpeed"));
                     }
                     2 if c != NONE => {
-                        w["range_m"] = json!(self.max_range(m));
-                        w["explosion_radius"] = json!(self.g(c, "aoeCloudSize"));
-                        w["explosion_velocity"] = json!(self.g(c, "aoeVelocity"));
+                        w["range_m"] = Value::from(self.max_range(m));
+                        w["explosion_radius"] = Value::from(self.g(c, "aoeCloudSize"));
+                        w["explosion_velocity"] = Value::from(self.g(c, "aoeVelocity"));
                     }
                     _ => {}
                 }
@@ -698,8 +798,10 @@ impl<'a> Fit<'a> {
             d_vol.add(&v);
             d_dps.add(&p);
             if self.items[d].amount_active > 0 {
-                drone_out.push(json!({"drone_index": self.items[d].req_index, "type_id": self.items[d].t.id, "name": self.items[d].t.name,
-                    "count": self.items[d].amount_active, "volley": v.json(), "dps": p.json()}));
+                drone_out.push(obj(vec![("drone_index", Value::from(self.items[d].req_index)), ("type_id", Value::from(self.items[d].t.id)), ("name", Value::from(self.items[d].t.name.clone())), ("count", Value::from(self.items[d].amount_active)), ("volley", Value::from(v.json())), ("dps", Value::from(p.json())),
+                    ("optimal_m", Value::from(self.drone_max_range(d))), ("falloff_m", Value::from(self.drone_falloff(d))),
+                    ("tracking", Value::from(self.g(d, "trackingSpeed"))), ("max_velocity", Value::from(self.g(d, "maxVelocity"))),
+                    ("signature_radius", Value::from(self.g(d, "signatureRadius")))]));
             }
         }
         let (mut f_vol, mut f_dps) = (Dmg::default(), Dmg::default());
@@ -710,8 +812,8 @@ impl<'a> Fit<'a> {
             f_vol.add(&v);
             f_dps.add(&p);
             if self.items[f].active {
-                fighter_out.push(json!({"fighter_index": self.items[f].req_index, "type_id": self.items[f].t.id, "name": self.items[f].t.name,
-                    "squadron_size": self.items[f].amount, "volley": v.json(), "dps": p.json()}));
+                fighter_out.push(obj(vec![("fighter_index", Value::from(self.items[f].req_index)), ("type_id", Value::from(self.items[f].t.id)), ("name", Value::from(self.items[f].t.name.clone())), ("squadron_size", Value::from(self.items[f].amount)), ("volley", Value::from(v.json())), ("dps", Value::from(p.json())),
+                    ("max_velocity", Value::from(self.g(f, "maxVelocity"))), ("signature_radius", Value::from(self.g(f, "signatureRadius")))]));
             }
         }
         let mut t_vol = w_vol;
@@ -722,18 +824,13 @@ impl<'a> Fit<'a> {
         t_dps.add(&f_dps);
         let tp = req.target_profile.clone().unwrap_or_default();
         let tp_r = [tp.em, tp.thermal, tp.kinetic, tp.explosive];
-        let offense = json!({
-            "weapons": weapons, "drones": drone_out, "fighters": fighter_out,
-            "total": {"weapon_dps": w_dps.total(), "weapon_volley": w_vol.total(), "drone_dps": d_dps.total(), "drone_volley": d_vol.total(),
-                      "fighter_dps": f_dps.total(), "fighter_volley": f_vol.total(), "dps": t_dps.json(), "volley": t_vol.json()},
-            "vs_target_profile": {"dps": t_dps.vs(tp_r), "volley": t_vol.vs(tp_r)},
-        });
+        let offense = obj(vec![("weapons", Value::from(weapons)), ("drones", Value::from(drone_out)), ("fighters", Value::from(fighter_out)), ("total", obj(vec![("weapon_dps", Value::from(w_dps.total())), ("weapon_volley", Value::from(w_vol.total())), ("drone_dps", Value::from(d_dps.total())), ("drone_volley", Value::from(d_vol.total())), ("fighter_dps", Value::from(f_dps.total())), ("fighter_volley", Value::from(f_vol.total())), ("dps", Value::from(t_dps.json())), ("volley", Value::from(t_vol.json()))])), ("vs_target_profile", obj(vec![("dps", Value::from(t_dps.vs(tp_r))), ("volley", Value::from(t_vol.vs(tp_r)))]))]);
 
         // ---------------- defense
         let pat = req.damage_pattern.map(|p| [p.em, p.thermal, p.kinetic, p.explosive]).unwrap_or([25.0; 4]);
         let (hs, ha, hh) = (s("shieldCapacity"), s("armorHP"), s("hp"));
         let (es, ea, eh) = (self.effectivify(pat, hs, "shield"), self.effectivify(pat, ha, "armor"), self.effectivify(pat, hh, "hull"));
-        let rj = |r: [f64; 4]| json!({"em": r[0], "thermal": r[1], "kinetic": r[2], "explosive": r[3]});
+        let rj = |r: [f64; 4]| obj(vec![("em", Value::from(r[0])), ("thermal", Value::from(r[1])), ("kinetic", Value::from(r[2])), ("explosive", Value::from(r[3]))]);
         let ex = |n: &str| self.attr(ship, extra_attr(n));
         let srr = self.applied_rr(0);
         let arr = self.applied_rr(1);
@@ -745,17 +842,7 @@ impl<'a> Fit<'a> {
         let shield_rep = ex("shieldRepair") + srr;
         let armor_rep = ex("armorRepair") + arr;
         let hull_rep = ex("hullRepair") + hrr;
-        let defense = json!({
-            "hp": {"shield": hs, "armor": ha, "hull": hh, "total": hs + ha + hh},
-            "ehp": {"shield": es, "armor": ea, "hull": eh, "total": es + ea + eh},
-            "resonance": {"shield": rj(self.resonances("shield")), "armor": rj(self.resonances("armor")), "hull": rj(self.resonances("hull"))},
-            "damage_pattern": {"em": pat[0], "thermal": pat[1], "kinetic": pat[2], "explosive": pat[3]},
-            "tank": {
-                "raw": {"passive_shield": passive, "shield_repair": shield_rep, "armor_repair": armor_rep, "hull_repair": hull_rep},
-                "effective": {"passive_shield": self.effectivify(pat, passive, "shield"), "shield_repair": self.effectivify(pat, shield_rep, "shield"),
-                              "armor_repair": self.effectivify(pat, armor_rep, "armor"), "hull_repair": self.effectivify(pat, hull_rep, "hull")},
-            },
-        });
+        let mut defense = obj(vec![("hp", obj(vec![("shield", Value::from(hs)), ("armor", Value::from(ha)), ("hull", Value::from(hh)), ("total", Value::from(hs + ha + hh))])), ("ehp", obj(vec![("shield", Value::from(es)), ("armor", Value::from(ea)), ("hull", Value::from(eh)), ("total", Value::from(es + ea + eh))])), ("resonance", obj(vec![("shield", Value::from(rj(self.resonances("shield")))), ("armor", Value::from(rj(self.resonances("armor")))), ("hull", Value::from(rj(self.resonances("hull"))))])), ("damage_pattern", obj(vec![("em", Value::from(pat[0])), ("thermal", Value::from(pat[1])), ("kinetic", Value::from(pat[2])), ("explosive", Value::from(pat[3]))])), ("tank", obj(vec![("raw", obj(vec![("passive_shield", Value::from(passive)), ("shield_repair", Value::from(shield_rep)), ("armor_repair", Value::from(armor_rep)), ("hull_repair", Value::from(hull_rep))])), ("effective", obj(vec![("passive_shield", Value::from(self.effectivify(pat, passive, "shield"))), ("shield_repair", Value::from(self.effectivify(pat, shield_rep, "shield"))), ("armor_repair", Value::from(self.effectivify(pat, armor_rep, "armor"))), ("hull_repair", Value::from(self.effectivify(pat, hull_rep, "hull")))]))]))]);
 
         // ---------------- modules table
         let mut mrows = Vec::new();
@@ -766,9 +853,7 @@ impl<'a> Fit<'a> {
                 ACTIVE => "active",
                 _ => "overheated",
             };
-            mrows.push(json!({"module_index": self.items[m].req_index, "type_id": self.items[m].t.id, "name": self.items[m].t.name,
-                "slot": self.items[m].slot.map(slot_name), "state": st, "cpu": self.g(m, "cpu"), "power": self.g(m, "power"),
-                "cycle_time_ms": self.cycle_avg(m, None), "cap_use_gj_s": self.cap_use(m)}));
+            mrows.push(obj(vec![("module_index", Value::from(self.items[m].req_index)), ("type_id", Value::from(self.items[m].t.id)), ("name", Value::from(self.items[m].t.name.clone())), ("slot", Value::from(self.items[m].slot.map(slot_name))), ("state", Value::from(st)), ("cpu", Value::from(self.g(m, "cpu"))), ("power", Value::from(self.g(m, "power"))), ("cycle_time_ms", Value::from(self.cycle_avg(m, None))), ("cap_use_gj_s", Value::from(self.cap_use(m)))]));
         }
 
         // ---------------- capacitor (fit.simulateCap)
@@ -813,26 +898,32 @@ impl<'a> Fit<'a> {
         }
         let peak = self.cap_recharge_at(0.25, cap, rr / 1000.0);
         let recharge = added + peak;
-        let mut capj = json!({"capacity": cap, "recharge_time_s": rr / 1000.0, "peak_recharge_gj_s": peak,
-            "use_gj_s": used, "injected_gj_s": added, "delta_gj_s": recharge - used});
+        let mut capj = obj(vec![("capacity", Value::from(cap)), ("recharge_time_s", Value::from(rr / 1000.0)), ("peak_recharge_gj_s", Value::from(peak)), ("use_gj_s", Value::from(used)), ("injected_gj_s", Value::from(added)), ("delta_gj_s", Value::from(recharge - used))]);
+        let mut cap_stable = true;
         if drains.is_empty() {
-            capj["stable"] = json!(true);
-            capj["stable_percent"] = json!(100.0);
-            capj["sim_iterations"] = json!(0);
+            capj["stable"] = Value::from(true);
+            capj["stable_percent"] = Value::from(100.0);
+            capj["sim_iterations"] = Value::from(0);
         } else {
             let t_max = req.options.cap_sim.max_time_s.map(|x| x * 1000.0).unwrap_or(6.0 * 3600.0 * 1000.0);
             let r = capsim::run(&drains, cap, rr, cap, t_max, self.factor_reload, true);
             let st = (r.cap_stable_low + r.cap_stable_high) / (2.0 * cap);
             let stable = st > 0.0;
-            capj["stable"] = json!(stable);
+            cap_stable = stable;
+            capj["stable"] = Value::from(stable);
             if stable {
-                capj["stable_percent"] = json!((st * 100.0).min(100.0));
+                capj["stable_percent"] = Value::from((st * 100.0).min(100.0));
             } else {
-                capj["depletes_in_s"] = json!(r.t / 1000.0);
+                capj["depletes_in_s"] = Value::from(r.t / 1000.0);
             }
-            capj["eve_stable_percent"] = json!(r.cap_stable_eve * 100.0);
-            capj["sim_iterations"] = json!(r.iterations);
+            capj["eve_stable_percent"] = Value::from(r.cap_stable_eve * 100.0);
+            capj["sim_iterations"] = Value::from(r.iterations);
         }
+
+        // ---------------- sustained tank (Fit.calculateSustainableTank)
+        let sus = self.sustainable_tank([shield_rep, armor_rep, hull_rep], cap_stable, used, recharge);
+        defense["tank"]["sustained"] = obj(vec![("passive_shield", Value::from(passive)), ("shield_repair", Value::from(sus[0])),
+            ("armor_repair", Value::from(sus[1])), ("hull_repair", Value::from(sus[2]))]);
 
         // ---------------- navigation
         let speed_limit = s("speedLimit");
@@ -845,12 +936,7 @@ impl<'a> Fit<'a> {
         let base_warp = if s("baseWarpSpeed") != 0.0 { s("baseWarpSpeed") } else { 1.0 };
         let wm = if s("warpSpeedMultiplier") != 0.0 { s("warpSpeedMultiplier") } else { 1.0 };
         let wneed = s("warpCapacitorNeed");
-        let navigation = json!({
-            "max_velocity": vmax, "align_time_s": -(0.25f64.ln()) * agility * mass / 1e6, "mass": mass, "agility": agility,
-            "signature_radius": s("signatureRadius"), "warp_speed_au_s": base_warp * wm,
-            "max_warp_distance_au": if wneed != 0.0 { cap / (mass * wneed) } else { 0.0 },
-            "warp_scramble_status": s("warpScrambleStatus"),
-        });
+        let navigation = obj(vec![("max_velocity", Value::from(vmax)), ("align_time_s", Value::from(-(0.25f64.ln()) * agility * mass / 1e6)), ("mass", Value::from(mass)), ("agility", Value::from(agility)), ("signature_radius", Value::from(s("signatureRadius"))), ("warp_speed_au_s", Value::from(base_warp * wm)), ("max_warp_distance_au", Value::from(if wneed != 0.0 { cap / (mass * wneed) } else { 0.0 })), ("warp_scramble_status", Value::from(s("warpScrambleStatus")))]);
 
         // ---------------- targeting
         let mt = ex("maxTargetsLockedFromSkills").min(s("maxLockedTargets"));
@@ -874,24 +960,20 @@ impl<'a> Fit<'a> {
                 None
             }
         };
-        let targeting = json!({
-            "max_targets": max_targets, "max_range_m": s("maxTargetRange"), "scan_resolution": scan_res,
-            "sensor_strength": best.1, "sensor_type": best.0,
-            "probe_size": if best.1 != 0.0 { Some((sig / best.1).max(1.08)) } else { None },
-            "lock_time_s": {"sig_25m": lt(25.0), "sig_40m": lt(40.0), "sig_125m": lt(125.0), "sig_400m": lt(400.0),
-                            "sig_target_profile": tp.signature_radius.and_then(lt)},
-        });
-        let drones_j = json!({
-            "active": self.drones.iter().map(|&d| self.items[d].amount_active).sum::<u32>(),
-            "max_active": ex_or(self, "maxActiveDrones"),
-            "control_range_m": ex("droneControlRange"),
-        });
+        let jam = {
+            let mut retain = 1.0;
+            for j in &self.ecm {
+                retain *= 1.0 - (j / best.1).min(1.0);
+            }
+            (1.0 - retain) * 100.0
+        };
+        let targeting = obj(vec![("jam_chance_percent", Value::from(jam)), ("max_targets", Value::from(max_targets)), ("max_range_m", Value::from(s("maxTargetRange"))), ("scan_resolution", Value::from(scan_res)), ("sensor_strength", Value::from(best.1)), ("sensor_type", Value::from(best.0)), ("probe_size", Value::from(if best.1 != 0.0 { Some((sig / best.1).max(1.08)) } else { None })), ("lock_time_s", obj(vec![("sig_25m", Value::from(lt(25.0))), ("sig_40m", Value::from(lt(40.0))), ("sig_125m", Value::from(lt(125.0))), ("sig_400m", Value::from(lt(400.0))), ("sig_target_profile", Value::from(tp.signature_radius.and_then(lt)))]))]);
+        let drones_j = obj(vec![("active", Value::from(self.drones.iter().map(|&d| self.items[d].amount_active).sum::<u32>())), ("max_active", Value::from(ex_or(self, "maxActiveDrones"))), ("control_range_m", Value::from(ex("droneControlRange")))]);
 
         let st = self.items[ship].t;
         let mut out = Map::new();
-        out.insert("meta".into(), json!({"schema_version": 1, "engine": concat!("eve-dogma-e ", env!("CARGO_PKG_VERSION"), " (pyfa port)"),
-            "sde_build": ds.build, "dataset_sha256": ds.sha256}));
-        out.insert("ship".into(), json!({"type_id": st.id, "name": st.name, "group": ds.group_name(st.group)}));
+        out.insert("meta".into(), obj(vec![("schema_version", Value::from(1)), ("engine", Value::from(concat!("eve-dogma-e ", env!("CARGO_PKG_VERSION"), " (pyfa port)"))), ("sde_build", Value::from(ds.build)), ("dataset_sha256", Value::from(ds.sha256.clone()))]));
+        out.insert("ship".into(), obj(vec![("type_id", Value::from(st.id)), ("name", Value::from(st.name.clone())), ("group", Value::from(ds.group_name(st.group)))]));
         out.insert("resources".into(), resources);
         out.insert("modules".into(), Value::Array(mrows));
         out.insert("offense".into(), offense);
@@ -901,7 +983,7 @@ impl<'a> Fit<'a> {
         out.insert("targeting".into(), targeting);
         out.insert("drones".into(), drones_j);
         out.insert("violations".into(), Value::Array(if req.options.validate { self.violations(cpu_used, pg_used, calib, bw) } else { vec![] }));
-        out.insert("warnings".into(), json!(self.warnings));
+        out.insert("warnings".into(), Value::from(self.warnings.clone()));
         if let Some(inc) = &req.options.include_attributes {
             out.insert("attributes".into(), self.dump_attributes(inc));
         }
@@ -926,7 +1008,7 @@ impl<'a> Fit<'a> {
         let mut v = Vec::new();
         let ship = self.ship;
         let s = |n: &str| self.g(ship, n);
-        let mut push = |code: &str, msg: String, idx: Option<usize>| v.push(json!({"code": code, "message": msg, "module_index": idx}));
+        let mut push = |code: &str, msg: String, idx: Option<usize>| v.push(obj(vec![("code", Value::from(code)), ("message", Value::from(msg)), ("module_index", Value::from(idx))]));
         if cpu > s("cpuOutput") + 1e-9 {
             push("CPU_OVERLOAD", format!("CPU {cpu} > {}", s("cpuOutput")), None);
         }
@@ -982,7 +1064,7 @@ impl<'a> Fit<'a> {
                     }
                 }
                 if let (Some(info), Some(v)) = (ds.attrs.get(&a), self.attr_opt(it, a)) {
-                    m.insert(info.name.clone(), json!(v));
+                    m.insert(info.name.clone(), Value::from(v));
                 }
             }
             Value::Object(m)
@@ -992,12 +1074,11 @@ impl<'a> Fit<'a> {
             .iter()
             .map(|&m| {
                 let c = self.items[m].charge;
-                json!({"module_index": self.items[m].req_index, "type_id": self.items[m].t.id, "attributes": dump(m),
-                       "charge": if c != NONE { Some(dump(c)) } else { None }})
+                obj(vec![("module_index", Value::from(self.items[m].req_index)), ("type_id", Value::from(self.items[m].t.id)), ("attributes", Value::from(dump(m))), ("charge", Value::from(if c != NONE { Some(dump(c)) } else { None }))])
             })
             .collect();
-        let drones: Vec<Value> = self.drones.iter().map(|&d| json!({"drone_index": self.items[d].req_index, "attributes": dump(d)})).collect();
-        json!({"ship": dump(self.ship), "modules": modules, "drones": drones})
+        let drones: Vec<Value> = self.drones.iter().map(|&d| obj(vec![("drone_index", Value::from(self.items[d].req_index)), ("attributes", Value::from(dump(d)))])).collect();
+        obj(vec![("ship", Value::from(dump(self.ship))), ("modules", Value::from(modules)), ("drones", Value::from(drones))])
     }
 }
 
@@ -1020,3 +1101,12 @@ pub fn slot_name(s: SlotReq) -> &'static str {
 
 #[allow(dead_code)]
 fn unused(_: &Ids) {}
+
+/// build a JSON object without re-serialising nested values (json! would deep-copy interpolated Values)
+pub fn obj(items: Vec<(&str, Value)>) -> Value {
+    let mut m = Map::new();
+    for (k, v) in items {
+        m.insert(k.to_string(), v);
+    }
+    Value::Object(m)
+}

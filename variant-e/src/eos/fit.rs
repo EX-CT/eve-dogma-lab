@@ -117,6 +117,48 @@ impl<'a> Fit<'a> {
         Ok(())
     }
 
+    fn add_fighter(&mut self, f: &crate::request::FighterReq, kind: Kind, path: &str) -> Result<It, BuildError> {
+        let ds: &'a Dataset = self.ds;
+        let idx = self.new_item(f.type_id, kind, path)?;
+        let maxsq = self.attr(idx, ds.attr_id("fighterSquadronMaxSize")) as u32;
+        let it = &mut self.items[idx];
+        it.amount = match f.quantity {
+            Some(q) if q > 0 && q < maxsq => q,
+            _ => maxsq,
+        };
+        it.active = f.active;
+        // Pyfa Fighter.__init__ default abilities
+        let m = meta();
+        let mut std_seen = false;
+        let mut ab = Vec::new();
+        for &e in it.effects {
+            let Some(em) = m.get(&e) else {
+                ab.push((e, false));
+                continue;
+            };
+            let on = if em.name == "fighterAbilityAttackM" {
+                std_seen = true;
+                true
+            } else {
+                !std_seen && em.name != "fighterAbilityMicroWarpDrive" && em.name != "fighterAbilityEvasiveManeuvers"
+            };
+            ab.push((e, on));
+        }
+        if let Some(list) = &f.abilities {
+            for a in ab.iter_mut() {
+                a.1 = list.contains(&a.0);
+            }
+        }
+        it.abilities = ab;
+        let bomb = self.attr(idx, ds.attr_id("fighterAbilityLaunchBombType")) as u32;
+        if bomb != 0 && ds.types.contains_key(&bomb) {
+            let ci = self.new_item(bomb, Kind::Charge, path)?;
+            self.items[ci].parent = idx;
+            self.items[idx].charge = ci;
+        }
+        Ok(idx)
+    }
+
     fn item_is_type(&self, it: It, t: u16) -> bool {
         let m = meta();
         self.items[it].effects.iter().any(|e| m.get(e).map(|x| x.is(t)).unwrap_or(false))
@@ -150,6 +192,7 @@ impl<'a> Fit<'a> {
             default_level: req.character.skills.default_level.unwrap_or(0).min(5),
             proj_modules: Vec::new(),
             proj_drones: Vec::new(),
+            proj_fighters: Vec::new(),
             structure: false,
             factor_reload: req.options.factor_reload,
             pilot_sec: req.character.security_status,
@@ -159,6 +202,8 @@ impl<'a> Fit<'a> {
             extra_drains: Vec::new(),
             rr: Vec::new(),
             gang_sink: None,
+            ecm: Vec::new(),
+            rep_afflictions: Vec::new(),
             warnings: Vec::new(),
             ctx_flags: 0,
             effect: 0,
@@ -272,44 +317,8 @@ impl<'a> Fit<'a> {
             fit.drones.push(idx);
         }
         for (i, f) in req.fighters.iter().enumerate() {
-            let idx = fit.new_item(f.type_id, Kind::Fighter, &format!("/fighters/{i}"))?;
-            let maxsq = fit.attr(idx, ds.attr_id("fighterSquadronMaxSize")) as u32;
-            let it = &mut fit.items[idx];
-            it.amount = match f.quantity {
-                Some(q) if q > 0 && q < maxsq => q,
-                _ => maxsq,
-            };
-            it.active = f.active;
-            it.req_index = i;
-            // Pyfa Fighter.__init__ default abilities
-            let m = meta();
-            let mut std_seen = false;
-            let mut ab = Vec::new();
-            for &e in it.effects {
-                let Some(em) = m.get(&e) else {
-                    ab.push((e, false));
-                    continue;
-                };
-                let on = if em.name == "fighterAbilityAttackM" {
-                    std_seen = true;
-                    true
-                } else {
-                    !std_seen && em.name != "fighterAbilityMicroWarpDrive" && em.name != "fighterAbilityEvasiveManeuvers"
-                };
-                ab.push((e, on));
-            }
-            if let Some(list) = &f.abilities {
-                for a in ab.iter_mut() {
-                    a.1 = list.contains(&a.0);
-                }
-            }
-            it.abilities = ab;
-            let bomb = fit.attr(idx, ds.attr_id("fighterAbilityLaunchBombType")) as u32;
-            if bomb != 0 && ds.types.contains_key(&bomb) {
-                let ci = fit.new_item(bomb, Kind::Charge, &format!("/fighters/{i}"))?;
-                fit.items[ci].parent = idx;
-                fit.items[idx].charge = ci;
-            }
+            let idx = fit.add_fighter(f, Kind::Fighter, &format!("/fighters/{i}"))?;
+            fit.items[idx].req_index = i;
             fit.fighters.push(idx);
         }
         for (i, imp) in req.implants.iter().enumerate() {
@@ -355,6 +364,15 @@ impl<'a> Fit<'a> {
                     fit.items[idx].proj_range = p.distance_m;
                     fit.items[idx].req_index = i;
                     fit.proj_drones.push(idx);
+                }
+                "fighter" => {
+                    let Some(fr) = &p.fighter else { continue };
+                    for _ in 0..p.amount.max(1) {
+                        let idx = fit.add_fighter(fr, Kind::ProjFighter, &format!("/projected/{i}"))?;
+                        fit.items[idx].proj_range = p.distance_m;
+                        fit.items[idx].req_index = i;
+                        fit.proj_fighters.push(idx);
+                    }
                 }
                 "fit" => {}
                 other => fit.warnings.push(format!("projected kind '{other}' not supported (index {i})")),
@@ -483,6 +501,10 @@ impl<'a> Fit<'a> {
             for k in 0..self.proj_drones.len() {
                 let d = self.proj_drones[k];
                 self.calc_drone(d, rt, true);
+            }
+            for k in 0..self.proj_fighters.len() {
+                let f = self.proj_fighters[k];
+                self.calc_fighter_projected(f, rt);
             }
             for k in 0..self.proj_modules.len() {
                 let md = self.proj_modules[k];
@@ -720,6 +742,27 @@ impl<'a> Fit<'a> {
                 let Some(em) = m.get(&e) else { continue };
                 if em.run_time == rt && em.active_by_default {
                     self.run_effect(e, d, Ctx::DroneCharge as u16, pr, d);
+                }
+            }
+        }
+    }
+
+    /// Fighter.calculateModifiedAttributes for a projected fighter
+    fn calc_fighter_projected(&mut self, f: It, rt: u8) {
+        if !self.items[f].active {
+            return;
+        }
+        let m = self.meta;
+        let pr = self.items[f].proj_range;
+        for (e, on) in self.items[f].abilities.clone() {
+            if !on {
+                continue;
+            }
+            let Some(em) = m.get(&e) else { continue };
+            if em.run_time == rt && em.active_by_default && em.is(T_PROJECTED) {
+                let n = if em.grouped { 1 } else { self.items[f].amount };
+                for _ in 0..n {
+                    self.run_effect(e, f, Ctx::Projected as u16 | Ctx::Fighter as u16, pr, f);
                 }
             }
         }
