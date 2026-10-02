@@ -45,23 +45,43 @@ def djson(d):
     return {"em": d[0], "thermal": d[1], "kinetic": d[2], "explosive": d[3], "total": d[0] + d[1] + d[2] + d[3]}
 
 
-def tidy(v, _floor=math.floor, _isfinite=math.isfinite):
-    """round every float to 6 decimals (half away from zero), recursively"""
-    t = type(v)
-    if t is dict:
-        return {k: tidy(x) for k, x in v.items()}
-    if t is list:
-        return [tidy(x) for x in v]
-    if t is float or isinstance(v, float):
-        if _isfinite(v):
-            x = v * 1e6
-            return float((_floor(x + 0.5) if x >= 0 else -_floor(-x + 0.5)) / 1e6)
-        return v
-    if isinstance(v, dict):
-        return {k: tidy(x) for k, x in v.items()}
-    if isinstance(v, list):
-        return [tidy(x) for x in v]
+def _tidy_float(v, _floor=math.floor, _isfinite=math.isfinite):
+    if _isfinite(v):
+        x = v * 1e6
+        return float((_floor(x + 0.5) if x >= 0 else -_floor(-x + 0.5)) / 1e6)
     return v
+
+
+def _tidy_any(x):
+    if isinstance(x, float):
+        return _tidy_float(x)
+    if isinstance(x, dict):
+        return _tidy_dict(x)
+    if isinstance(x, list):
+        return [_tidy_any(y) for y in x]
+    return x
+
+
+def _tidy_dict(d, _floor=math.floor, _inf=math.inf):
+    # inlined per-leaf dispatch (the response has ~300 leaves per fit; a call per leaf was ~10 % of stats)
+    out = {}
+    for k, x in d.items():
+        t = type(x)
+        if t is float:
+            if -_inf < x < _inf:
+                x *= 1e6
+                x = (_floor(x + 0.5) if x >= 0 else -_floor(-x + 0.5)) / 1e6
+        elif t is dict:
+            x = _tidy_dict(x)
+        elif t is not int and t is not str and t is not bool and x is not None:
+            x = _tidy_any(x)
+        out[k] = x
+    return out
+
+
+def tidy(v):
+    """round every float to 6 decimals (half away from zero), recursively"""
+    return _tidy_any(v)
 
 
 def _effect_names(ds, m):

@@ -75,7 +75,8 @@ def simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_m
             break
         if t_now > t_last and cap_max > 0.0 and tau > 0.0:
             x = sqrt(max(cap / cap_max, 0.0))
-            cap = (1.0 + (x - 1.0) * exp((t_last - t_now) / tau)) ** 2 * cap_max
+            y = 1.0 + (x - 1.0) * exp((t_last - t_now) / tau)
+            cap = y * y * cap_max  # Rust powi(2) == y * y
         if t_now != t_last:
             if cap < cap_lowest_pre:
                 cap_lowest_pre = cap
@@ -136,7 +137,8 @@ def simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_m
     if cap_max > 0.0:
         inner = -(2.0 * avg_drain * tau - cap_max) / cap_max
         if inner >= 0.0:
-            eve_stable = 0.25 * (1.0 + sqrt(inner)) ** 2
+            s1 = 1.0 + sqrt(inner)
+            eve_stable = 0.25 * (s1 * s1)
     stable = not ran_out
     return {"stable": stable,
             "stable_low": cap_lowest / cap_max if stable and cap_max > 0.0 else 0.0,
@@ -210,12 +212,53 @@ def _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms):
         if cut < len(tt):
             done = True
         nd = needs[g][o]
+        if cap_max > 0.0 and tau > 0.0 and cut <= 5_000_000 - iterations:
+            # tight loop: here "recharge" == "new time", and t_last / iterations follow from the position k
+            k = -1
+            stop = 0  # 1 = wrap (event k not consumed), 2 = ran out (event k consumed)
+            for k, t_now, need, dec, nt in zip(range(cut), tt[:cut].tolist(), nd[:cut].tolist(),
+                                               decay[:cut].tolist(), newt[:cut].tolist()):
+                if nt:
+                    y = 1.0 + (sqrt(cap / cap_max) - 1.0) * dec
+                    cap = y * y * cap_max
+                    if cap < cap_lowest_pre:
+                        cap_lowest_pre = cap
+                    if t_now == t_wrap:
+                        if cap >= cap_wrap:
+                            stop = 1
+                            break
+                        cap_wrap = _round(cap * 10.0) / 10.0
+                        t_wrap += period
+                cap -= need
+                if cap > cap_max:
+                    cap = cap_max
+                if cap < cap_lowest:
+                    if cap < 0.0:
+                        stop = 2
+                        break
+                    cap_lowest = cap
+            if stop == 1:
+                done = True
+                if k > 0:
+                    t_last = float(tt[k - 1])
+                iterations += k
+            elif stop == 2:
+                ran_out = done = True
+                t_last = float(tt[k])
+                iterations += k + 1
+            elif k >= 0:
+                t_last = float(tt[k])
+                iterations += k + 1
+            t0 = t1
+            width = min(width * 2.0, width_max)
+            continue
         for t_now, need, dec, rc, nt in zip(tt[:cut].tolist(), nd[:cut].tolist(), decay[:cut].tolist(),
                                             recharge[:cut].tolist(), newt[:cut].tolist()):
             if rc:
                 x = cap / cap_max
                 x = sqrt(x) if x > 0.0 else 0.0
-                cap = (1.0 + (x - 1.0) * dec) ** 2 * cap_max
+                y = 1.0 + (x - 1.0) * dec
+                cap = y * y * cap_max
             if nt:
                 if cap < cap_lowest_pre:
                     cap_lowest_pre = cap
@@ -246,7 +289,8 @@ def _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms):
     if cap_max > 0.0:
         inner = -(2.0 * avg_drain * tau - cap_max) / cap_max
         if inner >= 0.0:
-            eve_stable = 0.25 * (1.0 + sqrt(inner)) ** 2
+            s1 = 1.0 + sqrt(inner)
+            eve_stable = 0.25 * (s1 * s1)
     stable = not ran_out
     return {"stable": stable,
             "stable_low": cap_lowest / cap_max if stable and cap_max > 0.0 else 0.0,
