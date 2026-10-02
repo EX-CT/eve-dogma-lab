@@ -173,17 +173,18 @@ thread, because every worker pays its own JIT warm-up.
   integer, otherwise V8 migrates maps on the first fractional write (Fit.build went 1.0 → 0.4 ms).
 - Per-dataset memo tables (plans, skill reach tests, attribute post-processing, per-type validation inputs) instead
   of per-fit state.
-- In one process, the first few hundred calcs run mostly in the interpreter or baseline tier. Rifter: about 2.3 ms
-  each over the first 100, about 0.5 ms at steady state. This warm-up, not the steady state, dominates the bench's
-  500-calc latency figure. `--maglev` and semi-space/lazy-feedback flags made no measurable difference.
-- The capacitor simulator keeps the processed event at the heap top and re-sifts once (same order as Pyfa's
-  heappop/heappush because the event order is a strict total order).
+- In one process, the first calcs run mostly in the interpreter or baseline tier. Rifter: about 2 ms each over
+  the first 50, 0.6–0.8 ms over the next 100, and about 0.4 ms from about the 250th on. This warm-up, not the steady
+  state, dominates the bench's 500-calc latency figure. V8 flags (`--maglev`, `--always-sparkplug`, lower interrupt
+  budget, eager feedback allocation, semi-space size) made no difference that stood out from the noise on this box.
+  A snapshot taken after 400 warm-up calcs is no faster than one taken after 3, because optimised code is not
+  kept in snapshots.
 
 ## Trade-offs vs the other variants
 
 | | D (TS) | A (Rust, eve-dogma-rs) |
 |---|---|---|
-| Runs in browser | natively, ~160 KB JS bundle, zero deps | needs wasm build |
+| Runs in browser | natively, ~185 KB JS bundle, zero deps | needs wasm build |
 | Runs in MCP (TS) | in-process import | subprocess / wasm |
 | Raw speed | JIT, GC; expect 1.5–4× slower than Rust | fastest |
 | Contributor friendliness | highest (TS) | medium |

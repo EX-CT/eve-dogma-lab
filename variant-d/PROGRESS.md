@@ -18,7 +18,7 @@ Updated: 2026-10-03 07:25 CST
 - Parity: **official bench 1.8.0: 326/326 cases, 21 051/21 051 values, EFT export 326/326, deterministic**
   (`bench-results/`). Fast inner loop: `python3 score_bench.py` (batch mode; `VD_CLI=dist-cli/eve-dogma-ts.cjs`
   for the bundle).
-- Browser: zero-dependency bundle (`npm run build:web`, ~160 KB), demo page `web/index.html` verified in headless
+- Browser: zero-dependency bundle (`npm run build:web`, ~185 KB), demo page `web/index.html` verified in headless
   Chrome; `npm run check:web` = bundle output byte-identical to Node on all bench cases.
 - Perf: compiled per-type plans, memoised skill reach tests, lazy skill materialisation, dense attribute defaults,
   V8 field-representation fix (NaN-initialised double fields), shared AttrPost table, capacitor sim with one-sift

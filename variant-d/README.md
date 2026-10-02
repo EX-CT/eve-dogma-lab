@@ -29,6 +29,6 @@ npm run build:web     # dist-web/eve-dogma-ts.js (classic script, global EveDogm
 npm run check:web     # bundle vs Node build: byte-identical output on all bench cases
 ```
 Zero-dependency bundle: `tsc` emits one AMD file (tsconfig.browser.json) and `tools/bundle.mjs` wraps it with a
-20-line loader (~155 KB unminified). `web/index.html` is a demo page (serve the repo root, e.g.
+20-line loader (~185 KB unminified). `web/index.html` is a demo page (serve the repo root, e.g.
 `python3 -m http.server`, open `variant-d/web/index.html?dataset=<url of dataset .json.gz>`); `?selftest=1` prints a
 one-line verdict (verified with headless Chrome: same values and dataset sha256 as the CLI).
