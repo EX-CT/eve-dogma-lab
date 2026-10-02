@@ -34,6 +34,8 @@ pub struct Session {
     pub db: EngineDb,
     fit: Option<FitIn>,
     slots: Vec<ItemIn>,
+    /// shadow of each slot's current `spec` input (diffing without salsa field reads)
+    cur: Vec<Arc<ItemSpec>>,
     slot_of: FxHashMap<ItemKey, u32>,
     /// requests since the database was (re)created; used to bound memory
     pub calcs: u64,
@@ -166,7 +168,7 @@ impl<'a> Fit<'a> {
 impl Session {
     pub fn new(ds: Arc<Dataset>) -> Session {
         let consts = Arc::new(Consts::new(&ds));
-        Session { db: EngineDb { storage: salsa::Storage::default(), ds, consts }, fit: None, slots: Vec::new(), slot_of: FxHashMap::default(), calcs: 0, max_slots: 20_000, subs: FxHashMap::default(), spec_cache: Default::default(), capmemo: Default::default() }
+        Session { db: EngineDb { storage: salsa::Storage::default(), ds, consts }, fit: None, slots: Vec::new(), cur: Vec::new(), slot_of: FxHashMap::default(), calcs: 0, max_slots: 20_000, subs: FxHashMap::default(), spec_cache: Default::default(), capmemo: Default::default() }
     }
 
     pub fn ds(&self) -> &Dataset {
@@ -179,6 +181,7 @@ impl Session {
         self.db = db;
         self.fit = None;
         self.slots.clear();
+        self.cur.clear();
         self.slot_of.clear();
         for s in self.subs.values_mut() {
             s.soft_reset();
@@ -294,18 +297,20 @@ impl Session {
 
     fn load(&mut self, req: &FitRequest, b: &spec::Built, offers: Vec<(u32, F)>) -> FitIn {
         // allocate slots for new keys
+        let mut slot_of: Vec<u32> = Vec::with_capacity(b.keys.len());
         for k in &b.keys {
-            if !self.slot_of.contains_key(k) {
-                let s = self.slots.len() as u32;
-                self.slot_of.insert(*k, s);
+            let n = self.slots.len() as u32;
+            let s = *self.slot_of.entry(*k).or_insert(n);
+            slot_of.push(s);
+            if s == n {
                 let placeholder = b.items[0].clone();
+                self.cur.push(placeholder.clone());
                 // slot ids never change; skill / character specs rarely do (HIGH durability lets salsa skip
                 // deep-verifying the ~400 skill memos on every request that changed only modules)
                 let d = if matches!(k, ItemKey::Skill(_) | ItemKey::Char) { Durability::HIGH } else { Durability::LOW };
                 self.slots.push(ItemIn::builder(s, placeholder).slot_durability(Durability::HIGH).spec_durability(d).new(&self.db));
             }
         }
-        let slot_of: Vec<u32> = b.keys.iter().map(|k| self.slot_of[k]).collect();
         for (i, sp) in b.items.iter().enumerate() {
             let sp: Arc<ItemSpec> = if sp.parent.is_some() || sp.charge.is_some() {
                 let mut x: ItemSpec = (**sp).clone();
@@ -315,10 +320,12 @@ impl Session {
             } else {
                 sp.clone()
             };
-            let h = self.slots[slot_of[i] as usize];
-            let old = h.spec(&self.db);
+            let si = slot_of[i] as usize;
+            let old = &self.cur[si];
             if !Arc::ptr_eq(old, &sp) && **old != *sp {
+                let h = self.slots[si];
                 let d = if matches!(b.keys[i], ItemKey::Skill(_) | ItemKey::Char) { Durability::HIGH } else { Durability::LOW };
+                self.cur[si] = sp.clone();
                 h.set_spec(&mut self.db).with_durability(d).to(sp);
             }
         }

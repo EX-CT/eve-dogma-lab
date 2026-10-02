@@ -122,6 +122,8 @@ pub struct Consts {
 pub struct ValidateIds {
     pub can_fit_groups: Vec<u32>,
     pub can_fit_types: Vec<u32>,
+    /// bitmap of can_fit_groups + can_fit_types
+    pub can_fit_bits: Vec<u64>,
     pub charge_groups: Vec<u32>,
     pub req_skill: [u32; 6],
     pub req_level: [u32; 6],
@@ -175,6 +177,7 @@ impl Consts {
             v: ValidateIds {
                 can_fit_groups: (1..=20).map(|k| a(&format!("canFitShipGroup{k:02}"))).filter(|x| *x != 0).collect(),
                 can_fit_types: (1..=11).map(|k| a(&format!("canFitShipType{k}"))).filter(|x| *x != 0).collect(),
+                can_fit_bits: Vec::new(),
                 charge_groups: (1..=5).map(|k| a(&format!("chargeGroup{k}"))).collect(),
                 req_skill: [a("requiredSkill1"), a("requiredSkill2"), a("requiredSkill3"), a("requiredSkill4"), a("requiredSkill5"), a("requiredSkill6")],
                 req_level: [a("requiredSkill1Level"), a("requiredSkill2Level"), a("requiredSkill3Level"), a("requiredSkill4Level"), a("requiredSkill5Level"), a("requiredSkill6Level")],
@@ -186,6 +189,11 @@ impl Consts {
             bits[x as usize / 64] |= 1u64 << (x % 64);
         }
         c.special_bits = bits;
+        let mut fb = vec![0u64; c.v.can_fit_groups.iter().chain(c.v.can_fit_types.iter()).copied().max().unwrap_or(0) as usize / 64 + 1];
+        for &x in c.v.can_fit_groups.iter().chain(c.v.can_fit_types.iter()) {
+            fb[x as usize / 64] |= 1u64 << (x % 64);
+        }
+        c.v.can_fit_bits = fb;
         c
     }
 }

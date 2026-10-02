@@ -906,6 +906,7 @@ impl<'a> Fit<'a> {
         let vc = &crate::engine::Db::consts(self.db).v;
         let groups_attrs = &vc.can_fit_groups;
         let types_attrs = &vc.can_fit_types;
+        let fit_bits = &vc.can_fit_bits;
         let mut fitted_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut fitted_type: rustc_hash::FxHashMap<u32, u32> = Default::default();
         let mut active_group: rustc_hash::FxHashMap<u32, u32> = Default::default();
@@ -920,8 +921,21 @@ impl<'a> Fit<'a> {
             if it.slot.is_none() {
                 push("NOT_FITTABLE", format!("{name} is not a fittable module"), idx);
             }
-            let gr: Vec<u32> = groups_attrs.iter().filter_map(|a| mt.attr(*a)).map(|v| v as u32).filter(|v| *v != 0).collect();
-            let ty: Vec<u32> = types_attrs.iter().filter_map(|a| mt.attr(*a)).map(|v| v as u32).filter(|v| *v != 0).collect();
+            // one pass over the module's attributes (membership tests only, so order is irrelevant)
+            let mut gr: Vec<u32> = Vec::new();
+            let mut ty: Vec<u32> = Vec::new();
+            for &(a, v) in &mt.attrs {
+                if (a as usize) < 64 * fit_bits.len() && fit_bits[a as usize / 64] & (1u64 << (a % 64)) != 0 {
+                    let v = v as u32;
+                    if v != 0 {
+                        if groups_attrs.contains(&a) {
+                            gr.push(v)
+                        } else if types_attrs.contains(&a) {
+                            ty.push(v)
+                        }
+                    }
+                }
+            }
             if (!gr.is_empty() || !ty.is_empty()) && !gr.contains(&ship_t.group) && !ty.contains(&ship_t.id) {
                 push("SHIP_RESTRICTION", format!("{name} cannot be fitted to {}", ship_t.name), idx);
             }
