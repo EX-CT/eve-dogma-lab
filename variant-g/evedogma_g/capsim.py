@@ -48,6 +48,8 @@ def simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_m
         heapq.heappush(heap, (0.0, dur, need, 0, clip, rl, False, seq))
         seq += 1
     period = t_max_ms if (disable_period or period > t_max_ms) else float(period)
+    if heap and not any(e[6] or e[4] for e in heap):
+        return _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms)
 
     cap_max = capacity
     cap = capacity * start_frac
@@ -128,6 +130,90 @@ def simulate(capacity, recharge_ms, drains, start_frac, reload, stagger, t_max_m
     if last_ev is not None:
         allev.append(last_ev)
     avg_drain = sum(e[2] / e[1] for e in allev)
+    eve_stable = 0.0
+    if cap_max > 0.0:
+        inner = -(2.0 * avg_drain * tau - cap_max) / cap_max
+        if inner >= 0.0:
+            eve_stable = 0.25 * (1.0 + sqrt(inner)) ** 2
+    stable = not ran_out
+    return {"stable": stable,
+            "stable_low": cap_lowest / cap_max if stable and cap_max > 0.0 else 0.0,
+            "stable_high": cap_lowest_pre / cap_max if stable and cap_max > 0.0 else 0.0,
+            "t_s": t_last / 1000.0, "eve_stable": eve_stable, "iterations": iterations}
+
+
+def _simulate_periodic(capacity, tau, heap, start_frac, period, t_max_ms):
+    """Fast path, same results as the event loop below when there are no injectors and no clips:
+    every drain fires at offset + k * duration, so the event sequence is generated with NumPy window by
+    window (sorted like the heap: time, duration, cap need) and only the capacitor recurrence is a Python loop."""
+    import numpy as np
+    starts = np.array([e[0] for e in heap])
+    durs = np.array([e[1] for e in heap])
+    needs = np.array([e[2] for e in heap])
+    cap_max = capacity
+    cap = capacity * start_frac
+    cap_wrap = cap
+    cap_lowest = cap
+    cap_lowest_pre = cap
+    t_wrap = period
+    t_last = 0.0
+    iterations = 0
+    ran_out = False
+    exp, sqrt = math.exp, math.sqrt
+    rate = float(np.sum(1.0 / durs))
+    width = max(4096.0 / rate, float(durs.max()) * 2.0)
+    t0 = 0.0
+    done = False
+    while not done:
+        t1 = t0 + width
+        # events with start + k*dur in [t0, t1)
+        k0 = np.maximum(np.ceil((t0 - starts) / durs), 0.0)
+        k1 = np.maximum(np.ceil((t1 - starts) / durs), 0.0)
+        cnt = (k1 - k0).astype(np.int64)
+        g = np.repeat(np.arange(len(durs)), cnt)
+        if len(g) == 0:
+            t0 = t1
+            continue
+        first = np.repeat(np.cumsum(cnt) - cnt, cnt)
+        k = np.repeat(k0, cnt) + (np.arange(len(g)) - first)
+        # times exactly like repeated addition of integral durations
+        tt = starts[g] + k * durs[g]
+        o = np.lexsort((needs[g], durs[g], tt))
+        tt = tt[o]
+        prev = np.concatenate(([t_last], tt[:-1]))
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            decay = np.exp((prev - tt) / tau) if tau > 0.0 else np.ones(len(tt))
+        recharge = (tt > prev) & (cap_max > 0.0) & (tau > 0.0)
+        for t_now, need, dec, rc in zip(tt.tolist(), needs[g][o].tolist(), decay.tolist(), recharge.tolist()):
+            if t_now >= t_max_ms:
+                done = True
+                break
+            if rc:
+                x = sqrt(max(cap / cap_max, 0.0))
+                cap = (1.0 + (x - 1.0) * dec) ** 2 * cap_max
+            if t_now != t_last:
+                if cap < cap_lowest_pre:
+                    cap_lowest_pre = cap
+                if t_now == t_wrap:
+                    if cap >= cap_wrap:
+                        done = True
+                        break
+                    cap_wrap = _round(cap * 10.0) / 10.0
+                    t_wrap += period
+            t_last = t_now
+            iterations += 1
+            if iterations > 5_000_000:
+                done = True
+                break
+            cap = min(cap - need, cap_max)
+            if cap < cap_lowest:
+                if cap < 0.0:
+                    ran_out = True
+                    done = True
+                    break
+                cap_lowest = cap
+        t0 = t1
+    avg_drain = float(sum((needs / durs).tolist()))
     eve_stable = 0.0
     if cap_max > 0.0:
         inner = -(2.0 * avg_drain * tau - cap_max) / cap_max

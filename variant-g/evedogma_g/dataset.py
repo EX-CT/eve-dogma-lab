@@ -27,6 +27,8 @@ class Dataset:
     def __init__(self, c):
         self.__dict__.update(c)
         self.attr_id = self.attr_by_name.get  # name -> id (None if unknown)
+        self._tad = {}  # type index -> {attr: base value} (lazy)
+        self._attr_def_list = self.attr_def.tolist()
 
     # ---- helpers used all over the engine
     def a(self, name):
@@ -42,19 +44,24 @@ class Dataset:
 
     def type_attr(self, ti, attr, default=None):
         """base attribute of a type (dense index) or `default`"""
-        lo, hi = self.t_attr_ptr[ti], self.t_attr_ptr[ti + 1]
-        ids = self.t_attr_ids[lo:hi]
-        k = np.searchsorted(ids, attr)
-        if k < len(ids) and ids[k] == attr:
-            return float(self.t_attr_vals[lo + k])
-        return default
+        d = self._tad.get(ti)
+        if d is None:
+            d = self._tad[ti] = self._type_attrs(ti)
+        return d.get(attr, default)
 
-    def type_attrs(self, ti):
+    def _type_attrs(self, ti):
         lo, hi = self.t_attr_ptr[ti], self.t_attr_ptr[ti + 1]
         return dict(zip(self.t_attr_ids[lo:hi].tolist(), self.t_attr_vals[lo:hi].tolist()))
 
+    def type_attrs(self, ti):
+        """copy of a type's base attributes {attr: value}"""
+        d = self._tad.get(ti)
+        if d is None:
+            d = self._tad[ti] = self._type_attrs(ti)
+        return dict(d)
+
     def attr_default(self, attr):
-        return float(self.attr_def[attr]) if 0 <= attr < len(self.attr_def) else 0.0
+        return self._attr_def_list[attr] if 0 <= attr < len(self._attr_def_list) else 0.0
 
 
 def _sha256_file(path):

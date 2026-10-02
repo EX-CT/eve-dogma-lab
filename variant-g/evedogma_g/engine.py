@@ -1026,37 +1026,46 @@ def _resolve_base(batch, keys, node_item, node_attr, ov_keys, ov_vals, sk_keys, 
 
 
 class Values:
-    """attribute access for one evaluated batch (Rust-like get / has / base semantics)"""
+    """attribute access for one evaluated batch (Rust-like get / has / base semantics).
+    Scalar access goes through small per-item dicts built lazily from the sorted node arrays."""
 
     def __init__(self, batch, ev):
         self.batch, self.ev, self.ds = batch, ev, batch.ds
         self._keys = ev.keys
         self._n = len(ev.keys)
+        self._items = {}
+        self._bases = {}
+        # item -> [lo, hi) range of its nodes
+        it = ev.keys >> ATTR_BITS
+        self._starts = np.searchsorted(it, np.arange(batch.n_items + 1))
 
-    def _pos(self, item, attr):
-        k = (item << ATTR_BITS) | attr
-        p = int(np.searchsorted(self._keys, k))
-        if p < self._n and self._keys[p] == k:
-            return p
-        return -1
-
-    def get(self, item, attr):
-        p = self._pos(item, attr)
-        return float(self.ev.val[p]) if p >= 0 else self.ds.attr_default(attr)
-
-    def has(self, item, attr):
-        return self._pos(item, attr) >= 0
-
-    def base(self, item, attr):
-        p = self._pos(item, attr)
-        return float(self.ev.base[p]) if p >= 0 else self.ds.attr_default(attr)
+    def _range(self, i):
+        return int(self._starts[i]), int(self._starts[i + 1])
 
     def item_dict(self, i):
         """all evaluated attributes of one item {attr: value}"""
-        lo = int(np.searchsorted(self._keys, i << ATTR_BITS))
-        hi = int(np.searchsorted(self._keys, (i + 1) << ATTR_BITS))
-        mask = (1 << ATTR_BITS) - 1
-        return {k & mask: v for k, v in zip(self._keys[lo:hi].tolist(), self.ev.val[lo:hi].tolist())}
+        d = self._items.get(i)
+        if d is None:
+            lo, hi = self._range(i)
+            mask = (1 << ATTR_BITS) - 1
+            d = self._items[i] = dict(zip((self._keys[lo:hi] & mask).tolist(), self.ev.val[lo:hi].tolist()))
+        return d
+
+    def get(self, item, attr):
+        v = self.item_dict(item).get(attr)
+        return v if v is not None else self.ds.attr_default(attr)
+
+    def has(self, item, attr):
+        return attr in self.item_dict(item)
+
+    def base(self, item, attr):
+        d = self._bases.get(item)
+        if d is None:
+            lo, hi = self._range(item)
+            mask = (1 << ATTR_BITS) - 1
+            d = self._bases[item] = dict(zip((self._keys[lo:hi] & mask).tolist(), self.ev.base[lo:hi].tolist()))
+        v = d.get(attr)
+        return v if v is not None else self.ds.attr_default(attr)
 
     def many(self, items, attr):
         """vector get for many items, same attribute"""

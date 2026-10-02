@@ -534,8 +534,6 @@ class FitStats:
             push("LAUNCHER_HARDPOINTS", f"launchers {_rf(l_)} > hardpoints {_rf(g(ship, 'launcherSlotsLeft'))}", None)
         sti = meta[ship]["ti"]
         ship_group, ship_id, ship_name = meta[ship]["group"], meta[ship]["type_id"], ds.t_name[sti]
-        g_attrs = [a for a in (ds.a(f"canFitShipGroup{k:02d}") for k in range(1, 21)) if a]
-        t_attrs = [a for a in (ds.a(f"canFitShipType{k}") for k in range(1, 12)) if a]
         fitted_group, fitted_type, active_group, online_group = {}, {}, {}, {}
         for i in mods:
             it = meta[i]
@@ -543,10 +541,10 @@ class FitStats:
             ti = it["ti"]
             nm = ds.t_name[ti]
             ta = lambda a: ds.type_attr(ti, a)  # noqa: E731
+            vi = _vinfo(ds, ti)
             if it["slot"] is None:
                 push("NOT_FITTABLE", f"{nm} is not a fittable module", idx)
-            gr = [int(x) for x in (ta(a) for a in g_attrs) if x is not None and int(x) != 0]
-            ty = [int(x) for x in (ta(a) for a in t_attrs) if x is not None and int(x) != 0]
+            gr, ty = vi["can_groups"], vi["can_types"]
             if (gr or ty) and ship_group not in gr and ship_id not in ty:
                 push("SHIP_RESTRICTION", f"{nm} cannot be fitted to {ship_name}", idx)
             if it["slot"] == "rig":
@@ -574,7 +572,7 @@ class FitStats:
             if c is not None:
                 cti = meta[c]["ti"]
                 cnm = ds.t_name[cti]
-                cg = [int(x) for x in (ta(ds.a(f"chargeGroup{k}")) for k in range(1, 6)) if x is not None and int(x) != 0]
+                cg = vi["charge_groups"]
                 if int(ds.t_group[cti]) not in cg:
                     push("CHARGE_GROUP", f"{cnm} cannot be loaded into {nm}", idx)
                 ms = ta(ds.a("chargeSize"))
@@ -586,17 +584,11 @@ class FitStats:
         have = self.fit.skill_levels
         missing = []
         from .engine import SHIP as K_SHIP, MODULE, CHARGE, DRONE, FIGHTER, IMPLANT, BOOSTER
-        req_attrs = [(ds.a(f"requiredSkill{k}"), ds.a(f"requiredSkill{k}Level")) for k in range(1, 7)]
         for i in self.fit.items:
             it = meta[i]
             if it["kind"] not in (K_SHIP, MODULE, CHARGE, DRONE, FIGHTER, IMPLANT, BOOSTER):
                 continue
-            ti = it["ti"]
-            for sa, la in req_attrs:
-                s = int(ds.type_attr(ti, sa, 0.0))
-                if s == 0:
-                    continue
-                need = ds.type_attr(ti, la, 1.0)
+            for s, need in _vinfo(ds, it["ti"])["req_skills"]:
                 if have.get(s, 0.0) < need and not any(m[0] == s and m[1] >= need for m in missing):
                     missing.append((s, need, it["type_id"]))
         for s, need, by in missing:
@@ -604,6 +596,24 @@ class FitStats:
             sn = ds.t_name[sti_] if sti_ >= 0 else "?"
             push("MISSING_SKILL", f"{sn} {_rf(need)} required by {ds.t_name[ds.tidx(by)]}", None)
         return out
+
+
+def _vinfo(ds, ti):
+    """per-type validation facts (cached on the dataset object)"""
+    c = ds.__dict__.setdefault("_vinfo_cache", {})
+    v = c.get(ti)
+    if v is None:
+        ta = lambda a: ds.type_attr(ti, a)  # noqa: E731
+        ints = lambda names: [int(x) for x in (ta(ds.a(n)) for n in names if ds.a(n)) if x is not None and int(x) != 0]  # noqa: E731
+        req = []
+        for k in range(1, 7):
+            sk = int(ds.type_attr(ti, ds.a(f"requiredSkill{k}"), 0.0))
+            if sk:
+                req.append((sk, ds.type_attr(ti, ds.a(f"requiredSkill{k}Level"), 1.0)))
+        v = c[ti] = {"can_groups": ints([f"canFitShipGroup{k:02d}" for k in range(1, 21)]),
+                     "can_types": ints([f"canFitShipType{k}" for k in range(1, 12)]),
+                     "charge_groups": ints([f"chargeGroup{k}" for k in range(1, 6)]), "req_skills": req}
+    return v
 
 
 def _rf(x):
