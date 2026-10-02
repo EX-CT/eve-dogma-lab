@@ -136,6 +136,7 @@ const (
 type attrMods struct {
 	mods  []amod
 	split int
+	used  bool // listed in Fit.regUsed
 }
 
 // Fit is the evaluated object graph for one request. Not safe for concurrent use.
@@ -146,12 +147,13 @@ type Fit struct {
 	Warnings    []string
 	IsStructure bool
 
-	reg      map[uint32]*attrMods
-	skillTpl [][]amod // shared, immutable skill modifiers indexed by attr id (nil = skills registered per fit)
+	reg      []attrMods // dense, indexed by attribute id (len = Dataset.maxAttr+1)
+	regUsed  []uint32   // attribute ids with registered modifiers, in first-registration order
+	skillTpl [][]amod   // shared, immutable skill modifiers indexed by attr id (nil = skills registered per fit)
 	prePhase bool
 	// skillsCanonical: items 2.. are exactly ds.PublishedSkills (enables the shared skill template)
 	skillsCanonical bool
-	cache           map[uint64]float64
+	cache           nodeCache
 	stack           []uint64 // nodes being evaluated (cycle guard + dependency recording)
 
 	// TrackDeps enables reverse-dependency recording so SetBase can invalidate precisely.
@@ -161,6 +163,10 @@ type Fit struct {
 	rdeps     map[uint64][]uint64
 
 	skillLo, skillHi int // Items[skillLo:skillHi] are the character's skills, sorted by type id
+
+	lvIDs  []uint32 // backing storage for skill-level overlays (reused via the pool)
+	lvVals []float64
+	noPool bool // the template fit: its registry is shared by every fit, never recycle it
 }
 
 // ProjSpecial is a projected effect that does not modify attributes but feeds tank or capacitor stats
@@ -316,7 +322,7 @@ func (f *Fit) addModule(i int, m *ModuleReq, path string) error {
 // except what the Reactive Armor Hardener simulation needs.
 func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 	nItems := 2 + len(ds.PublishedSkills) + 2*len(req.Modules) + len(req.Drones) + len(req.Fighters) + len(req.Implants) + len(req.Boosters) + 4
-	f := &Fit{DS: ds, Items: make([]Item, 0, nItems), reg: make(map[uint32]*attrMods, 512), cache: make(map[uint64]float64, 512)}
+	f := acquireFit(ds, nItems)
 	ship, err := f.newItem(req.Ship.TypeID, KShip, LShip, "/ship/type_id")
 	if err != nil {
 		return nil, err
@@ -367,8 +373,10 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 	}
 	// one backing array for all skill-level overlays (avoids 2 allocations per skill)
 	f.skillLo = len(f.Items)
-	lvIDs := make([]uint32, len(skillIDs))
-	lvVals := make([]float64, len(skillIDs))
+	if cap(f.lvIDs) < len(skillIDs) {
+		f.lvIDs, f.lvVals = make([]uint32, len(skillIDs)), make([]float64, len(skillIDs))
+	}
+	lvIDs, lvVals := f.lvIDs[:len(skillIDs)], f.lvVals[:len(skillIDs)]
 	for k, s := range skillIDs {
 		if ds.Types[s] == nil {
 			continue
@@ -568,6 +576,7 @@ func Build(ds *Dataset, req *FitRequest) (*Fit, error) {
 					}
 					fr = append(fr, frozen{it.TypeID, copies, attrSet{ids, vals}})
 				}
+				src.Release()
 				for _, z := range fr {
 					for k := uint32(0); k < z.copies*max(p.Amount, 1); k++ {
 						idx, err := f.newItem(z.typeID, KProjected, LNowhere, fmt.Sprintf("/projected/%d", i))
@@ -657,10 +666,13 @@ func (f *Fit) push(k bucketKind, x uint32, attr uint32, m amod, sourceCat uint32
 	}
 	m.pen = !stackable && !exemptCategory(sourceCat)
 	m.sel, m.x = k, x
-	am := f.reg[attr]
-	if am == nil {
-		am = &attrMods{}
-		f.reg[attr] = am
+	if int(attr) >= len(f.reg) { // attribute id outside the dataset's attribute table
+		f.reg = append(f.reg, make([]attrMods, int(attr)+1-len(f.reg))...)
+	}
+	am := &f.reg[attr]
+	if !am.used {
+		am.used = true
+		f.regUsed = append(f.regUsed, attr)
 	}
 	am.mods = append(am.mods, m)
 	if f.prePhase {
@@ -1062,6 +1074,7 @@ func (f *Fit) registerBuffs(req *FitRequest) {
 				offer(id, v, amod{kind: srcConst, c: v, from: int32(f.Ship)})
 			}
 		}
+		b.Release()
 	}
 	for id, v := range agg {
 		if _, ok := best[id]; !ok {
@@ -1099,7 +1112,7 @@ func (f *Fit) applyBuff(id uint32, src amod) {
 
 // Invalidate drops every cached value (O(1) amortised: the map is cleared in place).
 func (f *Fit) Invalidate() {
-	clear(f.cache)
+	f.cache.clearAll()
 	if f.rdeps != nil {
 		clear(f.rdeps)
 	}
@@ -1275,9 +1288,9 @@ func (f *Fit) applies(i int, it *Item, k bucketKind, x uint32) bool {
 // collect appends, in registration order, the modifiers that reach (item, attr).
 func (f *Fit) collect(i int, attr uint32, out []*amod) []*amod {
 	it := &f.Items[i]
-	am := f.reg[attr]
 	var pre, post []amod
-	if am != nil {
+	if int(attr) < len(f.reg) {
+		am := &f.reg[attr]
 		pre, post = am.mods[:am.split], am.mods[am.split:]
 	}
 	for k := range pre {
@@ -1316,7 +1329,7 @@ func (f *Fit) Get(i int, attr uint32) float64 {
 	if f.TrackDeps && len(f.stack) > 0 {
 		f.rdeps[key] = append(f.rdeps[key], f.stack[len(f.stack)-1])
 	}
-	if v, ok := f.cache[key]; ok {
+	if v, ok := f.cache.get(key); ok {
 		return v
 	}
 	base, hasBase := f.baseOK(i, attr)
@@ -1348,7 +1361,7 @@ func (f *Fit) Get(i int, attr uint32) float64 {
 		}
 	}
 	f.stack = f.stack[:len(f.stack)-1]
-	f.cache[key] = val
+	f.cache.put(key, val)
 	return val
 }
 
@@ -1503,7 +1516,7 @@ func (f *Fit) SetBase(i int, attr uint32, v float64) {
 			return
 		}
 		seen[k] = true
-		delete(f.cache, k)
+		f.cache.del(k)
 		for _, d := range f.rdeps[k] {
 			walk(d)
 		}
@@ -1531,7 +1544,7 @@ func (f *Fit) AttrIDs(i int) []uint32 {
 	for _, a := range it.overlay.ids {
 		set[a] = true
 	}
-	for a := range f.reg {
+	for _, a := range f.regUsed {
 		if !set[a] && f.Has(i, a) {
 			set[a] = true
 		}

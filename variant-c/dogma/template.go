@@ -6,7 +6,7 @@ package dogma
 // (only their level attribute differs, which is read lazily), so they are registered once per Dataset.
 func (ds *Dataset) skillTemplate() [][]amod {
 	ds.tplOnce.Do(func() {
-		f := &Fit{DS: ds, Ship: 0, Char: 1, reg: map[uint32]*attrMods{}}
+		f := &Fit{DS: ds, Ship: 0, Char: 1, reg: make([]attrMods, int(ds.maxAttr)+1), noPool: true}
 		ch := ds.Types[1373]
 		if ch == nil {
 			return
@@ -24,12 +24,12 @@ func (ds *Dataset) skillTemplate() [][]amod {
 		for i := 2; i < len(f.Items); i++ {
 			f.registerItem(i)
 		}
-		for a := range f.reg {
+		for _, a := range f.regUsed {
 			maxAttr = max(maxAttr, a)
 		}
 		tpl := make([][]amod, maxAttr+1)
-		for a, am := range f.reg {
-			tpl[a] = am.mods
+		for _, a := range f.regUsed {
+			tpl[a] = f.reg[a].mods
 		}
 		ds.tpl = tpl
 	})

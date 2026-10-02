@@ -23,7 +23,9 @@ func calcRaw(ds *Dataset, req *FitRequest) obj {
 		}
 		return obj{"error": obj{"code": "INTERNAL", "message": err.Error(), "path": ""}}
 	}
-	return f.ComputeStats(req, EngineName)
+	out := f.ComputeStats(req, EngineName)
+	f.Release()
+	return out
 }
 
 // CalcJSON: JSON request in, JSON stats out.

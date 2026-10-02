@@ -204,6 +204,7 @@ type Dataset struct {
 	typesByGroup    map[uint32][]uint32
 	ids             wellKnown
 
+	maxAttr uint32 // largest attribute id (dense per-fit registry size)
 	tplOnce sync.Once
 	tpl     [][]amod
 }
@@ -392,6 +393,7 @@ func LoadBytes(b []byte) (*Dataset, error) {
 			ai.round2 = true
 		}
 		ds.Attrs[id] = ai
+		ds.maxAttr = max(ds.maxAttr, id)
 		ds.attrByName[a.Name] = id
 	}
 	for k, e := range raw.Effects {
