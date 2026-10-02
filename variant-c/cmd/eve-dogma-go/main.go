@@ -43,7 +43,7 @@ func load(path string) *dogma.Dataset {
 	if path == "" {
 		path = "dataset.json.gz"
 	}
-	ds, err := dogma.LoadPath(path)
+	ds, err := dogma.LoadPathCached(path) // derived binary cache (EVE_DOGMA_CACHE=off to disable)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(3)
@@ -323,8 +323,9 @@ func main() {
 	case "meta":
 		t0 := time.Now()
 		ds := load(dsPath)
+		loadMs := float64(time.Since(t0).Microseconds()) / 1000
 		m := meta(ds)
-		m["load_ms"] = float64(time.Since(t0).Microseconds()) / 1000
+		m["load_ms"] = loadMs
 		b, _ := json.MarshalIndent(m, "", "  ")
 		out.Write(b)
 		out.WriteByte('\n')

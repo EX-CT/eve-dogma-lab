@@ -395,13 +395,7 @@ func LoadBytes(b []byte) (*Dataset, error) {
 		if a.Display != nil {
 			ai.Display = *a.Display
 		}
-		switch a.Name {
-		case "cpu", "power", "cpuOutput", "powerOutput":
-			ai.round2 = true
-		}
 		ds.Attrs[id] = ai
-		ds.maxAttr = max(ds.maxAttr, id)
-		ds.attrByName[a.Name] = id
 	}
 	for k, e := range raw.Effects {
 		id := u32(k)
@@ -417,7 +411,6 @@ func LoadBytes(b []byte) (*Dataset, error) {
 				Modifying: uint32(m[3]), Op: int32(m[4]), Extra: uint32(m[5])})
 		}
 		ds.Effects[id] = ei
-		ds.effectByName[e.Name] = id
 	}
 	for k, g := range raw.Groups {
 		gi := &GroupInfo{Category: g.Category}
@@ -426,25 +419,9 @@ func LoadBytes(b []byte) (*Dataset, error) {
 		}
 		ds.Groups[u32(k)] = gi
 	}
-	var skills []uint32
 	for _, ti := range tinfos {
-		id := ti.ID
-		ds.Types[id] = ti
-		lname := strings.ToLower(ti.Name)
-		if prev, ok := ds.typeByName[lname]; !ok || betterNamed(ti, ds.Types[prev]) {
-			ds.typeByName[lname] = id
-		}
-		ds.typesByGroup[ti.Group] = append(ds.typesByGroup[ti.Group], id)
-		if ti.Category == 16 && ti.Published {
-			skills = append(skills, id)
-		}
+		ds.Types[ti.ID] = ti
 	}
-	// types may be registered before their name competitor; recompute ambiguous winners deterministically
-	for _, l := range ds.typesByGroup {
-		sort.Slice(l, func(i, j int) bool { return l[i] < l[j] })
-	}
-	sort.Slice(skills, func(i, j int) bool { return skills[i] < skills[j] })
-	ds.PublishedSkills = skills
 	for k, v := range raw.Dbuffs {
 		ds.Dbuffs[u32(k)] = v
 	}
@@ -454,9 +431,46 @@ func LoadBytes(b []byte) (*Dataset, error) {
 	for k, v := range raw.Names["zh"] {
 		ds.NamesZh[u32(k)] = v
 	}
+	ds.index()
+	return ds, nil
+}
+
+// index builds every derived lookup (names, groups, skills, dense views, well-known ids) from the
+// primary tables. Shared by the JSON loader and the binary cache loader.
+func (ds *Dataset) index() {
+	ds.attrByName = make(map[string]uint32, len(ds.Attrs))
+	ds.effectByName = make(map[string]uint32, len(ds.Effects))
+	ds.typeByName = make(map[string]uint32, len(ds.Types))
+	ds.typesByGroup = map[uint32][]uint32{}
+	for id, ai := range ds.Attrs {
+		switch ai.Name {
+		case "cpu", "power", "cpuOutput", "powerOutput":
+			ai.round2 = true
+		}
+		ds.maxAttr = max(ds.maxAttr, id)
+		ds.attrByName[ai.Name] = id
+	}
+	for id, ei := range ds.Effects {
+		ds.effectByName[ei.Name] = id
+	}
+	var skills []uint32
+	for id, ti := range ds.Types {
+		lname := strings.ToLower(ti.Name)
+		if prev, ok := ds.typeByName[lname]; !ok || betterNamed(ti, ds.Types[prev]) {
+			ds.typeByName[lname] = id
+		}
+		ds.typesByGroup[ti.Group] = append(ds.typesByGroup[ti.Group], id)
+		if ti.Category == 16 && ti.Published {
+			skills = append(skills, id)
+		}
+	}
+	for _, l := range ds.typesByGroup {
+		sort.Slice(l, func(i, j int) bool { return l[i] < l[j] })
+	}
+	sort.Slice(skills, func(i, j int) bool { return skills[i] < skills[j] })
+	ds.PublishedSkills = skills
 	ds.attrD, ds.effectD, ds.typeD, ds.groupD = dense(ds.Attrs), dense(ds.Effects), dense(ds.Types), dense(ds.Groups)
 	ds.ids = newWellKnown(ds)
-	return ds, nil
 }
 
 // betterNamed decides which of two same-named types wins the name lookup: published first, then lowest id.
@@ -619,25 +633,33 @@ func buildType(id uint32, t *rawType) *TypeInfo {
 		vals[i] = t.Attrs[strconv.FormatUint(uint64(a), 10)]
 	}
 	ti.raw = attrSet{ids, vals}
+	for _, e := range t.Effects {
+		ti.Effects = append(ti.Effects, TypeEffect{ID: e[0], Default: e[1] != 0})
+	}
+	ti.derive()
+	return ti
+}
+
+// derive computes base attributes (raw + authoritative mass/capacity/volume/radius), required skills and
+// slot from the raw record (JSON loader and cache loader).
+func (ti *TypeInfo) derive() {
+	ids, vals := ti.raw.ids, ti.raw.vals
 	ti.base = attrSet{append([]uint32(nil), ids...), append([]float64(nil), vals...)}
 	for _, f := range [4]struct {
 		a uint32
 		v float64
-	}{{4, t.Mass}, {38, t.Capacity}, {161, t.Volume}, {162, t.Radius}} {
+	}{{4, ti.Mass}, {38, ti.Capacity}, {161, ti.Volume}, {162, ti.Radius}} {
 		if _, ok := ti.base.get(f.a); f.v != 0 || !ok {
 			ti.base.set(f.a, f.v)
 		}
 	}
-	for _, e := range t.Effects {
-		ti.Effects = append(ti.Effects, TypeEffect{ID: e[0], Default: e[1] != 0})
-	}
+	ti.ReqSkills = nil
 	for _, a := range reqSkillAttrs {
 		if v, ok := ti.raw.get(a); ok && uint32(v) != 0 {
 			ti.ReqSkills = appendUnique(ti.ReqSkills, uint32(v))
 		}
 	}
 	ti.Slot = inferSlot(ti)
-	return ti
 }
 
 func dense[T any](m map[uint32]*T) []*T {
