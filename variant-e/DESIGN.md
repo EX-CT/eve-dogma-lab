@@ -29,7 +29,7 @@ FitRequest ─▶ eos::fit::build ─▶ calculate (early/normal/late) ─▶ pr
   `cx.filtered(L::Modules, charge, &|cx, m| <filter>, Op::Boost, attr, value, O{skill, stack, group, post, kw})`.
 - `Fit.__runCommandBoosts` (the warfare-buff table) is transpiled into `command_buff(id, value)`.
 - 26 handlers cannot be expressed this way: Python imports, `fit._armorRr` lists, `fit.addDrain`, and the RAH
-  simulation. 13 of these are ported by hand in `custom.rs`. The rest (ECM/jam chance) do not affect scored stats.
+  simulation. 13 of these are ported by hand in `custom.rs`. ECM strength is gathered there too and used for `targeting.jam_chance_percent` (Pyfa `jamChance`).
 
 ### Calculation core (`src/eos`)
 | Pyfa | here |
@@ -51,5 +51,6 @@ FitRequest ─▶ eos::fit::build ─▶ calculate (early/normal/late) ─▶ pr
 - **Generated code size:** about 16 k lines of Rust, compiled with fat LTO. A release build takes about 80 s.
 - **Per-fit state** uses a `Vec<Item>` arena with an `FxHashMap` of modifier entries per item. Every published skill
   is materialised as an item, which is Pyfa's model. That is the main per-fit cost (about 0.5 ms).
-- **Not ported (not scored):** ECM jam chance, mining yield, and EFT import/export (`search`/`type` RPC methods).
+- **Also ported:** sustained tank (`calculateSustainableTank`), projected fighters with abilities, and drone/fighter range, velocity and signature fields.
+- **Not ported (not scored):** mining yield, and EFT import/export (`search`/`type` RPC methods).
   `fleet.buffs` (explicit buffs) are fed through the same `addCommandBonus` path at the normal runtime.
