@@ -150,8 +150,11 @@ and by compiling/warming the engine. The bench `build` step prepares four pure, 
    `vm.Script` `cachedData`. A stale or foreign cache is rejected by V8 and simply ignored. It saves about 10 ms.
 4. **Startup snapshot.** `node dist-cli/eve-dogma-ts.cjs snapshot --dataset X` runs
    `node --build-snapshot dist-cli/eve-dogma-ts.snapshot.cjs X`. That file evaluates the engine, loads the dataset
-   from its VDC4 cache, warms it with a sample calc, detaches the cache *body bytes* (a smaller heap deserialises
-   faster) and registers the CLI as the snapshot main function. Run it as
+   from its VDC4 cache and warms it with a sample calc. It then slims the heap, because deserialisation time grows
+   with blob size (about 5 ms per MB here): it detaches the cache *body bytes*, stores the numeric type columns as
+   typed arrays and drops the type id→row index, which is rebuilt in about 0.5 ms at run time. Finally it
+   registers the CLI as the snapshot main function. The blob is about 7.8 MB, versus about 4.1 MB for an empty
+   node snapshot. Run it as
    `node --snapshot-blob dist-cli/eve-dogma-ts.blob calc|batch|serve-stdio --dataset X`. The preloaded dataset is
    used only when the requested dataset file and its cache file are the very files it was built from (path, size,
    mtime, cache head bytes). Otherwise, or with `EVE_DOGMA_TS_NO_CACHE`, it loads normally. The body bytes are
@@ -159,9 +162,10 @@ and by compiling/warming the engine. The bench `build` step prepares four pure, 
    Calcs remain the same stateless computation: the snapshot only holds what a load and pure memo tables would
    produce anyway.
 
-Cold `calc` on the shared box (min of 12, load ~7): snapshot ≈ 101–110 ms, launcher + code cache ≈ 150–160 ms,
-bare `node -e 0` ≈ 90–95 ms, and a trivial snapshot ≈ 60 ms. Most of the remaining gap is the deserialisation of
-about 4 MB of dataset heap.
+Cold `calc` on the shared box (min of 11–15, load ~7): snapshot ≈ 97–105 ms, launcher + code cache ≈ 150–160 ms,
+bare `node -e 0` ≈ 90–95 ms, and a trivial snapshot ≈ 60 ms. The same blob running `help` takes about 97 ms, so
+the calc itself costs about 8 ms. The rest is deserialising the dataset heap, about 37 ms, which is roughly what
+loading the cache would cost without a snapshot.
 
 `batch --threads N` (or `$EVE_DOGMA_TS_THREADS`, where 0 means one per core, up to 8) answers JSONL with an ordered
 pool of worker threads. Each thread does its own dataset load. Small inputs stay on the main thread, and the output

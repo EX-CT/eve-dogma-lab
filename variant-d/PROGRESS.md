@@ -1,6 +1,6 @@
 # PROGRESS — Variant D (TypeScript)
 
-Updated: 2026-10-03 07:25 CST
+Updated: 2026-10-03 07:45 CST
 
 ## Done
 - Full port of the eve-dogma-rs contract in TypeScript, zero runtime dependencies (Node 20+, browsers):
@@ -41,6 +41,13 @@ node dist-cli/eve-dogma-ts.cjs calc --dataset /workspace/exct-eve/data/dataset-3
 python3 score_bench.py                     # all bench cases vs Pyfa expected values
 node dist/test/parity.js --dataset ...      # eve-dogma-rs fixtures
 ```
+
+## Tried, not kept (no gain that stood out from the noise on the loaded box)
+- Deferring *all* attribute-sourced modifiers per item until first read: Fit.build got about 25% faster, but stats
+  got slower by the same amount (extra checks on every read, plus materialisation).
+- A direct-mapped exp() memo in the capacitor sim. Capsim runs ~25 ns per event and is iteration-bound;
+  `sim_iterations` is an output, so the event loop cannot be shortened.
+- V8 flags; deeper snapshot warm-up; dropping decoded type names from the snapshot; `batch --threads` as a default.
 
 ## Next / gaps
 - Throughput is JIT/GC bound and about 2× behind the Rust/C++ variants in batch, mostly because of JIT warm-up in
