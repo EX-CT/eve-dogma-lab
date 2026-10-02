@@ -1222,7 +1222,7 @@ pub struct VCache {
 
 impl VCache {
     pub fn new(memo: bool) -> VCache {
-        VCache { memo, map: FxHashMap::with_capacity_and_hasher(512, Default::default()), ..Default::default() }
+        VCache { memo, map: FxHashMap::with_capacity_and_hasher(512, Default::default()), ims: FxHashMap::with_capacity_and_hasher(64, Default::default()), ..Default::default() }
     }
     #[inline]
     fn im(&mut self, db: &dyn Db, fit: FitIn, item: u32) -> ItemMods {
@@ -1350,7 +1350,7 @@ fn attr_body(db: &dyn Db, fit: FitIn, item: u32, attr_id: u32, layer: u32, vc: &
     let base = im.spec.base(attr_id).unwrap_or_else(|| ds.attr_default(attr_id));
     let info = ds.attrs.get(&attr_id);
     let mut val = base;
-    let mut vals: Vec<(i8, bool, f64)> = Vec::new();
+    let mut vals: smallvec::SmallVec<[(i8, bool, f64); 16]> = smallvec::SmallVec::new();
     if let Some(ms) = im.mods.get(&attr_id) {
         for m in ms {
             vals.push((m.op, m.penalized, src_value(db, fit, &m.src, layer, vc)));
@@ -1365,8 +1365,8 @@ fn attr_body(db: &dyn Db, fit: FitIn, item: u32, attr_id: u32, layer: u32, vc: &
         }
     }
     if !vals.is_empty() {
-        let mut pos: Vec<f64> = Vec::new();
-        let mut neg: Vec<f64> = Vec::new();
+        let mut pos: smallvec::SmallVec<[f64; 16]> = smallvec::SmallVec::new();
+        let mut neg: smallvec::SmallVec<[f64; 16]> = smallvec::SmallVec::new();
         for op in [-1i8, 0, 1, 2, 3, 4, 5, 6, 7] {
             let mut any = false;
             pos.clear();

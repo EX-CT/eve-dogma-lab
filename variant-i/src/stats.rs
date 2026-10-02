@@ -144,6 +144,12 @@ pub fn py_round2(v: f64) -> f64 {
     if !v.is_finite() {
         return v;
     }
+    // away from a .5 tie, rounding the scaled value is exact (same result as the decimal path, as in
+    // Variant A); near a tie use the correctly rounded decimal formatting
+    let x = v * 100.0;
+    if ((x - x.trunc()).abs() - 0.5).abs() > 1e-6 {
+        return x.round() / 100.0;
+    }
     format!("{v:.2}").parse().unwrap_or(v)
 }
 

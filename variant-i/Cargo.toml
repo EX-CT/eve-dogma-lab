@@ -7,6 +7,7 @@ description = "EX-CT dogma lab variant I: incremental (salsa) EVE Online fitting
 repository = "https://github.com/EX-CT/eve-dogma-lab"
 
 [dependencies]
+smallvec = "1"
 flate2 = "1.1"
 rustc-hash = "2.1"
 serde = { version = "1.0", features = ["derive"] }
