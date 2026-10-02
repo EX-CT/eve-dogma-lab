@@ -127,7 +127,7 @@ export function simulate(capacity: number, rechargeMs: number, drains: Drain[], 
   const awaiting: Ev[] = [];
   let awaitingWrap: string = '';
   let ranOut = false;
-  const key = (v: Ev[]) => v.map((e) => [e.duration, e.capNeed] as [number, number]).sort((x, y) => x[0] - y[0] || x[1] - y[1]).map((x) => `${x[0]}:${x[1]}`).join(',');
+  const key = (v: Ev[]) => v.length === 0 ? '' : v.map((e) => [e.duration, e.capNeed] as [number, number]).sort((x, y) => x[0] - y[0] || x[1] - y[1]).map((x) => `${x[0]}:${x[1]}`).join(',');
   let lastEv: Ev | null = null;
   let dtA = NaN, exA = 0, dtB = NaN, exB = 0;
   const fire = (inj: Ev, tNow: number) => {

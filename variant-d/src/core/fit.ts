@@ -7,6 +7,8 @@ import { FitRequest, ModuleReq, Mutation, normalize, NormRequest, SlotName, Stat
 import { SpecialHandler, activeSpecial, localSpecial, projectedSpecial, ProjSpecial, projectedFeed, PROJECTED_DAMAGE_EFFECTS } from './specials.js';
 import { rangeFactor } from '../stats/util.js';
 
+const EMPTY_SET: ReadonlySet<number> = new Set();
+
 export const ATTR_SKILL_LEVEL = 280;
 const EFFECT_SKILL_EFFECT = 132;
 /** em/explosive/kinetic/thermal DamageResonance (hull) */
@@ -372,7 +374,7 @@ export class Fit extends AttrGraph {
   private registerAll(req: NormRequest): void {
     const ds = this.ds;
     const eBastion = ds.effectId('moduleBonusBastionModule');
-    const structureOk = new Set(STRUCTURE_SKILL_EFFECT_NAMES.map((n) => ds.effectId(n)));
+    const structureOk = this.isStructure ? new Set(STRUCTURE_SKILL_EFFECT_NAMES.map((n) => ds.effectId(n))) : EMPTY_SET;
     const ship = this.ship;
     const shipAttrs = this.items[ship].tattrs;
     const n = this.items.length;
