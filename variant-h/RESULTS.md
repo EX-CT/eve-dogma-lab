@@ -8,7 +8,7 @@ Corpus: eve-dogma-bench @ 6533a02, plus the per-weapon metrics in the bench work
 | | cases | values |
 |---|---|---|
 | vs Pyfa (bench `run.py`) | **249/249** | **13812/13812 (100.00 %)** |
-| vs Variant A (leaf-by-leaf, rel 1e-6 / abs 1e-6) | **249/249 identical** | |
+| vs Variant A @ 0f79b18 (every output leaf, abs 1e-6 / rel 1e-9) | **249/249 identical** | |
 
 Every bench group (application, capacitor, defense, fitting, navigation, offense, tank, targeting) is at 100 %.
 The full scorecard is in [results/scorecard.md](results/scorecard.md).
