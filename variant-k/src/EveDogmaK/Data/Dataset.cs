@@ -49,8 +49,23 @@ public sealed class AttrTable
     }
     public static AttrTable From(IEnumerable<KeyValuePair<int, double>> kv)
     {
-        var arr = kv.OrderBy(x => x.Key).ToArray();
-        return new AttrTable(arr.Select(x => x.Key).ToArray(), arr.Select(x => x.Value).ToArray());
+        var list = kv as IReadOnlyCollection<KeyValuePair<int, double>> ?? kv.ToList();
+        var ids = new int[list.Count]; var vals = new double[list.Count];
+        int i = 0;
+        foreach (var x in list) { ids[i] = x.Key; vals[i] = x.Value; i++; }
+        Array.Sort(ids, vals);
+        return new AttrTable(ids, vals);
+    }
+    /// <summary>Copy with some entries set (added or replaced).</summary>
+    public AttrTable With(ReadOnlySpan<(int Id, double Value)> set)
+    {
+        var ids = new List<int>(_ids); var vals = new List<double>(_vals);
+        foreach (var (id, v) in set)
+        {
+            int k = ids.BinarySearch(id);
+            if (k >= 0) vals[k] = v; else { ids.Insert(~k, id); vals.Insert(~k, v); }
+        }
+        return new AttrTable(ids.ToArray(), vals.ToArray());
     }
 }
 
@@ -73,6 +88,8 @@ public sealed class TypeInfo
     public required EffectRef[] Effects { get; init; }
     /// <summary>requiredSkill1..6 type ids (non-zero).</summary>
     public required int[] RequiredSkills { get; init; }
+    /// <summary>The dataset record this type was built from (kept for the binary cache).</summary>
+    public DatasetLoader.RawType? Raw { get; init; }
     public bool HasEffect(EffectId e) { foreach (var x in Effects) if (x.Id == e) return true; return false; }
 }
 

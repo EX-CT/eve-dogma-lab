@@ -82,47 +82,21 @@ public static class DatasetLoader
             groups[int.Parse(p.Name)] = new GroupInfo(Str(p.Value, "name") ?? "", (int)(Num(p.Value, "category") ?? 0));
 
         // types
-        var types = new Dictionary<int, TypeInfo>();
-        var skills = new List<int>();
-        var modes = new List<(string, int)>();
+        var rawTypes = new List<RawType>();
         foreach (var p in root.GetProperty("types").EnumerateObject())
         {
-            int id = int.Parse(p.Name);
             var t = p.Value;
-            var raw = new SortedDictionary<int, double>();
+            var raw = new List<KeyValuePair<int, double>>();
             if (t.TryGetProperty("attrs", out var at) && at.ValueKind == JsonValueKind.Object)
-                foreach (var a in at.EnumerateObject()) raw[int.Parse(a.Name)] = a.Value.GetDouble();
-            double mass = Num(t, "mass") ?? 0, cap = Num(t, "capacity") ?? 0, vol = Num(t, "volume") ?? 0, rad = Num(t, "radius") ?? 0;
-            var folded = new SortedDictionary<int, double>(raw);
-            // type-level fields are authoritative (mass 4 / capacity 38 / volume 161 / radius 162)
-            foreach (var (aid, v) in new[] { (4, mass), (38, cap), (161, vol), (162, rad) })
-                if (v != 0.0 || !folded.ContainsKey(aid)) folded[aid] = v;
+                foreach (var a in at.EnumerateObject()) raw.Add(new(int.Parse(a.Name), a.Value.GetDouble()));
             var effs = new List<EffectRef>();
             if (t.TryGetProperty("effects", out var te) && te.ValueKind == JsonValueKind.Array)
                 foreach (var x in te.EnumerateArray()) effs.Add(new EffectRef(new EffectId(x[0].GetInt32()), x[1].GetInt32() != 0));
-            var req = new List<int>();
-            foreach (var a in RequiredSkillAttrs)
-                if (raw.TryGetValue(a, out var v) && (int)v != 0) req.Add((int)v);
-            int category = (int)(Num(t, "category") ?? 0), group = (int)(Num(t, "group") ?? 0);
-            var ti = new TypeInfo
-            {
-                Id = id, Name = Str(t, "name") ?? "", Group = group, Category = category,
-                Published = Bool(t, "published") ?? false, Mass = mass, Volume = vol, Capacity = cap, Radius = rad,
-                MetaLevel = t.TryGetProperty("meta_level", out var ml) && ml.ValueKind == JsonValueKind.Number ? ml.GetInt32() : null,
-                RawAttrs = AttrTable.From(raw), Attrs = AttrTable.From(folded), Effects = effs.ToArray(), RequiredSkills = req.ToArray(),
-            };
-            types[id] = ti;
-            if (category == 16 && ti.Published) skills.Add(id);
-            if (group == 1306) modes.Add((ti.Name.ToLowerInvariant(), id));
+            rawTypes.Add(new RawType(int.Parse(p.Name), Str(t, "name") ?? "", (int)(Num(t, "group") ?? 0), (int)(Num(t, "category") ?? 0),
+                Bool(t, "published") ?? false, Num(t, "mass") ?? 0, Num(t, "volume") ?? 0, Num(t, "capacity") ?? 0, Num(t, "radius") ?? 0,
+                t.TryGetProperty("meta_level", out var ml) && ml.ValueKind == JsonValueKind.Number ? ml.GetInt32() : null,
+                raw.ToArray(), effs.ToArray()));
         }
-        var typeByName = new Dictionary<string, int>();
-        foreach (var id in types.Keys.OrderBy(x => x))
-        {
-            var t = types[id];
-            var key = t.Name.ToLowerInvariant();
-            if (t.Published || !typeByName.ContainsKey(key)) typeByName[key] = id;
-        }
-
         var dbuffs = new Dictionary<int, DbuffInfo>();
         if (root.TryGetProperty("dbuffs", out var db))
             foreach (var p in db.EnumerateObject())
@@ -151,11 +125,61 @@ public static class DatasetLoader
             foreach (var p in z.EnumerateObject()) zh[int.Parse(p.Name)] = p.Value.GetString() ?? "";
 
         var sde = root.GetProperty("sde");
+        return Assemble(sde.GetProperty("build").GetInt64(), Str(sde, "release_date"), sha,
+            attrById.Where(x => x != null).ToList()!, effects.Values.ToList(), groups, rawTypes, dbuffs, mutas, zh);
+    }
+
+    /// <summary>Type as stored in the dataset (before derived fields are computed).</summary>
+    public sealed record RawType(int Id, string Name, int Group, int Category, bool Published, double Mass, double Volume,
+        double Capacity, double Radius, int? MetaLevel, KeyValuePair<int, double>[] Attrs, EffectRef[] Effects);
+
+    /// <summary>Build the immutable <see cref="Dataset"/> (indexes and derived per-type fields) from raw tables.</summary>
+    public static Dataset Assemble(long build, string? releaseDate, string sha, List<AttrInfo> attrList, List<EffectInfo> effectList,
+        Dictionary<int, GroupInfo> groups, List<RawType> rawTypes, Dictionary<int, DbuffInfo> dbuffs,
+        Dictionary<int, MutaplasmidInfo> mutas, Dictionary<int, string> zh)
+    {
+        var attrById = new AttrInfo?[attrList.Count == 0 ? 1 : attrList.Max(a => a.Id.Value) + 1];
+        var attrByName = new Dictionary<string, int>();
+        foreach (var a in attrList.OrderBy(a => a.Id.Value)) { attrById[a.Id.Value] = a; attrByName[a.Name] = a.Id.Value; }
+        var effects = new Dictionary<int, EffectInfo>();
+        var effectByName = new Dictionary<string, int>();
+        foreach (var e in effectList.OrderBy(e => e.Id.Value)) { effects[e.Id.Value] = e; effectByName[e.Name] = e.Id.Value; }
+        var types = new Dictionary<int, TypeInfo>(rawTypes.Count);
+        var skills = new List<int>();
+        var modes = new List<(string, int)>();
+        var set = new (int, double)[4];
+        foreach (var r in rawTypes)
+        {
+            var raw = AttrTable.From(r.Attrs);
+            // type-level fields are authoritative (mass 4 / capacity 38 / volume 161 / radius 162)
+            int ns = 0;
+            foreach (var (aid, v) in new[] { (4, r.Mass), (38, r.Capacity), (161, r.Volume), (162, r.Radius) })
+                if (v != 0.0 || !raw.TryGet(new AttrId(aid), out _)) set[ns++] = (aid, v);
+            var req = new List<int>();
+            foreach (var a in RequiredSkillAttrs)
+                if (raw.TryGet(new AttrId(a), out var v) && (int)v != 0) req.Add((int)v);
+            var ti = new TypeInfo
+            {
+                Id = r.Id, Name = r.Name, Group = r.Group, Category = r.Category, Published = r.Published, Mass = r.Mass,
+                Volume = r.Volume, Capacity = r.Capacity, Radius = r.Radius, MetaLevel = r.MetaLevel,
+                RawAttrs = raw, Attrs = raw.With(set.AsSpan(0, ns)), Effects = r.Effects, RequiredSkills = req.ToArray(), Raw = r,
+            };
+            types[r.Id] = ti;
+            if (r.Category == 16 && r.Published) skills.Add(r.Id);
+            if (r.Group == 1306) modes.Add((r.Name.ToLowerInvariant(), r.Id));
+        }
+        var typeByName = new Dictionary<string, int>();
+        foreach (var id in types.Keys.OrderBy(x => x))
+        {
+            var t = types[id];
+            var key = t.Name.ToLowerInvariant();
+            if (t.Published || !typeByName.ContainsKey(key)) typeByName[key] = id;
+        }
         skills.Sort();
         modes.Sort((a, b) => a.Item2.CompareTo(b.Item2));
         return new Dataset
         {
-            Build = sde.GetProperty("build").GetInt64(), ReleaseDate = Str(sde, "release_date"), Sha256 = sha,
+            Build = build, ReleaseDate = releaseDate, Sha256 = sha,
             Types = types, Groups = groups, AttrById = attrById, Effects = effects, Dbuffs = dbuffs, Mutaplasmids = mutas,
             NamesZh = zh, AttrByName = attrByName, EffectByName = effectByName, TypeByName = typeByName,
             PublishedSkills = skills.ToArray(), TacticalModes = modes.ToArray(),
