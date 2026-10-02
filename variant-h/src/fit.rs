@@ -56,6 +56,16 @@ struct Index {
     by_skill: FxHashMap<u32, Vec<(Entity, Loc, bool, bool)>>,
 }
 
+enum Special {
+    Rep(IncomingRep),
+    Drain(IncomingDrain),
+}
+
+/// weapon / mining effects of projected items: they damage the target, not part of its own stats
+const DAMAGE_EFFECTS: &[&str] = &["projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack",
+    "missileLaunchingForEntity", "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari",
+    "superWeaponGallente", "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching"];
+
 struct PendingMod {
     target: Entity,
     attr: u32,
@@ -313,8 +323,40 @@ impl<'a> Fit<'a> {
                 "module" => {
                     if let Some(m) = &p.module {
                         for _ in 0..p.amount.max(1) {
-                            let e = fit.spawn_item(m.type_id, Kind::Projected, Loc::Nowhere, m.state.unwrap_or(State::Active), &path)?;
-                            fit.world.insert_one(e, Distance(p.distance_m)).unwrap();
+                            let st = m.state.unwrap_or(State::Active);
+                            let e = fit.spawn_item(m.type_id, Kind::Projected, Loc::Nowhere, st, &path)?;
+                            let mut charge = None;
+                            if let Some(c) = m.charge_type_id {
+                                let ce = fit.spawn_item(c, Kind::Charge, Loc::Nowhere, st, &format!("{path}/module/charge_type_id"))?;
+                                fit.world.insert_one(ce, LoadedIn(e)).unwrap();
+                                fit.world.get::<&mut Item>(ce).unwrap().owned = false;
+                                charge = Some(ce);
+                            }
+                            fit.world.insert(e, (Distance(p.distance_m), Fitted { slot: None, req_index: i, charge, spool: None })).unwrap();
+                        }
+                    }
+                }
+                "fit" => {
+                    // whole projected fit: its own world (own skills, implants, fleet), then every active module /
+                    // drone is projected as a frozen entity carrying the source-modified attribute values
+                    if let Some(src_req) = &p.fit {
+                        let mut sreq = (**src_req).clone();
+                        sreq.projected.clear();
+                        let frozen = match Fit::run(ds, &sreq) {
+                            Ok(src) => src.frozen_projectors(),
+                            Err(e) => {
+                                fit.warnings.push(format!("projected[{i}] fit: {} {}", e.code, e.message));
+                                continue;
+                            }
+                        };
+                        for (type_id, copies, vals) in frozen {
+                            for _ in 0..copies * p.amount.max(1) {
+                                let e = fit.spawn_item(type_id, Kind::Projected, Loc::Nowhere, State::Active, &path)?;
+                                fit.world.insert_one(e, Distance(p.distance_m)).unwrap();
+                                for (a, v) in &vals {
+                                    fit.set_base(e, *a, *v);
+                                }
+                            }
                         }
                     }
                 }
@@ -358,6 +400,26 @@ impl<'a> Fit<'a> {
             }
         }
         Ok(fit)
+    }
+
+    /// Active modules (1 copy) and active drones (n copies) with all their evaluated attributes.
+    pub fn frozen_projectors(&self) -> Vec<(u32, u32, Vec<(u32, f64)>)> {
+        let c = self.calc();
+        let mut out = Vec::new();
+        for &e in &self.order {
+            let it = self.item(e);
+            let copies = match it.kind {
+                Kind::Module if self.state(e) >= State::Active => 1,
+                Kind::Drone => self.squad(e).active,
+                _ => 0,
+            };
+            if copies == 0 {
+                continue;
+            }
+            let vals = c.attr_ids(e).into_iter().map(|a| (a, c.get(e, a))).collect();
+            out.push((it.type_id, copies, vals));
+        }
+        out
     }
 
     // ------------------------------------------------------------------ system 2: index
@@ -564,6 +626,7 @@ impl<'a> Fit<'a> {
         let ship = self.ship;
         let mut pend = Vec::new();
         let sources: Vec<Entity> = self.order.iter().copied().filter(|&e| self.item(e).kind == Kind::Projected).collect();
+        let mut specials: Vec<(Entity, Special)> = Vec::new();
         for e in sources {
             let it = self.item(e);
             let state = self.state(e);
@@ -597,15 +660,70 @@ impl<'a> Fit<'a> {
                     push(self, a.max_velocity, a.speed_factor, 6, &mut pend);
                 } else if name.starts_with("remoteTargetPaint") || name == "structureModuleEffectTargetPainter" {
                     push(self, a.sig, a.sig_bonus, 6, &mut pend);
-                } else if name.starts_with("remoteSensorDamp") || name == "structureModuleEffectRemoteSensorDampener" || name.starts_with("remoteSensorBoost") {
+                } else if name.starts_with("remoteSensorDamp") || name == "structureModuleEffectRemoteSensorDampener" {
                     push(self, a.max_target_range, a.max_target_range_bonus, 6, &mut pend);
                     push(self, a.scan_resolution, a.scan_resolution_bonus, 6, &mut pend);
-                } else {
+                } else if name.starts_with("remoteSensorBoost") {
+                    push(self, a.max_target_range, a.max_target_range_bonus, 6, &mut pend);
+                    push(self, a.scan_resolution, a.scan_resolution_bonus, 6, &mut pend);
+                    for k in 0..4 {
+                        push(self, a.sensor[k], a.sensor_percent[k], 6, &mut pend);
+                    }
+                } else if let Some(sp) = self.incoming_special(e, name, resist, dist) {
+                    specials.extend(sp);
+                } else if !DAMAGE_EFFECTS.contains(&name) {
                     self.warnings.push(format!("projected effect '{name}' not modelled yet"));
                 }
             }
         }
         self.apply(pend);
+        for (e, sp) in specials {
+            match sp {
+                Special::Rep(r) => self.world.insert_one(e, r).unwrap(),
+                Special::Drain(d) => self.world.insert_one(e, d).unwrap(),
+            }
+        }
+    }
+
+    /// Projected effects that feed tank / capacitor instead of attributes (remote reps, cap transfer, neuts, nos).
+    fn incoming_special(&self, e: Entity, name: &str, resist: u32, dist: Option<f64>) -> Option<Vec<(Entity, Special)>> {
+        let ds = self.ds;
+        let a = &ds.a;
+        let c = self.calc();
+        let base = |attr: u32| if c.has(e, attr) { c.base(e, attr) } else { 0.0 };
+        let falloff_factor = || crate::stats::range_factor(base(a.max_range), base(a.falloff_effectiveness), dist, true);
+        let gate = |opt: f64| if opt < dist.unwrap_or(0.0) { 0.0 } else { 1.0 };
+        let no_assist = c.has(self.ship, a.disallow_assistance) && c.base(self.ship, a.disallow_assistance) != 0.0;
+        let rep = |layer: u8, amount_attr: u32, mult: f64, factor: f64| {
+            if no_assist { vec![] } else { vec![(e, Special::Rep(IncomingRep { layer, amount_attr, mult, factor }))] }
+        };
+        let drain = |amount_attr: u32, duration_attr: u32, factor: f64, sign: f64| {
+            vec![(e, Special::Drain(IncomingDrain { amount_attr, duration_attr, factor, resist, sign }))]
+        };
+        let paste = self
+            .world
+            .get::<&Fitted>(e)
+            .ok()
+            .and_then(|f| f.charge)
+            .map(|ch| ds.types[&self.item(ch).type_id].name == "Nanite Repair Paste")
+            .unwrap_or(false);
+        Some(match name {
+            "shipModuleRemoteShieldBooster" | "shipModuleAncillaryRemoteShieldBooster" => rep(0, a.shield_bonus, 1.0, falloff_factor()),
+            "shipModuleRemoteArmorRepairer" | "ShipModuleRemoteArmorMutadaptiveRepairer" => rep(1, a.armor_dmg_amount, 1.0, falloff_factor()),
+            "shipModuleAncillaryRemoteArmorRepairer" => rep(1, a.armor_dmg_amount, if paste { 3.0 } else { 1.0 }, falloff_factor()),
+            "shipModuleRemoteHullRepairer" => rep(2, a.structure_dmg_amount, 1.0, falloff_factor()),
+            "npcEntityRemoteShieldBooster" => rep(0, a.shield_bonus, 1.0, gate(base(a.max_range))),
+            "npcEntityRemoteArmorRepairer" => rep(1, a.armor_dmg_amount, 1.0, gate(base(a.max_range))),
+            "npcEntityRemoteHullRepairer" => rep(2, a.structure_dmg_amount, 1.0, gate(base(a.max_range))),
+            "shipModuleRemoteCapacitorTransmitter" => {
+                if no_assist { vec![] } else { drain(a.power_transfer, a.duration, gate(base(a.max_range)), -1.0) }
+            }
+            "energyNeutralizerFalloff" => drain(a.neut_amount, a.duration, falloff_factor(), 1.0),
+            "energyNosferatuFalloff" => drain(a.power_transfer, a.duration, falloff_factor(), 1.0),
+            "structureEnergyNeutralizerFalloff" => drain(a.neut_amount, a.duration, 1.0, 1.0),
+            "entityEnergyNeutralizerFalloff" => drain(a.neut_amount, a.neut_duration, gate(base(a.neut_range)), 1.0),
+            _ => return None,
+        })
     }
 
     // ------------------------------------------------------------------ system 5: fleet buffs
@@ -670,18 +788,25 @@ impl<'a> Fit<'a> {
             }
             None => agg.push((id, v)),
         };
+        // explicit buffs: aggregated with the dbuff's own aggregate mode, and they override fleet/own bursts
+        let mut explicit: Vec<(u32, f64)> = Vec::new();
         for b in &req.fleet.buffs {
-            if !ds.dbuffs.contains_key(&b.buff_id) {
+            let Some(info) = ds.dbuffs.get(&b.buff_id) else {
                 self.warnings.push(format!("unknown warfare buff {}", b.buff_id));
                 continue;
+            };
+            match explicit.iter_mut().find(|x| x.0 == b.buff_id) {
+                Some(x) => x.1 = if info.aggregate.as_deref() == Some("Minimum") { x.1.min(b.value) } else { x.1.max(b.value) },
+                None => explicit.push((b.buff_id, b.value)),
             }
-            add(b.buff_id, b.value, &mut agg);
         }
         for (id, v) in self.burst_buffs() {
             add(id, v, &mut agg);
         }
         for (i, bf) in req.fleet.booster_fits.iter().enumerate() {
-            match Fit::spawn(ds, bf) {
+            let mut breq = bf.clone();
+            breq.fleet.booster_fits.clear();
+            match Fit::spawn(ds, &breq) {
                 Ok(mut sub) => {
                     sub.build_index();
                     sub.local_effects();
@@ -692,6 +817,8 @@ impl<'a> Fit<'a> {
                 Err(e) => self.warnings.push(format!("fleet/booster_fits/{i}: {} {}", e.code, e.message)),
             }
         }
+        agg.retain(|x| !explicit.iter().any(|y| y.0 == x.0));
+        agg.extend(explicit);
         agg.sort_by_key(|x| x.0);
         let mut pend = Vec::new();
         let mut tg = Vec::new();

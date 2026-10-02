@@ -55,6 +55,9 @@ id_table!(AttrIds {
     drone_control = "droneControlDistance", rig_size = "rigSize", max_group_fitted = "maxGroupFitted",
     max_type_fitted = "maxTypeFitted", max_group_online = "maxGroupOnline", max_group_active = "maxGroupActive",
     charge_size = "chargeSize",
+    disallow_assistance = "disallowAssistance", falloff_effectiveness = "falloffEffectiveness",
+    neut_amount = "energyNeutralizerAmount", neut_duration = "energyNeutralizerDuration",
+    neut_range = "energyNeutralizerRangeOptimal", neut_sig_res = "energyNeutralizerSignatureResolution",
 } arrays {
     dmg: [4] = ["emDamage".into(), "thermalDamage".into(), "kineticDamage".into(), "explosiveDamage".into()],
     extra_durations: [5] = ["durationHighisGood".into(), "durationSensorDampeningBurstProjector".into(),
@@ -73,6 +76,7 @@ id_table!(AttrIds {
     can_fit_type: [11] = std::array::from_fn(|k| format!("canFitShipType{}", k + 1)),
     req_skill_level: [6] = std::array::from_fn(|k| format!("requiredSkill{}Level", k + 1)),
     req_skill: [6] = std::array::from_fn(|k| format!("requiredSkill{}", k + 1)),
+    sensor_percent: [4] = ["Radar", "Ladar", "Magnetometric", "Gravimetric"].map(|s| format!("scan{s}StrengthPercent")),
 });
 
 id_table!(EffectIds {

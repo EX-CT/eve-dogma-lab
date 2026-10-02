@@ -394,6 +394,31 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             hull_rep += g(m, a.structure_dmg_amount) / dur;
         }
     }
+    // incoming remote repairs (Pyfa applied-RR diminishing-returns formula)
+    {
+        let mut lists: [Vec<(f64, f64)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        for &e in &fit.order {
+            if let Ok(r) = fit.world.get::<&IncomingRep>(e) {
+                let dur = g(e, a.duration) / 1000.0;
+                if dur > 0.0 {
+                    lists[r.layer as usize].push((g(e, r.amount_attr) * r.mult * r.factor, dur));
+                }
+            }
+        }
+        let applied = |l: &Vec<(f64, f64)>| -> f64 {
+            let total: f64 = l.iter().map(|(x, c)| x / c.trunc()).sum();
+            l.iter()
+                .map(|(x, c)| {
+                    let rrps = x / c.trunc();
+                    let m = 7000.0 + rrps * 20.0;
+                    (1.0 - (((rrps + m) / (total + m)) - 1.0).powi(2)) * x / c
+                })
+                .sum()
+        };
+        shield_rep += applied(&lists[0]);
+        armor_rep += applied(&lists[1]);
+        hull_rep += applied(&lists[2]);
+    }
     let srr = g(ship, a.shield_recharge) / 1000.0;
     let passive = if srr > 0.0 { 10.0 / srr * 0.5 * 0.5 * hp_s } else { 0.0 };
     let defense = json!({
@@ -451,6 +476,24 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             });
         }
         module_rows.push(row);
+    }
+    // incoming neuts / nos / cap transfers (extra simulation drains after the fit's own modules)
+    let sig_now = g(ship, a.sig);
+    for &e in &fit.order {
+        if let Ok(d) = fit.world.get::<&IncomingDrain>(e) {
+            let mut need = g(e, d.amount_attr) * d.factor * d.sign;
+            if d.resist != 0 {
+                need *= g(ship, d.resist);
+            }
+            let sres = g(e, a.neut_sig_res);
+            if sres != 0.0 {
+                need *= (sig_now / sres).min(1.0);
+            }
+            let dur = g(e, d.duration_attr);
+            if need != 0.0 && dur > 0.0 {
+                drains.push(Drain { duration: dur.trunc(), cap_need: need, clip_size: 0, reload_ms: 0.0, is_injector: false, disable_stagger: false });
+            }
+        }
     }
     let mut capj = json!({"capacity": cap, "recharge_time_s": rr / 1000.0, "peak_recharge_gj_s": peak,
         "use_gj_s": cap_used, "injected_gj_s": cap_added, "delta_gj_s": peak + cap_added - cap_used});

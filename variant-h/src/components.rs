@@ -121,3 +121,23 @@ pub struct Attrs {
     pub type_id: u32,
     pub slots: FxHashMap<u32, AttrSlot>,
 }
+
+/// Incoming remote repair from a projected entity (feeds `defense.tank`, Pyfa applied-RR formula).
+#[derive(Debug, Clone, Copy)]
+pub struct IncomingRep {
+    /// 0 shield, 1 armor, 2 hull
+    pub layer: u8,
+    pub amount_attr: u32,
+    pub mult: f64,
+    pub factor: f64,
+}
+
+/// Incoming capacitor drain (sign +1: neut/nos) or fill (sign -1: cap transfer) from a projected entity.
+#[derive(Debug, Clone, Copy)]
+pub struct IncomingDrain {
+    pub amount_attr: u32,
+    pub duration_attr: u32,
+    pub factor: f64,
+    pub resist: u32,
+    pub sign: f64,
+}
