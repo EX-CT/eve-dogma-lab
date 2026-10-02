@@ -61,8 +61,8 @@ FitRequest ──build──▶ items: Vec<Item>            (base attrs = sorted
    is thread-local. `batch` evaluates chunks on all cores (`--threads N`), output order preserved, byte-identical to
    `--threads 1`.
 8. **Fast cold start.** Dataset JSON is parsed with a borrowed-key visitor straight into `Vec<(id, T)>` (no key
-   `String`s, no intermediate `HashMap`s), SHA-256 (only reported in `meta`) runs on a second thread with SHA-NI
-   (`sha2`), gzip via `zlib-rs`. Load ≈ 65 ms vs ≈ 140 ms.
+   `String`s, no intermediate `HashMap`s), SHA-256 (only reported in `meta`) runs on a second thread (in-tree
+   `data::sha256_hex`, no crypto dependency; hidden behind the JSON parse), gzip via `zlib-rs`. Load ≈ 65 ms vs ≈ 140 ms.
 
 ## What is shared with A (and why)
 
@@ -74,7 +74,19 @@ booster fits, projected fits, remote reps/neuts) is re-expressed in the compile/
 
 ## Verification
 
-* `cargo test --release`: Pyfa oracle parity (`tests/oracle/pyfa_expected.json`, same corpus as the bench).
+* `cargo test --release` (needs the dataset, `$EVE_DOGMA_DATASET` or `./dataset.json.gz`; dataset tests skip without it):
+  * `tests/oracle_parity.rs`: Pyfa oracle parity (`tests/oracle/pyfa_expected.json`, same corpus as the bench).
+  * `tests/eft_export_parity.rs`: EFT export byte-identical to Pyfa's `exportEft`, plus re-parse.
+  * `tests/snapshot_roundtrip.rs`: a dataset loaded from snapshot bytes gives byte-identical output to the parsed
+    dataset on every `tests/cases` request (cache format is output-neutral).
+  * `tests/api.rs`: error responses (BAD_REQUEST, UNKNOWN_TYPE + path), output shape, skill effects on a bare hull,
+    every case error-free, `calc_many` (1 and 4 threads) == sequential, no state leaking between calls, EFT
+    export -> parse round trip of every `tests/fits` fit.
+  * unit tests in `src/tests/<module>.rs` (`#[path]` test modules): capsim fast path vs the reference port
+    (3000 randomized cases) and behaviour, stacking penalty, range/lock-time/spool-up formulas, Python-compatible
+    rounding (`py_round2`, `float_unerr7`, EFT float repr), JSON writer, SHA-256 vectors, snapshot name-hash
+    golden values, Fx hasher.
+  * `tests/common/mod.rs`: shared helpers (dataset, EFT -> request, `tests/cases` corpus).
 * `tools/diff_vs_a.py A_BIN B_BIN DATASET CASES`: **full-output differential test** against A on every bench case —
   every field of FitStats, not only the Pyfa-checked metrics. Current: 326/326 byte-identical vs A@fc66eaf (except `meta.engine`), also on a factor_reload-flipped variant corpus.
 * `tools/ir_corpus.sh`: callgrind instructions for `batch --threads 1` over the whole corpus (`/tmp/corpus.jsonl`) —
@@ -103,8 +115,10 @@ booster fits, projected fits, remote reps/neuts) is re-expressed in the compile/
   in-place top update like A 1db626a) with `simulate_ref` (the plain Pyfa port) as fallback on NaN / overflow /
   `VB_CAPSIM_REF`. Still ~12% of corpus instructions (long simulations, e.g. 5000-iteration weather fits).
 * JSON output is still built as a `serde_json::Value` tree (~20% of per-fit cost: BTreeMap inserts, drops,
-  serialisation); a direct sorted-key writer is the largest remaining single-fit win.
-* WASM build (no threads) is straightforward: no native deps besides zlib-rs/sha2 (both pure Rust).
+  serialisation). A direct `Value` walker replacing serde's serializer was tried (07:20) and was not faster
+  (+1% instructions); the win needs skipping the tree, i.e. writing sections straight to the output buffer.
+* WASM build (no threads, no mmap) is straightforward: the only native-code dependency is mimalloc (optional);
+  zlib-rs and the in-tree SHA-256/Fx hash are pure Rust.
 
 ## Cold start: dataset snapshot cache
 `data::load_path` keys a cache file on SHA-256 of (absolute path, size, mtime, inode, device) of the dataset — no

@@ -12,12 +12,15 @@ D=/workspace/exct-eve/data/dataset-3569502.json.gz      # or $EVE_DOGMA_DATASET 
 ./target/release/eve-dogma-vb --dataset $D serve-stdio                 # JSONL RPC (calc|eft_parse|eft_export|search|type|meta)
 ./target/release/eve-dogma-vb --dataset $D eft fit.eft --calc --skills 5
 ./target/release/eve-dogma-vb --dataset $D bench-phases req.json -n 1000   # per-phase timing + graph size
-EVE_DOGMA_DATASET=$D cargo test --release                             # Pyfa oracle parity
+EVE_DOGMA_DATASET=$D cargo test --release                             # oracle + EFT parity, API, snapshot, unit tests
 python3 tools/diff_vs_a.py A_BIN ./target/release/eve-dogma-vb $D ../eve-dogma-bench/cases   # full diff vs A
 ```
 
 Bench manifest: [bench.yaml](bench.yaml). Results: [results/](results/) (latest official: `results/official-0708-full`,
 bench 1.8.0: 326/326 cases, 21051/21051 values, eft export 326/326, 0.068 ms/fit, 8702 fits/s, cold 10 ms).
+
+Tests: `tests/*.rs` (integration, see DESIGN.md#verification) and `src/tests/<module>.rs` (unit). Runtime
+dependencies: serde, serde_json, bincode, flate2 (zlib-rs), memmap2, mimalloc.
 
 Perf tooling: `tools/ir_corpus.sh` (callgrind instructions over the corpus, deterministic), `tools/startup.py`
 (cold-process median), `tools/batchtime.py BIN threads...`. Env: `EVE_DOGMA_NO_CACHE`, `EVE_DOGMA_CACHE=DIR`,

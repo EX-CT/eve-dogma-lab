@@ -82,3 +82,13 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   chunks with a barrier per chunk and serial output: corpus x5 median 17.8k -> 19.9k fits/s (8 threads, same box,
   interleaved runs). Output byte-identical (md5 of the corpus batch at 1 and 4 threads == previous build).
   New test `snapshot_roundtrip`: snapshot-loaded dataset == parsed dataset on every tests/cases request.
+
+## 07:50 CST — maintainability
+- Tests 6 -> 35: shared `tests/common`; `tests/api.rs` (errors, shape, skills, determinism, calc_many, EFT round
+  trip of all 139 fits); `snapshot_roundtrip` fixed (it compared BAD_REQUEST errors: tests/cases are EFT+patch
+  specs, not FitRequests); unit tests for the formula helpers, rounding, capsim behaviour, SHA-256, hashes; unit
+  tests live in `src/tests/<module>.rs`.
+- Runtime deps 8 -> 6: `sha2` replaced by the in-tree `sha256_hex` (now streaming, no input copy; same cache keys),
+  `rustc-hash` by `src/hash.rs` (same integer mixing, so u32-keyed maps behave as before). Removed a stray
+  `src/main.rs.orig`. Output identical (diff vs A 326/326 on corpus and reload variants; corpus batch md5 equal).
+- Tried a direct JSON `Value` writer instead of serde's serializer: +1.1% instructions, reverted.
