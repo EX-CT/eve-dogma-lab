@@ -1,25 +1,25 @@
 # Scorecard: D
 
 - command: `node dist-cli/eve-dogma-ts.cjs calc --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`, batch: `node dist-cli/eve-dogma-ts.cjs batch --dataset /workspace/exct-eve/data/dataset-3569502.json.gz`
-- cases fully correct: **295/295**
-- values correct: **18978/18978** (100.00 %)
+- cases fully correct: **297/297**
+- values correct: **19103/19103** (100.00 %)
 - engine errors: 0
 
 | group | ok | total | % |
 |---|---|---|---|
-| application | 3501 | 3501 | 100.0 |
-| capacitor | 1035 | 1035 | 100.0 |
-| defense | 5308 | 5308 | 100.0 |
-| fitting | 2655 | 2655 | 100.0 |
-| navigation | 1759 | 1759 | 100.0 |
-| offense | 1180 | 1180 | 100.0 |
-| tank | 2065 | 2065 | 100.0 |
-| targeting | 1475 | 1475 | 100.0 |
+| application | 3520 | 3520 | 100.0 |
+| capacitor | 1043 | 1043 | 100.0 |
+| defense | 5344 | 5344 | 100.0 |
+| fitting | 2673 | 2673 | 100.0 |
+| navigation | 1771 | 1771 | 100.0 |
+| offense | 1188 | 1188 | 100.0 |
+| tank | 2079 | 2079 | 100.0 |
+| targeting | 1485 | 1485 | 100.0 |
 
 | perf | value |
 |---|---|
-| one process per case, median ms (cold start + calc) | 217.5 |
-| batch throughput (corpus x5) fits/s | 615 |
-| latency one fit (exct_rifter) ms/calc | 1.323 |
-| startup + one calc ms | 216.2 |
+| one process per case, median ms (cold start + calc) | 208.6 |
+| batch throughput (corpus x5) fits/s | 525 |
+| latency one fit (exct_rifter) ms/calc | 0.849 |
+| startup + one calc ms | 385.7 |
 | deterministic | True |
