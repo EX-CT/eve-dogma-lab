@@ -26,3 +26,7 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
 ## 2026-10-03 ~05:10 CST — snapshot cache
 - bincode dataset snapshot keyed by SHA-256 of dataset bytes: process cold calc ~25 ms (was ~90 ms).
 - Parity: 289/289 bench cases byte-identical vs A@0e5a1ce (with and without cache); oracle test passes.
+
+## 2026-10-03 ~05:30 CST — ported A@086dcb4 + A@ae4bfb0
+- sustainable tank, cap booster forced reload, ECM jam chance, projected fighters, fighter self abilities, drone/fighter application fields.
+- tests/ synced from A@ae4bfb0. Parity: 289/289 bench cases byte-identical vs A@ae4bfb0; oracle test passes.
