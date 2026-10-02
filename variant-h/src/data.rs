@@ -8,12 +8,14 @@ use std::sync::OnceLock;
 
 /// All types, decoded lazily: the derived cache stores each `TypeInfo` as its own bincode record, and a request
 /// only decodes the few hundred types it touches (cold start does not pay for ~all types and their names).
-pub struct TypeTable {
+pub type TypeTable = LazyTable<TypeInfo>;
+
+pub struct LazyTable<T> {
     ids: Vec<u32>,
     /// record i = blob[offs[i]..offs[i + 1]]
     offs: Vec<u32>,
     blob: Vec<u8>,
-    cells: Vec<OnceLock<TypeInfo>>,
+    cells: Vec<OnceLock<T>>,
     /// dense id -> index + 1 (0 = absent), for ids below DENSE_MAX
     dense: Vec<u32>,
 }
@@ -31,9 +33,9 @@ fn dense_of(ids: &[u32]) -> Vec<u32> {
     d
 }
 
-impl TypeTable {
-    pub fn from_map(m: FxHashMap<u32, TypeInfo>) -> TypeTable {
-        let mut v: Vec<(u32, TypeInfo)> = m.into_iter().collect();
+impl<T: Serialize + serde::de::DeserializeOwned> LazyTable<T> {
+    pub fn from_map(m: FxHashMap<u32, T>) -> LazyTable<T> {
+        let mut v: Vec<(u32, T)> = m.into_iter().collect();
         v.sort_by_key(|x| x.0);
         let (mut ids, mut offs, mut blob, mut cells) = (Vec::new(), vec![0u32], Vec::new(), Vec::new());
         for (id, t) in v {
@@ -45,7 +47,7 @@ impl TypeTable {
             cells.push(c);
         }
         let dense = dense_of(&ids);
-        TypeTable { ids, offs, blob, cells, dense }
+        LazyTable { ids, offs, blob, cells, dense }
     }
     #[inline]
     fn idx(&self, id: u32) -> Option<usize> {
@@ -59,11 +61,11 @@ impl TypeTable {
         }
     }
     #[inline]
-    fn at(&self, i: usize) -> &TypeInfo {
+    fn at(&self, i: usize) -> &T {
         self.cells[i].get_or_init(|| bincode::deserialize(&self.blob[self.offs[i] as usize..self.offs[i + 1] as usize]).expect("type record"))
     }
     #[inline]
-    pub fn get(&self, id: &u32) -> Option<&TypeInfo> {
+    pub fn get(&self, id: &u32) -> Option<&T> {
         self.idx(*id).map(|i| self.at(i))
     }
     pub fn contains_key(&self, id: &u32) -> bool {
@@ -76,14 +78,14 @@ impl TypeTable {
         self.ids.is_empty()
     }
     /// all types in ascending id order (decodes every record)
-    pub fn values(&self) -> impl Iterator<Item = &TypeInfo> {
+    pub fn values(&self) -> impl Iterator<Item = &T> {
         (0..self.ids.len()).map(|i| self.at(i))
     }
 }
 
-impl std::ops::Index<&u32> for TypeTable {
-    type Output = TypeInfo;
-    fn index(&self, id: &u32) -> &TypeInfo {
+impl<T: Serialize + serde::de::DeserializeOwned> std::ops::Index<&u32> for LazyTable<T> {
+    type Output = T;
+    fn index(&self, id: &u32) -> &T {
         self.get(id).expect("unknown type id")
     }
 }
@@ -120,18 +122,18 @@ impl<'de> Deserialize<'de> for Bytes {
     }
 }
 
-impl Serialize for TypeTable {
+impl<T> Serialize for LazyTable<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         (Bytes(u32s_to_bytes(&self.ids)), Bytes(u32s_to_bytes(&self.offs)), Bytes(self.blob.clone())).serialize(s)
     }
 }
-impl<'de> Deserialize<'de> for TypeTable {
+impl<'de, T> Deserialize<'de> for LazyTable<T> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let (ids, offs, blob) = <(Bytes, Bytes, Bytes)>::deserialize(d)?;
         let ids = bytes_to_u32s(&ids.0);
         let cells = (0..ids.len()).map(|_| OnceLock::new()).collect();
         let dense = dense_of(&ids);
-        Ok(TypeTable { ids, offs: bytes_to_u32s(&offs.0), blob: blob.0, cells, dense })
+        Ok(LazyTable { ids, offs: bytes_to_u32s(&offs.0), blob: blob.0, cells, dense })
     }
 }
 
@@ -290,8 +292,8 @@ pub struct Dataset {
     pub types: TypeTable,
     pub group_names: FxHashMap<u32, String>,
     pub category_names: FxHashMap<u32, String>,
-    pub attrs: FxHashMap<u32, AttrInfo>,
-    pub effects: FxHashMap<u32, EffectInfo>,
+    pub attrs: LazyTable<AttrInfo>,
+    pub effects: LazyTable<EffectInfo>,
     pub dbuffs: FxHashMap<u32, DbuffInfo>,
     pub mutaplasmids: FxHashMap<u32, MutaInfo>,
     attr_by_name: FxHashMap<String, u32>,
@@ -552,8 +554,8 @@ impl Dataset {
             types: TypeTable::from_map(types),
             group_names,
             category_names,
-            attrs,
-            effects,
+            attrs: LazyTable::from_map(attrs),
+            effects: LazyTable::from_map(effects),
             dbuffs: raw.dbuffs.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect(),
             mutaplasmids: raw.mutaplasmids.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect(),
             attr_by_name,
