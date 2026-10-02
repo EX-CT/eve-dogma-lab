@@ -1,0 +1,25 @@
+[package]
+name = "eve-dogma-salsa"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-3.0-or-later"
+description = "EX-CT dogma lab variant I: incremental (salsa) EVE Online fitting engine"
+repository = "https://github.com/EX-CT/eve-dogma-lab"
+
+[dependencies]
+flate2 = "1.1"
+rustc-hash = "2.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+salsa = "=0.28.2"
+
+[[bin]]
+name = "eve-dogma-i"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+debug = false
