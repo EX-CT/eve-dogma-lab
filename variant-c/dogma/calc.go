@@ -70,6 +70,8 @@ func Tidy(v any) any {
 		return round6(x)
 	case *modRow:
 		return Tidy(x.toObj())
+	case *fobj:
+		return Tidy(x.toObj())
 	case obj:
 		for k, e := range x {
 			x[k] = Tidy(e)

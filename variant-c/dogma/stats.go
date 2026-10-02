@@ -74,8 +74,8 @@ func (d *dmg) add(o dmg)          { d.em += o.em; d.th += o.th; d.ki += o.ki; d.
 func (d dmg) vs(r Resists) float64 {
 	return d.em*(1-r.EM) + d.th*(1-r.Thermal) + d.ki*(1-r.Kinetic) + d.ex*(1-r.Explosive)
 }
-func (d dmg) json() obj {
-	return obj{"em": d.em, "thermal": d.th, "kinetic": d.ki, "explosive": d.ex, "total": d.total()}
+func (d dmg) json() *fobj {
+	return &fobj{keysDmg, [5]float64{d.em, d.ex, d.ki, d.th, d.total()}}
 }
 
 func (f *Fit) hasEffect(i int, eid uint32) bool {
@@ -193,7 +193,7 @@ func optIdx(i int) any {
 	return i
 }
 
-func usage(u, t float64) obj { return obj{"used": u, "total": t} }
+func usage(u, t float64) *fobj { return &fobj{k: keysUsage, v: [5]float64{t, u}} }
 
 // ComputeStats evaluates the fit statistics (FitStats v1).
 func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
@@ -465,7 +465,7 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 	rs, ra, rh := layer("shield"), layer("armor"), layer("")
 	hpS, hpA, hpH := g(ship, "shieldCapacity"), g(ship, "armorHP"), f.Get(ship, 9)
 	eS, eA, eH := effectivify(hpS, rs), effectivify(hpA, ra), effectivify(hpH, rh)
-	resJ := func(r [4]float64) obj { return obj{"em": r[0], "thermal": r[1], "kinetic": r[2], "explosive": r[3]} }
+	resJ := func(r [4]float64) *fobj { return &fobj{k: keysRes, v: [5]float64{r[0], r[3], r[2], r[1]}} }
 	var shieldRep, armorRep, hullRep float64
 	for _, i := range modules {
 		if f.Items[i].State < Active {
@@ -528,10 +528,10 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		passive = 10 / srr * 0.5 * 0.5 * hpS
 	}
 	defense := obj{
-		"hp":             obj{"shield": hpS, "armor": hpA, "hull": hpH, "total": hpS + hpA + hpH},
+		"hp":             &fobj{k: keysLayer, v: [5]float64{hpA, hpH, hpS, hpS + hpA + hpH}},
 		"resonance":      obj{"shield": resJ(rs), "armor": resJ(ra), "hull": resJ(rh)},
-		"ehp":            obj{"shield": eS, "armor": eA, "hull": eH, "total": eS + eA + eH},
-		"damage_pattern": obj{"em": dp.EM, "thermal": dp.Thermal, "kinetic": dp.Kinetic, "explosive": dp.Explosive},
+		"ehp":            &fobj{k: keysLayer, v: [5]float64{eA, eH, eS, eS + eA + eH}},
+		"damage_pattern": &fobj{k: keysRes, v: [5]float64{dp.EM, dp.Explosive, dp.Kinetic, dp.Thermal}},
 		"tank": obj{
 			"raw": obj{"passive_shield": passive, "shield_repair": shieldRep, "armor_repair": armorRep, "hull_repair": hullRep},
 			"effective": obj{"passive_shield": effectivify(passive, rs), "shield_repair": effectivify(shieldRep, rs),

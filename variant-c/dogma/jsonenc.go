@@ -37,6 +37,8 @@ func (e *jsonEnc) value(v any, inTree bool) {
 		}
 	case *modRow:
 		e.modRow(x)
+	case *fobj:
+		e.fobj(x)
 	case string:
 		e.b = appendJSONString(e.b, x)
 	case bool:
