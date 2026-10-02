@@ -134,6 +134,17 @@ pub struct IncomingRep {
 
 /// Incoming capacitor drain (sign +1: neut/nos) or fill (sign -1: cap transfer) from a projected entity.
 #[derive(Debug, Clone, Copy)]
+pub struct IncomingEcm {
+    /// entity whose (modified) attributes carry the jam strengths (the projector itself, or a bomb's charge)
+    pub src: Entity,
+    /// fighter ability strengths (`fighterAbilityECMStrength<Type>`) instead of `scan<Type>StrengthBonus`
+    pub fighter: bool,
+    pub factor: f64,
+    pub resist: u32,
+}
+
+/// Incoming capacitor drain (see below).
+#[derive(Debug, Clone, Copy)]
 pub struct IncomingDrain {
     pub amount_attr: u32,
     pub duration_attr: u32,

@@ -350,7 +350,9 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         let dps = v.scale(1000.0 / cyc);
         d_vol.add(&v);
         d_dps.add(&dps);
-        drone_out.push(json!({"drone_index": sq.req_index, "type_id": x.v.item(d).type_id, "name": x.type_name(d), "count": n, "volley": v.json(), "dps": dps.json()}));
+        drone_out.push(json!({"drone_index": sq.req_index, "type_id": x.v.item(d).type_id, "name": x.type_name(d), "count": n, "volley": v.json(), "dps": dps.json(),
+            "optimal_m": g(d, a.max_range), "falloff_m": g(d, a.falloff), "tracking": g(d, a.tracking),
+            "max_velocity": g(d, a.max_velocity), "signature_radius": g(d, a.sig)}));
     }
     let (mut f_vol, mut f_dps) = (Dmg::default(), Dmg::default());
     let mut fighter_out = Vec::new();
@@ -378,7 +380,8 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         if fv.total() > 0.0 {
             f_vol.add(&fv);
             f_dps.add(&fd);
-            fighter_out.push(json!({"fighter_index": sq.req_index, "type_id": v.item(f).type_id, "name": x.type_name(f), "squadron_size": n, "volley": fv.json(), "dps": fd.json()}));
+            fighter_out.push(json!({"fighter_index": sq.req_index, "type_id": v.item(f).type_id, "name": x.type_name(f), "squadron_size": n, "volley": fv.json(), "dps": fd.json(),
+                "max_velocity": g(f, a.max_velocity), "signature_radius": g(f, a.sig)}));
         }
     }
     let mut t_vol = w_vol;
@@ -665,12 +668,41 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             best = (n, v);
         }
     }
+    // ECM jam chance (Pyfa): jam strength per jammer is read for the target's strongest sensor type (a tie makes it
+    // "Multispectral", which no jammer has); chance = 1 - prod(1 - min(1, strength / sensor strength))
+    let jam_chance = {
+        let mut st = ("", -1.0f64);
+        for (n, k) in [("Magnetometric", 2usize), ("Ladar", 1), ("Radar", 0), ("Gravimetric", 3)] {
+            let x = g(ship, a.sensor[k]);
+            if x > st.1 {
+                st = (n, x);
+            } else if x == st.1 {
+                st = ("Multispectral", x);
+            }
+        }
+        let sensors = best.1;
+        let mut keep = 1.0f64;
+        for &e in &fit.order {
+            if let Ok(j) = fit.world.get::<&IncomingEcm>(e) {
+                let an = if j.fighter { format!("fighterAbilityECMStrength{}", st.0) } else { format!("scan{}StrengthBonus", st.0) };
+                let id = ds.attr_id(&an);
+                let mut strength = if id != 0 && x.c.has(j.src, id) { g(j.src, id) } else { 0.0 } * j.factor;
+                if j.resist != 0 {
+                    strength *= g(ship, j.resist);
+                }
+                if sensors > 0.0 {
+                    keep *= 1.0 - (strength / sensors).min(1.0);
+                }
+            }
+        }
+        (1.0 - keep) * 100.0
+    };
     let scan_res = g(ship, a.scan_resolution);
     let lt = |s: f64| lock_time(scan_res, s);
     let targeting = json!({
         "max_targets": g(ship, a.max_locked).min(g(ch, a.max_locked).max(0.0)),
         "max_range_m": g(ship, a.max_target_range), "scan_resolution": scan_res,
-        "sensor_strength": best.1, "sensor_type": best.0,
+        "sensor_strength": best.1, "sensor_type": best.0, "jam_chance_percent": jam_chance,
         "probe_size": if best.1 > 0.0 { Some((sig / best.1).max(1.08)) } else { None },
         "lock_time_s": {"sig_25m": lt(25.0), "sig_40m": lt(40.0), "sig_125m": lt(125.0), "sig_400m": lt(400.0), "sig_target_profile": tp.signature_radius.and_then(lt)},
     });

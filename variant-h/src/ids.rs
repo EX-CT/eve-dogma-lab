@@ -58,6 +58,7 @@ id_table!(AttrIds {
     charge_size = "chargeSize",
     radius = "radius", max_fof_range = "maxFOFTargetRange",
     disallow_assistance = "disallowAssistance", falloff_effectiveness = "falloffEffectiveness",
+    disallow_offensive = "disallowOffensiveModifiers",
     neut_amount = "energyNeutralizerAmount", neut_duration = "energyNeutralizerDuration",
     neut_range = "energyNeutralizerRangeOptimal", neut_sig_res = "energyNeutralizerSignatureResolution",
 } arrays {
