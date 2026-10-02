@@ -55,6 +55,7 @@ id_table!(AttrIds {
     drone_control = "droneControlDistance", rig_size = "rigSize", max_group_fitted = "maxGroupFitted",
     max_type_fitted = "maxTypeFitted", max_group_online = "maxGroupOnline", max_group_active = "maxGroupActive",
     charge_size = "chargeSize",
+    radius = "radius", max_fof_range = "maxFOFTargetRange",
     disallow_assistance = "disallowAssistance", falloff_effectiveness = "falloffEffectiveness",
     neut_amount = "energyNeutralizerAmount", neut_duration = "energyNeutralizerDuration",
     neut_range = "energyNeutralizerRangeOptimal", neut_sig_res = "energyNeutralizerSignatureResolution",
@@ -87,7 +88,7 @@ id_table!(EffectIds {
     armor_repair = "armorRepair", fueled_armor_repair = "fueledArmorRepair", structure_repair = "structureRepair",
     nos = "energyNosferatuFalloff", f_attack = "fighterAbilityAttackM", f_missiles = "fighterAbilityMissiles",
     f_mwd = "fighterAbilityMicroWarpDrive", f_evasive = "fighterAbilityEvasiveManeuvers", f_mjd = "fighterAbilityMicroJumpDrive",
-    skill_effect = "skillEffect",
+    skill_effect = "skillEffect", fof_missile = "fofMissileLaunching",
 } arrays {
     structure_skill_ok: [5] = ["targetingMaxTargetBonusModAddMaxLockedTargetsLocationChar".into(),
         "skillStructureMissileDamageBonus".into(), "skillStructureElectronicSystemsCapNeedBonus".into(),

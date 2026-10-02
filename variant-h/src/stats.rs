@@ -183,6 +183,36 @@ impl<'f, 'a> Ctx<'f, 'a> {
     }
 }
 
+/// Missile max range (Pyfa semantics): flight time incl. ship radius, acceleration phase (mass*agility),
+/// floor/ceil time blend, FoF range limit, measured from the ship's surface.
+fn missile_range(x: &Ctx, ship: Entity, c: Entity) -> Option<f64> {
+    let a = &x.fit.ds.a;
+    let vel = x.g(c, a.max_velocity);
+    if vel <= 0.0 {
+        return None;
+    }
+    let radius = x.g(ship, a.radius);
+    let ft = float_unerr(x.g(c, a.explosion_delay) / 1000.0 + radius / vel);
+    let accel = x.g(c, a.mass) * x.g(c, a.agility) / 1e6;
+    let range_at = |t: f64| {
+        let acc = t.min(accel);
+        vel / 2.0 * acc + vel * (t - acc)
+    };
+    let (lt, ht) = (ft.floor(), ft.ceil());
+    let (mut lr, mut hr) = (range_at(lt), range_at(ht));
+    if x.fit.has_effect(c, x.fit.ds.e.fof_missile) {
+        let lim = x.g(c, a.max_fof_range);
+        if lim > 0.0 {
+            lr = lr.min(lim);
+            hr = hr.min(lim);
+        }
+    }
+    lr = (lr - radius).max(0.0);
+    hr = (hr - radius).max(0.0);
+    let hc = ft - lt;
+    Some(lr * (1.0 - hc) + hr * hc)
+}
+
 pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     let x = Ctx { fit, c: fit.calc() };
     let ds = fit.ds;
@@ -282,7 +312,9 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             }
             "missile" => {
                 if let Some(c) = f.charge {
-                    w["range_m"] = json!(g(c, a.max_velocity) * g(c, a.explosion_delay) / 1000.0);
+                    if let Some(r) = missile_range(&x, ship, c) {
+                        w["range_m"] = json!(r);
+                    }
                     w["explosion_radius"] = json!(g(c, a.aoe_cloud));
                     w["explosion_velocity"] = json!(g(c, a.aoe_velocity));
                 }
