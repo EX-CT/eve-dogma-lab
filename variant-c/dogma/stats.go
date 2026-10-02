@@ -315,9 +315,15 @@ func (f *Fit) ComputeStats(req *FitRequest, engineName string) obj {
 		}
 		spv, _, _ := Spoolup(g(i, "damageMultiplierBonusMax"), g(i, "damageMultiplierBonusPerCycle"), raw/1000, sp)
 		vs := base.scale(1 + spv)
+		// doomsdays / lances deal their volley every doomsdayDamageCycleTime during doomsdayDamageDuration
+		// (Pyfa getVolleyParameters subcycles; the Reaper slash hits once); volley = one tick
+		subcycles := 1.0
+		if dd, dsub := g(i, "doomsdayDamageDuration"), g(i, "doomsdayDamageCycleTime"); dd != 0 && dsub != 0 && !f.hasEffectNamed(i, "doomsdaySlash") {
+			subcycles = max(math.Floor(floatUnerr7(dd/dsub)), 0)
+		}
 		var dps dmg
 		if cyc > 0 {
-			dps = vs.scale(1000 / cyc)
+			dps = vs.scale(subcycles * 1000 / cyc)
 		}
 		wVol.add(vs)
 		wDps.add(dps)
@@ -1094,3 +1100,12 @@ var canFitGroupNames, canFitTypeNames, chargeGroupNames = func() (g, t, c []stri
 	}
 	return
 }()
+
+func (f *Fit) hasEffectNamed(i int, name string) bool {
+	for _, e := range f.Items[i].Effects {
+		if ef := f.DS.effect(e.ID); ef != nil && ef.Name == name {
+			return true
+		}
+	}
+	return false
+}

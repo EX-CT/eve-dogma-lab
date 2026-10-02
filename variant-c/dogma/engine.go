@@ -872,6 +872,10 @@ func (f *Fit) registerItem(i int) {
 		if kind == KFighter && e.Category != 0 && !containsU32(it.Abilities, eid) {
 			continue
 		}
+		// Pyfa 'active' handlers for SDE effects without modifiers (some are target-category in the SDE)
+		if len(e.Mods) == 0 && kind == KModule && state >= Active && f.localSpecial(i, e.Name, srcCat) {
+			continue
+		}
 		if !stateOK(e.Category, state) {
 			continue
 		}
@@ -1028,7 +1032,7 @@ func (f *Fit) registerProjected(i int) {
 		case strings.HasPrefix(n, "remoteSensorDamp") || n == "structureModuleEffectRemoteSensorDampener":
 			push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
 			push(a("scanResolution"), a("scanResolutionBonus"), 6)
-		case n == "shipModuleTrackingDisruptor" || n == "shipModuleGuidanceDisruptor" || n == "shipModuleRemoteTrackingComputer":
+		case n == "shipModuleTrackingDisruptor" || n == "shipModuleGuidanceDisruptor" || n == "shipModuleRemoteTrackingComputer" || n == "npcEntityWeaponDisruptor":
 			// Pyfa Effect6424 / Effect6423 / shipModuleRemoteTrackingComputer: the target's gunnery
 			// modules (TD, RTC) / missile charges (GD). RTCs are assistance-gated, TD/GD offense-gated.
 			allowed := targetOffenseOK
@@ -1046,7 +1050,16 @@ func (f *Fit) registerProjected(i int) {
 					pairs = [][2]string{{"aoeCloudSizeBonus", "aoeCloudSize"}, {"aoeVelocityBonus", "aoeVelocity"}, {"missileVelocityBonus", "maxVelocity"}, {"explosionDelayBonus", "explosionDelay"}}
 				}
 				sk, _ := ds.TypeByName(skill)
-				tf := RangeFactor(pbase("maxRange"), pbase("falloffEffectiveness"), it.Distance, true)
+				var tf float64
+				if n == "npcEntityWeaponDisruptor" {
+					// TD drones (Pyfa Effect6694): full strength inside maxRange, nothing beyond
+					tf = 1
+					if it.Distance != nil && pbase("maxRange") < *it.Distance {
+						tf = 0
+					}
+				} else {
+					tf = RangeFactor(pbase("maxRange"), pbase("falloffEffectiveness"), it.Distance, true)
+				}
 				for t := range f.Items {
 					ti := &f.Items[t]
 					if ti.Loc != LShip || !ti.Owned || ti.Kind != kind || !containsU32(ti.ReqSkills, sk) {
@@ -1077,7 +1090,84 @@ func (f *Fit) registerProjected(i int) {
 var projDamageEffects = map[string]bool{"projectileFired": true, "targetAttack": true, "useMissiles": true, "barrage": true,
 	"targetDisintegratorAttack": true, "missileLaunchingForEntity": true, "fighterAbilityAttackM": true, "fighterAbilityMissiles": true,
 	"superWeaponAmarr": true, "superWeaponCaldari": true, "superWeaponGallente": true, "superWeaponMinmatar": true, "mining": true,
-	"miningLaser": true, "miningClouds": true, "dotMissileLaunching": true, "ChainLightning": true}
+	"miningLaser": true, "miningClouds": true, "dotMissileLaunching": true, "ChainLightning": true, "salvageDroneEffect": true}
+
+// localSpecial: local module effects that have no modifierInfo in the SDE but a hand-written Pyfa handler
+// (eos/effects.py, LGPL; re-expressed). Source category 6 marks a boost applied without stacking penalty.
+func (f *Fit) localSpecial(i int, name string, srcCat uint32) bool {
+	ds := f.DS
+	ship := uint32(f.Ship)
+	a := ds.AttrID
+	attr := func(target uint32, op int8, src uint32, cat uint32) {
+		f.push(bItem, ship, target, amod{op: op, kind: srcAttr, item: int32(i), attr: src, from: int32(i)}, cat)
+	}
+	switch name {
+	case "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente", "superWeaponMinmatar", "doomsdaySlash",
+		"doomsdayBeamDOT", "doomsdayConeDOT", "doomsdayHOG", "debuffLance":
+		attr(a("maxVelocity"), 6, a("speedFactor"), srcCat)
+		attr(a("warpScrambleStatus"), 2, a("siegeModeWarpStatus"), srcCat)
+	case "emergencyHullEnergizer":
+		for _, t := range [4]string{"Em", "Thermal", "Kinetic", "Explosive"} {
+			attr(a(strings.ToLower(t)+"DamageResonance"), 4, a("hull"+t+"DamageResonance"), srcCat)
+		}
+	case "entosisLink":
+		attr(a("disallowAssistance"), 7, a("disallowAssistance"), 6)
+		for _, t := range [4]string{"Gravimetric", "Magnetometric", "Radar", "Ladar"} {
+			attr(a("scan"+t+"Strength"), 6, a("scan"+t+"StrengthPercent"), srcCat)
+		}
+	case "microJumpPortalDrive", "microJumpPortalDriveCapital":
+		attr(a("signatureRadius"), 6, a("signatureRadiusBonusPercent"), srcCat)
+	case "warpDisruptSphere":
+		f.push(bItem, ship, a("disallowAssistance"), amod{op: 7, kind: srcConst, c: 1, from: int32(i)}, 6)
+		if f.Items[i].Charge < 0 {
+			attr(4, 6, a("massBonusPercentage"), 6)
+			attr(a("signatureRadius"), 6, a("signatureRadiusBonus"), 6)
+			for t := range f.Items {
+				ti := &f.Items[t]
+				if ti.Kind != KModule || ti.Loc != LShip {
+					continue
+				}
+				if g := ds.group(ti.T.Group); g == nil || g.Name != "Propulsion Module" {
+					continue
+				}
+				f.push(bItem, uint32(t), a("speedBoostFactor"), amod{op: 6, kind: srcAttr, item: int32(i), attr: a("speedBoostFactorBonus"), from: int32(i)}, 6)
+				f.push(bItem, uint32(t), a("speedFactor"), amod{op: 6, kind: srcAttr, item: int32(i), attr: a("speedFactorBonus"), from: int32(i)}, 6)
+			}
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// pyRound2 is Python round(v, 2): correctly rounded on the exact binary value (ties to even).
+func pyRound2(v float64) float64 {
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		return v
+	}
+	r, err := strconv.ParseFloat(strconv.FormatFloat(v, 'f', 2, 64), 64)
+	if err != nil {
+		return v
+	}
+	return r
+}
+
+// floatUnerr7 is Pyfa eos.utils.float.floatUnerr: round away float noise, keeping 7 significant digits.
+func floatUnerr7(v float64) float64 {
+	if v == 0 || math.IsInf(v, 0) || math.IsNaN(v) {
+		return v
+	}
+	rf := 7 - int(math.Ceil(math.Log10(math.Abs(v))))
+	if rf >= 0 {
+		r, err := strconv.ParseFloat(strconv.FormatFloat(v, 'f', rf, 64), 64)
+		if err != nil {
+			return v
+		}
+		return r
+	}
+	p := math.Pow(10, float64(-rf))
+	return math.Round(v/p) * p
+}
 
 // projSpecialFor mirrors Pyfa's 'projected' handlers for remote reps, cap transfers and neuts/nos (eos, LGPL).
 func (f *Fit) projSpecialFor(i int, name string, resist uint32) ([]ProjSpecial, bool) {
@@ -1529,7 +1619,7 @@ func (f *Fit) Get(i int, attr uint32) float64 {
 			val = min(val, f.Get(i, info.MaxAttr))
 		}
 		if info.round2 {
-			val = math.Round(val*100) / 100
+			val = pyRound2(val)
 		}
 	}
 	f.stack = f.stack[:len(f.stack)-1]
