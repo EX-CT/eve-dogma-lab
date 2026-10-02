@@ -299,6 +299,26 @@ impl<'a> Fit<'a> {
         d.mul(1.0 / (avg / 1000.0))
     }
 
+    /// (module_volley, module_dps, cycle_avg) with one getVolleyParameters / getCycleParameters evaluation
+    fn volley_dps_cycle(&self, m: It, sp: Option<Spool>) -> (Dmg, Dmg, Option<f64>) {
+        let p = self.volley_params(m, sp);
+        let vol = p.iter().min_by(|a, b| a.0.partial_cmp(&b.0).unwrap()).map(|x| x.1).unwrap_or_default();
+        let avg = self.cycle_avg(m, None);
+        let dps = match avg {
+            None => Dmg::default(),
+            Some(a) if p.is_empty() || a == 0.0 => Dmg::default(),
+            Some(_) if self.is_breacher(m) => vol,
+            Some(a) => {
+                let mut d = Dmg::default();
+                for (_, v) in &p {
+                    d.add(v);
+                }
+                d.mul(1.0 / (a / 1000.0))
+            }
+        };
+        (vol, dps, avg)
+    }
+
     pub fn cap_use(&self, m: It) -> f64 {
         let need = self.g(m, "capacitorNeed");
         if need != 0.0 && self.items[m].state >= ACTIVE {
@@ -807,13 +827,12 @@ impl<'a> Fit<'a> {
         let mut weapons = Vec::new();
         let (mut w_vol, mut w_dps) = (Dmg::default(), Dmg::default());
         for &m in mods {
-            let v = self.module_volley(m, spool);
-            let d = self.module_dps(m, spool);
+            let (v, d, cyc) = self.volley_dps_cycle(m, spool);
             w_vol.add(&v);
             w_dps.add(&d);
             if self.items[m].state >= ACTIVE && d.total() > 0.0 {
                 let c = self.items[m].charge;
-                let mut w = obj(vec![("module_index", Value::from(self.items[m].req_index)), ("type_id", Value::from(self.items[m].t.id)), ("name", Value::from(self.items[m].t.name.clone())), ("kind", Value::from(self.weapon_kind(m))), ("charge_type_id", Value::from(if c != NONE { Some(self.items[c].t.id) } else { None })), ("volley", Value::from(v.json())), ("dps", Value::from(d.json())), ("cycle_time_ms", Value::from(self.cycle_avg(m, None)))]);
+                let mut w = obj(vec![("module_index", Value::from(self.items[m].req_index)), ("type_id", Value::from(self.items[m].t.id)), ("name", Value::from(self.items[m].t.name.clone())), ("kind", Value::from(self.weapon_kind(m))), ("charge_type_id", Value::from(if c != NONE { Some(self.items[c].t.id) } else { None })), ("volley", Value::from(v.json())), ("dps", Value::from(d.json())), ("cycle_time_ms", Value::from(cyc))]);
                 match self.hardpoint(m) {
                     1 => {
                         w["optimal_m"] = Value::from(self.max_range(m));
