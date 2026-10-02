@@ -219,7 +219,7 @@ func rpc(ds *dogma.Dataset, line []byte) any {
 	switch method {
 	case "calc":
 		// CalcJSON output is embedded verbatim (no second encode pass)
-		result = json.RawMessage(dogma.CalcJSON(ds, v.Params))
+		result = json.RawMessage(calcJSON(ds, v.Params))
 	case "eft_parse":
 		r, err := dogma.ParseEFT(ds, str("text"))
 		if err != nil {
@@ -316,6 +316,7 @@ func main() {
 		batch(ds, os.Stdin, out, j)
 	case "serve-stdio":
 		ds := load(dsPath)
+		enableMemo()
 		fmt.Fprintf(os.Stderr, "eve-dogma-go serve-stdio ready (sde %d)\n", ds.Build)
 		jv, _ := takeFlag(&args, "-j")
 		j, _ := strconv.Atoi(jv)
@@ -330,6 +331,7 @@ func main() {
 		}
 		ds := load(dsPath)
 		out.Flush()
+		enableMemo()
 		serveHTTP(ds, addr)
 	case "eft":
 		skills, hasSkills := takeFlag(&args, "--skills")
@@ -474,7 +476,7 @@ func serveHTTP(ds *dogma.Dataset, addr string) {
 		return b
 	}
 	mux.HandleFunc("POST /v1/calc", func(w http.ResponseWriter, r *http.Request) {
-		res := dogma.CalcJSON(ds, body(r))
+		res := calcJSON(ds, body(r))
 		code := 200
 		if strings.HasPrefix(string(res), `{"error"`) {
 			code = 400

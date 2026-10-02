@@ -26,8 +26,10 @@ bin/eve-dogma-go --dataset $D search rifter            # also: type 587, meta, b
 
 ## Long-running modes (no per-process startup)
 
-Starting a process costs about 125 ms (gunzip and parse the 7 MB dataset); a warm calculation takes about 0.2–0.5 ms.
-For MCP servers, web backends and editors, keep one process alive and stream requests to it:
+A cold process costs about 27 ms before its first answer (min of 20 runs; the first run on a machine
+pays about 150 ms once to parse the gzipped JSON dataset and write the binary cache, see below). A warm
+calculation takes about 0.05–0.3 ms. For MCP servers, web backends and editors, keep one process alive
+and stream requests to it:
 
 | mode | protocol | use it for |
 |---|---|---|
@@ -39,6 +41,16 @@ The stdin modes compute up to N requests in parallel (default: all cores) but al
 order. Output is flushed whenever no further reply is pending, so a client that sends one line and waits
 gets its answer immediately, and a bulk stream is still written in large chunks. Per-calculation memory
 is recycled between requests (`sync.Pool`), so a long-running process settles to a small, steady heap.
+
+The server modes (`serve-stdio`, `serve-http`) also memoise `calc` responses by exact request bytes
+(4,096 entries; the engine is deterministic, so a repeated fit is answered from memory).
+`EVE_DOGMA_MEMO=0` disables this and `EVE_DOGMA_MEMO=N` sets the size. `batch` and `calc` never memoise,
+so the bench's batch and latency figures are real computation.
+
+**Dataset cache.** The first load of a dataset file writes a derived binary image to
+`$EVE_DOGMA_CACHE_DIR` (default `~/.cache/eve-dogma-go/<sha256-prefix>.bin`, about 5 MB, written
+atomically, CRC-checked). The key is the dataset's sha256, so a new dataset gets a new cache. Later
+processes load in about 15 ms instead of about 130 ms. `EVE_DOGMA_CACHE=off` disables the cache.
 
 ```sh
 # one process, many calculations
@@ -71,9 +83,12 @@ f.SetBase(itemIdx, attrID, 42)                      // invalidates only dependen
 ## Test
 
 ```sh
-go test ./dogma                    # Pyfa oracle parity: 249 fits / 13 812 values, determinism, EFT round-trip
+go test ./dogma                    # Pyfa oracle parity: 295 fits / 18 978 values, EFT export vs Pyfa (295), decoder fuzz seeds, cache round trip
 go test -run x -bench . ./dogma    # micro benchmarks (per-fit latency, dataset load)
 python3 tools/diff_vs_rs.py '/workspace/exct-eve/eve-dogma-bench/cases/*.json'   # full-output diff vs eve-dogma-rs
+python3 tools/eft_export_check.py  # eft_export vs Pyfa's exporter (serve-stdio RPC)
+tools/instr.sh                     # instructions per calc (callgrind), robust on a loaded box
+go test -fuzz FuzzFastDecoder ./dogma   # fast request decoder vs encoding/json
 ```
 
 Bench harness entry: [bench.yaml](bench.yaml).
