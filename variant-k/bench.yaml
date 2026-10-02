@@ -1,0 +1,4 @@
+# eve-dogma-bench manifest for variant K (C# / .NET 8 Native AOT)
+build: ./build.sh
+cmd: ./bin/eve-dogma-k --dataset {dataset} calc
+batch_cmd: ./bin/eve-dogma-k --dataset {dataset} batch
