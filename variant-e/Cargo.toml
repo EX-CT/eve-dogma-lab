@@ -14,6 +14,7 @@ name = "eve_dogma_e"
 path = "src/lib.rs"
 
 [dependencies]
+mimalloc = { version = "0.1", default-features = false }
 bincode = "1.3"
 flate2 = "1"
 rustc-hash = "2"
