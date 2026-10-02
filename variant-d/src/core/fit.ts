@@ -463,7 +463,8 @@ export class Fit extends AttrGraph {
       if (!reach) continue;
       const idx = this.newItem(s, Kind.Skill, Loc.Char, '/character/skills');
       this.items[idx].owned = false;
-      this.setBase(idx, ATTR_SKILL_LEVEL, this.skillLevel(s));
+      // default list (no custom levels): every entry is a published skill at the default level
+      this.setBase(idx, ATTR_SKILL_LEVEL, arr !== undefined ? this.skillDefault : this.skillLevel(s));
       if (overrides) for (const o of req.overrides) if (o.type_id === s) this.setBase(idx, o.attribute_id, o.value);
       this.index.addCharItem(this.items[idx]);
     }
