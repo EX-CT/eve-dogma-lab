@@ -1,23 +1,26 @@
 # Variant H: results
 
-## Official bench (`run.py`, the same harness as `bench.py`)
+## Official bench (`bench.py --only H`, full run)
 
-Bench **1.5.0** (contract 1.4.2: 295 cases, 18 978 Pyfa-expected values, including amount>1 projected fits with
-tracking/guidance disruptors), run at 05:33 CST:
+Bench **1.6.0+a814f99** (297 cases, 19 103 Pyfa-expected values, including projected remote tracking computers),
+run at 05:51 CST:
 
 | | cases | values |
 |---|---|---|
-| vs Pyfa (bench 1.5.0) | **295/295** | **18978/18978 (100.00 %)** |
-| vs Pyfa (bench 1.4.0, 04:57 CST) | 289/289 | 18591/18591 |
-| EFT export vs Pyfa `exportEft` after `fill()` (`tools/check_eft_export.py`, informational) | **295/295** | |
+| vs Pyfa (bench 1.6.0) | **297/297** | **19103/19103 (100.00 %)** |
+| vs Pyfa (bench 1.5.0, 05:33 CST) | 295/295 | 18978/18978 |
+| eft export column (EFT export vs Pyfa `exportEft` after `fill()`, informational) | **297/297** | |
 
-| perf (same harness, box load ~13) | H @ 1.5.0 05:33 | H @ 1.4.0 04:57 | A (bench results/A) |
+| perf (combined scorecard, box load ~10) | H @ 1.6.0 05:51 | H @ 1.5.0 05:33 | A @ 1.6.0 05:42 |
 |---|---|---|---|
-| latency, one fit (exct_rifter), ms/calc | **0.412** | 0.801 | 0.911 |
-| batch throughput, fits/s | **2321** | 1251 | 912 |
-| startup + one calc, ms | **11.1** | 19.9 | 119.3 |
-| one process per case, median ms | **9.8** | 19.4 | 123.4 |
+| ms/fit (exct_rifter latency) | **0.308** | 0.412 | 0.432 |
+| batch throughput, fits/s | **2863** | 2321 | 1777 |
+| cold ms (one process per case) | **6** | 9.8 | 138 |
 | deterministic | yes | yes | yes |
+
+Cold-start gains since 1.5.0: the derived cache and the dataset (for the cache-key hash) are now mmapped instead of
+read, and release builds are stripped with fat LTO and `panic = "abort"` (2.2 MB binary instead of 29 MB). The
+`profiling` cargo profile keeps debuginfo for callgrind.
 
 The box is shared and loaded, so wall times are noisy. The instruction counts below are the stable measure.
 The H cold start assumes the derived cache (`dataset.hcache`) has been warmed; `bench.yaml`'s build step runs
