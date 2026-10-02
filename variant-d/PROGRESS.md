@@ -1,6 +1,6 @@
 # PROGRESS — Variant D (TypeScript)
 
-Updated: 2026-10-03 07:45 CST
+Updated: 2026-10-03 08:00 CST
 
 ## Done
 - Full port of the eve-dogma-rs contract in TypeScript, zero runtime dependencies (Node 20+, browsers):
@@ -28,6 +28,8 @@ Updated: 2026-10-03 07:45 CST
 - Bench 1.8.0, official run in the shared checkout (07:22 CST, bench ad9ee22, D 9632cd8): **326/326, 21 051 values,
   EFT 326/326, deterministic; Rifter 0.757 ms/calc, batch 1040 fits/s, cold median 114 ms** (was 203 ms at 06:30).
   In-process warm corpus ≈ 0.5 ms/fit. Build-side: deferred ship bonuses (Fit.build ~20% faster), validation memo.
+  Small hot-path cleanups since: static attribute-name tables (defense, jam chance, warfare buffs), single-name
+  effect test without an array per call, capsim wrap-key fast path, default skill level set directly.
 - `batch --threads N`: ordered worker-thread pool, output identical to serial. Off by default (no gain on the loaded
   box).
 
@@ -47,10 +49,12 @@ node dist/test/parity.js --dataset ...      # eve-dogma-rs fixtures
   got slower by the same amount (extra checks on every read, plus materialisation).
 - A direct-mapped exp() memo in the capacitor sim. Capsim runs ~25 ns per event and is iteration-bound;
   `sim_iterations` is an output, so the event loop cannot be shortened.
+- Indexed loops instead of `for…of` in `registerAll` (no measurable difference).
 - V8 flags; deeper snapshot warm-up; dropping decoded type names from the snapshot; `batch --threads` as a default.
 
 ## Next / gaps
 - Throughput is JIT/GC bound and about 2× behind the Rust/C++ variants in batch, mostly because of JIT warm-up in
   short runs.
-- Cold start ≈ 105–115 ms with the snapshot (bare node ≈ 90 ms). Next step: smaller snapshot heap (typed-array
-  columns).
+- Cold start ≈ 105–115 ms with the snapshot (bare node ≈ 90 ms). The snapshot already stores numeric type columns as
+  typed arrays (blob ≈ 7.75 MB); heap deserialisation (≈ 37 ms) is most of what is left.
+- Warm Rifter calc in-process ≈ 0.35 ms, of which JSON parse + stringify ≈ 0.06 ms.
