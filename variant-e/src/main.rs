@@ -9,7 +9,10 @@ const USAGE: &str = "eve-dogma-e <command> [--dataset PATH] [args]
 Commands:
   calc [FILE]     FitRequest JSON (file or stdin) -> FitStats JSON (default when no command is given)
   batch           JSONL FitRequests on stdin -> JSONL FitStats on stdout
-  serve-stdio     JSONL RPC {\"id\",\"method\":\"calc|eft_export|meta\",\"params\"} -> {\"id\",\"result\"}
+  serve-stdio     JSONL RPC {\"id\",\"method\":\"calc|eft_parse|eft_export|search|type|meta\",\"params\"} -> {\"id\",\"result\"}
+  eft FILE [--calc]  EFT text -> FitRequest JSON (with --calc: -> FitStats)
+  search QUERY    type search (published ships/modules/charges/drones/fighters/implants/boosters/subsystems/skills)
+  type ID|NAME    type info (attributes, effects)
   meta            dataset info
 
 Dataset: --dataset PATH, or $EVE_DOGMA_DATASET, or ./dataset.json.gz";
@@ -117,6 +120,9 @@ fn main() {
                 let res = match r.get("method").and_then(|m| m.as_str()) {
                     Some("calc") => api::calc_value(&ds, params),
                     Some("eft_export") => api::eft_export_value(&ds, params),
+                    Some("eft_parse") => api::eft_parse_value(&ds, &params),
+                    Some("search") => api::search_value(&ds, &params),
+                    Some("type") => api::type_value(&ds, &params),
                     Some("meta") => eve_dogma_e::jv::Value::from(meta(&ds)),
                     m => api::err("UNKNOWN_METHOD", &format!("{m:?}"), "/method"),
                 };
@@ -128,6 +134,24 @@ fn main() {
             }
         }
         "meta" => out(&meta(&ds)),
+        "search" => out(&api::search_value(&ds, &json!({"query": args[1..].join(" ")}))),
+        "type" => out(&api::type_value(&ds, &json!({"id": args[1..].join(" ")}))),
+        "eft" => {
+            let calc = args.iter().any(|a| a == "--calc");
+            let mut s = String::new();
+            match args.iter().skip(1).find(|a| *a != "--calc") {
+                Some(f) if f != "-" => s = std::fs::read_to_string(f).unwrap_or_default(),
+                _ => {
+                    let _ = std::io::stdin().read_to_string(&mut s);
+                }
+            }
+            let v = api::eft_parse_value(&ds, &json!({"text": s}));
+            if v.get("error").is_some() || !calc {
+                out(&v);
+            } else {
+                out(&api::calc_value(&ds, serde_json::to_value(&v).unwrap_or_default()));
+            }
+        }
         other => {
             out(&api::err("UNKNOWN_COMMAND", other, ""));
             eprintln!("{USAGE}");

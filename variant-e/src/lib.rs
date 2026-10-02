@@ -16,3 +16,4 @@ pub mod api;
 pub mod graphs;
 pub mod jv;
 pub mod eft;
+pub mod eft_parse;
