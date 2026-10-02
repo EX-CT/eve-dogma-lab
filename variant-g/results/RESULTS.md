@@ -1,19 +1,33 @@
-# Variant G results (2026-10-03 04:25 CST)
+# Variant G results (2026-10-03 06:27 CST)
 
-## Bench (EX-CT/eve-dogma-bench @ b687270, `bench.py --only G --quick`, 249 cases)
-- cases fully correct vs Pyfa: **249/249**; values: **13812/13812** (all 8 groups 100 %); engine errors 0
-- one process per case (cold start + calc), median: 228 ms
-- batch throughput (corpus x1): 181 fits/s
-- latency one fit (exct_rifter, warm): 2.4 ms/calc
-- startup + one calc: 200 ms
+## Bench 1.8.0 (EX-CT/eve-dogma-bench @ 0969967 / 3da9671 frozen, official full run `bench.py --only G`, 326 cases)
+- cases fully correct vs Pyfa: **326/326**; values: **21051/21051** (all 8 groups 100 %); engine errors 0
+- one process per case (cold start + calc), median: 130.0 ms
+- batch throughput (corpus x5, 1630 requests): 340 fits/s
+- latency one fit (exct_rifter, warm, n=500): 2.21 ms/calc
+- startup + one calc: 132.8 ms
 - deterministic: True
-- Run in a scratch copy of the bench (/tmp/g-bench) against the pushed branch, so nothing is written into the bench repo.
+- EFT export (informational column, `rpc_cmd` in bench.yaml): 326/326 identical to Pyfa
+- Run against the pushed branch (commit c657d1a engine). Box load ≈ 7 during the run; perf numbers are noisy.
+- Raw scorecard: `results/bench/scorecard.{md,json}`, `failures.json` (empty).
 
-## Versus the reference engine (eve-dogma-rs, variant A @ 0e5a1ce)
-- `tests/compare_ref.py`: 249/249 cases identical, 0/71507 leaf mismatches (rel tol 1e-6, `meta.engine` excluded).
-- Reference A per the coordinator: 249/249, 13812/13812, ~1.3 ms/fit. A's earlier bench README figures: 574 fits/s, 151 ms cold.
+## Older corpora (tests/run_tests.py, same tree)
+| bench | cases | values |
+|---|---|---|
+| 1.8.0 | 326/326 | 21051/21051 |
+| 1.7.0 | 306/306 | 19621/19621 |
+| 1.6.0 | 297/297 | 19103/19103 |
+| 1.5.0 | 295/295 | 18978/18978 |
+| 1.4.0 | 289/289 | 18591/18591 |
+| 1.3.0 | 249/249 | 13812/13812 |
+
+## Versus the reference engine (eve-dogma-rs, variant A @ c629fb8)
+- `tests/compare_ref.py`: 326/326 cases identical, 0/99571 leaf mismatches (rel tol 1e-6, `meta.engine` excluded);
+  `results/compare_ref.json`.
+- A's bench README figures (1.8.0, load ≈10): 0.51 ms/fit, 1 429 fits/s, 147 ms cold.
 
 ## Where the time goes (G)
-- cold start: ~65–130 ms is `import numpy` (box load ~5), ~33 ms column-cache unpickle, ~13 ms first calc.
-- batch: capacitor simulation (sequential recurrence) > per-fit stats in Python > vectorised dogma evaluation.
-- `tests/run_tests.py`: Pyfa parity 249/249, batch == single 249/249, determinism, error cases: ALL OK.
+- cold start: ~80–90 ms is Python + `import numpy`, ~10 ms column-cache unpickle, ~7 ms first calc.
+- batch: capacitor simulation (sequential recurrence) ≈ 25 %, vectorised dogma evaluation ≈ 27 %,
+  per-fit Python stats ≈ 20 %, registration + item setup ≈ 15 %.
+- `tests/run_tests.py`: Pyfa parity, batch == single, determinism, error cases, EFT import/export: ALL OK.

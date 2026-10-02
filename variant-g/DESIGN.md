@@ -84,7 +84,7 @@ level everything is vectorised over all nodes of all fits:
 rows in the reference's registration order: rows are sorted by `(o1, o2)`, unpenalised factors are applied first,
 then the penalised positive list, then the negative list (each sorted, stable), with the in-order unbuffered
 `ufunc.at` (`np.multiply.at(v, idx, f)`) so `v` is multiplied sequentially exactly like `val *= m`. With
-this, all 297 corpus responses (bench 1.6.0) are identical to the reference on every leaf (`tests/compare_ref.py`).
+this, all 326 corpus responses (bench 1.8.0) are identical to the reference on every leaf (`tests/compare_ref.py`).
 
 ### Evaluation-dependent effects
 
@@ -100,6 +100,17 @@ Some registrations need evaluated values; they are separate passes over *subsets
   fits yield "frozen" items (active modules/drones with their evaluated attributes as base values).
 * **Reactive Armor Hardener**: per RAH (sequential like the reference, one evaluation pass per RAH index for
   all fits that have that many), Pyfa's adaptation loop in Python, then constant PostAssign/PreMul rows.
+
+### Engine-side effects (no modifierInfo in the SDE)
+
+Pyfa implements some effects in Python handlers rather than SDE modifiers; G registers them in
+`_register_python` as plain rows (same order and penalty category as the reference):
+local specials (superweapon/lance speed + warp status, EHE, entosis, MJFG, WDFG, Breach Control), projected
+remote reps / cap / neuts / ECM (`proj_special`), tracking/guidance disruptors, remote tracking computers, TD
+drones, AoE burst projectors (full strength, no range factor; neut burst = drain, ECM burst = jam source),
+the Standup weapon disruptor (range factor), incursion system effects (`OffensiveDefensiveReduction`, unpenalised)
+and abyssal weather / AoE cloud beacons (their warfareBuff1/2 join the fleet-buff pool; buffs 79/90/93–99 also
+hit drones requiring Drones; 90/93–96/98/99 unpenalised).
 
 ### Stats
 
@@ -121,7 +132,7 @@ path against the heap loop on 300 random drain sets (bit-identical).
 ## Trade-offs
 
 * **Batch vs latency.** Per-call overhead (NumPy call setup, ~100 small array ops per evaluation pass, Python
-  stats) dominates a single fit; batching amortises the vectorised part. In-process on the 297-case corpus
+  stats) dominates a single fit; batching amortises the vectorised part. In-process on the 297-case (1.6.0) corpus
   (≈0.85 s, ~350 fits/s): capacitor simulation ≈ 25 % (sequential recurrence, ~410k events), vectorised dogma
   evaluation ≈ 27 %, per-fit Python stats ≈ 20 %, registration + item setup ≈ 15 %. 500 identical rifters:
   ≈ 2.0 ms/fit. Remaining targets: the capsim recurrence (inherently sequential; only a compiled kernel would
@@ -142,7 +153,7 @@ path against the heap loop on 300 random drain sets (bit-identical).
 * EFT: `eft [FILE] [--calc] [--skills N]` and RPC `eft_parse` / `eft_export` (`evedogma_g/eft.py`). Import is
   identical to the reference on the test texts; export is Pyfa's `exportEft` byte for byte (contract 1.4.1 ruling
   4: racks with `[Empty X slot]` fillers from the evaluated slot counts, Pyfa drone/fighter/implant/booster/cargo
-  order, ` /offline`, mutation block with Pyfa float formatting; no T3D mode line): 297/297 vs Pyfa
+  order, ` /offline`, mutation block with Pyfa float formatting; no T3D mode line): 326/326 vs Pyfa (bench 1.8.0)
   (`expected_extra/eft_export.jsonl`, T3C maxSubSystems data divergence accepted like the bench), identical to A.
 * `serve-stdio` methods: `calc, eft_parse, eft_export, search, type, meta`. `search` follows the interim spec
   (published ship/module/charge/drone/fighter/implant/booster/subsystem/skill, English or Chinese name,
