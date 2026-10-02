@@ -1139,14 +1139,22 @@ impl<'a> Fit<'a> {
         {
             let raw = &self.raw;
             // packed key: item(16) | attr(20) | op+1(4) | seq(24) — one u64 compare per step
-            debug_assert!(raw.len() < 1 << 24);
-            let mut keyed: Vec<u64> = raw
+            let packable = raw.len() < (1 << 24) && self.items.len() < (1 << 16) && raw.iter().all(|r| r.attr < (1 << 20));
+            if !packable {
+                order.sort_unstable_by_key(|&k| {
+                    let r = &raw[k as usize];
+                    (r.item, r.attr, r.op, r.seq)
+                });
+            }
+            let mut keyed: Vec<u64> = if !packable { Vec::new() } else { raw
                 .iter()
                 .map(|r| ((r.item as u64) << 48) | ((r.attr as u64 & 0xFFFFF) << 28) | (((r.op as i64 + 1) as u64 & 0xF) << 24) | r.seq as u64)
-                .collect();
-            keyed.sort_unstable();
-            for (o, k) in order.iter_mut().zip(keyed) {
-                *o = (k & 0xFF_FFFF) as u32;
+                .collect() };
+            if packable {
+                keyed.sort_unstable();
+                for (o, k) in order.iter_mut().zip(keyed) {
+                    *o = (k & 0xFF_FFFF) as u32;
+                }
             }
         }
         // 2. nodes

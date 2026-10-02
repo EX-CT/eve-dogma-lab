@@ -49,7 +49,7 @@ FitRequest ──build──▶ items: Vec<Item>            (base attrs = sorted
    modifiers whose values come from a per-(skill, level, structure) table, probed once per process (lazily, via the
    same engine on a one-item fit, so semantics are identical). Skills whose outgoing modifiers cannot reach any item
    in the fit (no unconditional target and none of their skill filters is required by a fitted item) are skipped.
-   This removed ~70 % of items and ~40 % of nodes per fit.
+   This removed ~95 % of items (≈530 → ≈30 for a frigate) and ~40 % of graph nodes per fit.
 5. **Target selection over index lists.** `Location*` / `OwnerRequiredSkill` targets come from per-fit index vectors
    (ship-location items, owned items, character items) and sorted `(required skill, item)` pair lists (binary-search
    range), instead of scanning all items per modifier.

@@ -15,6 +15,9 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   batch 2 955 fits/s (all cores) / ~1 000–2 400 fits/s (1 thread, box load varies), rifter ≈ 0.29 ms/calc single
   thread (A ≈ 1.1–1.3 ms on the same run).
 
+- Instruction counts vs A: see results/instructions.md (rifter 4.5×, hyperion 3.2×, fleet boosters 4.4× fewer).
+- Robustness: packed sort key falls back to tuple sort for >65 535 items; errors per contract (BAD_REQUEST, UNKNOWN_TYPE, UNKNOWN_METHOD).
+
 ## Next
 - `sweep`: multi-lane evaluation of K variants on one compiled plan.
 - Cut remaining per-fit allocations (item effect lists, req_skills) and stats-layer string lookups.
