@@ -19,7 +19,6 @@ fn key(e: Entity, attr: u32) -> u64 {
     ((e.id() as u64) << 32) | attr as u64
 }
 
-const OPS: [i8; 9] = [-1, 0, 1, 2, 3, 4, 5, 6, 7];
 
 impl<'w> Calc<'w> {
     pub fn new(ds: &'w Dataset, world: &'w World) -> Self {
@@ -123,59 +122,66 @@ impl<'w> Calc<'w> {
     }
 
     fn eval(&self, e: Entity, attr: u32, s: &AttrSlot) -> f64 {
+        // Pyfa's ModifiedAttributeDict order (the oracle, down to float rounding):
+        //   preAssign > additions > one product of every unpenalised multiplier (in application order) >
+        //   stacking-penalised chains (per operator) > postAssign
         let mut val = s.base;
         if !s.mods.is_empty() {
             let hig = self.ds.attrs.get(&attr).map(|i| i.high_is_good).unwrap_or(true);
             let vals: Vec<(i8, bool, f64)> = s.mods.iter().map(|m| (m.op, m.penalized, self.src_value(&m.src))).collect();
+            let pick = |op: i8| {
+                let mut r: Option<f64> = None;
+                for &(o, _, v) in &vals {
+                    if o == op {
+                        r = Some(match r {
+                            None => v,
+                            Some(c) => {
+                                if hig { c.max(v) } else { c.min(v) }
+                            }
+                        });
+                    }
+                }
+                r
+            };
+            if let Some(v) = pick(-1) {
+                val = v;
+            }
+            for &(o, _, v) in &vals {
+                match o {
+                    2 => val += v,
+                    3 => val -= v,
+                    _ => {}
+                }
+            }
+            let mult = |op: i8, v: f64| match op {
+                0 | 4 => v,
+                1 | 5 => {
+                    if v == 0.0 { 1.0 } else { 1.0 / v }
+                }
+                6 => 1.0 + v / 100.0,
+                _ => 1.0,
+            };
+            let mut prod = 1.0;
+            for &(o, pen, v) in &vals {
+                if !pen && matches!(o, 0 | 1 | 4 | 5 | 6) {
+                    prod *= mult(o, v);
+                }
+            }
+            val *= prod;
             let mut pos: Vec<f64> = Vec::new();
             let mut neg: Vec<f64> = Vec::new();
-            for op in OPS {
-                let mut any = false;
-                let mut assign: Option<f64> = None;
+            for op in [0i8, 1, 4, 5, 6] {
                 pos.clear();
                 neg.clear();
                 for &(o, pen, v) in &vals {
-                    if o != op {
-                        continue;
-                    }
-                    any = true;
-                    match op {
-                        -1 | 7 => {
-                            assign = Some(match assign {
-                                None => v,
-                                Some(c) => {
-                                    if hig { c.max(v) } else { c.min(v) }
-                                }
-                            })
-                        }
-                        2 => val += v,
-                        3 => val -= v,
-                        _ => {
-                            let m = match op {
-                                0 | 4 => v,
-                                1 | 5 => {
-                                    if v == 0.0 { 1.0 } else { 1.0 / v }
-                                }
-                                6 => 1.0 + v / 100.0,
-                                _ => 1.0,
-                            };
-                            if pen {
-                                if m > 1.0 {
-                                    pos.push(m)
-                                } else if m < 1.0 {
-                                    neg.push(m)
-                                }
-                            } else {
-                                val *= m;
-                            }
+                    if o == op && pen {
+                        let m = mult(op, v);
+                        if m > 1.0 {
+                            pos.push(m)
+                        } else if m < 1.0 {
+                            neg.push(m)
                         }
                     }
-                }
-                if !any {
-                    continue;
-                }
-                if let Some(v) = assign {
-                    val = v;
                 }
                 for list in [&mut pos, &mut neg] {
                     list.sort_by(|x, y| (*y - 1.0).abs().partial_cmp(&(*x - 1.0).abs()).unwrap_or(std::cmp::Ordering::Equal));
@@ -183,6 +189,9 @@ impl<'w> Calc<'w> {
                         val *= 1.0 + (m - 1.0) * (-((i * i) as f64) / 7.1289).exp();
                     }
                 }
+            }
+            if let Some(v) = pick(7) {
+                val = v;
             }
         }
         self.post(e, attr, val)

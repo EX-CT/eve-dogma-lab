@@ -247,7 +247,9 @@ impl<'a> Fit<'a> {
         // Pyfa isValidState: active needs an active-type effect, overheated an overload effect; an invalid
         // requested state falls back to online (not to the highest valid state)
         if let Some(t) = t {
-            let cat = |c: &[u8]| t.effects.iter().any(|&(eid, _)| self.ds.effects.get(&eid).map(|x| c.contains(&x.category)).unwrap_or(false));
+            // (the `online` effect is SDE category 1, but Pyfa types it 'online', not 'active')
+            let online = self.ds.e.online;
+            let cat = |c: &[u8]| t.effects.iter().any(|&(eid, _)| eid != online && self.ds.effects.get(&eid).map(|x| c.contains(&x.category)).unwrap_or(false));
             if (state == State::Overheated && !cat(&[5])) || (state >= State::Active && !cat(&[1, 2, 3])) {
                 state = State::Online;
             }
@@ -665,7 +667,10 @@ impl<'a> Fit<'a> {
                     }
                 }
                 // Pyfa runs the entosis link's (target-category) handler on the fit itself while active
-                let gate_cat = if eid == ef.entosis { 1 } else { eff.category };
+                // doomsdays whose Pyfa handlers slow the ship and set its warp status (lances are handled the same way)
+                let superweapon = eid != 0
+                    && [ef.sw_amarr, ef.sw_caldari, ef.sw_gallente, ef.sw_minmatar, ef.dd_slash, ef.dd_cone, ef.dd_hog].contains(&eid);
+                let gate_cat = if eid == ef.entosis || superweapon { 1 } else { eff.category };
                 if !state_ok(gate_cat, state) {
                     continue;
                 }
@@ -761,7 +766,7 @@ impl<'a> Fit<'a> {
                     }
                     continue;
                 }
-                if eff.mods.is_empty() && (eff.category == 1 || eid == ef.entosis) && it.kind == Kind::Module {
+                if eff.mods.is_empty() && (eff.category == 1 || eid == ef.entosis || superweapon) && it.kind == Kind::Module {
                     // active modules whose Pyfa handlers have no modifierInfo; `pen` says whether Pyfa passes
                     // stackingPenalties (it does so regardless of the attribute's stackable flag)
                     let mut push = |target: Entity, attr: u32, op: i8, penalized: bool, src: Src| {
@@ -784,11 +789,11 @@ impl<'a> Fit<'a> {
                         }
                         continue;
                     }
-                    if eid == ef.mjfg {
+                    if eid == ef.mjfg || eid == ef.mjfg_cap {
                         push(ship, a.sig, 6, true, at(a.sig_bonus_percent));
                         continue;
                     }
-                    if eid == ef.lance || eid == ef.debuff_lance {
+                    if eid == ef.lance || eid == ef.debuff_lance || superweapon {
                         push(ship, a.max_velocity, 6, true, at(a.speed_factor));
                         push(ship, a.warp_scramble, 2, false, at(a.siege_warp_status));
                         continue;
@@ -1120,7 +1125,17 @@ impl<'a> Fit<'a> {
             .unwrap_or(false);
         Some(match name {
             "shipModuleRemoteShieldBooster" | "shipModuleAncillaryRemoteShieldBooster" => rep(0, a.shield_bonus, 1.0, falloff_factor()),
-            "shipModuleRemoteArmorRepairer" | "ShipModuleRemoteArmorMutadaptiveRepairer" => rep(1, a.armor_dmg_amount, 1.0, falloff_factor()),
+            "shipModuleRemoteArmorRepairer" => rep(1, a.armor_dmg_amount, 1.0, falloff_factor()),
+            "ShipModuleRemoteArmorMutadaptiveRepairer" => {
+                // Pyfa Effect7166: the projected mutadaptive rep runs at the global default spool (100 %)
+                let g = |n: &str| {
+                    let id = ds.attr_id(n);
+                    if id != 0 && c.has(e, id) { c.get(e, id) } else { 0.0 }
+                };
+                let sp = crate::stats::spoolup(g("repairMultiplierBonusMax"), g("repairMultiplierBonusPerCycle"), c.get(e, a.duration) / 1000.0,
+                    crate::request::Spool { kind: crate::request::SpoolType::SpoolScale, amount: 1.0 });
+                rep(1, a.armor_dmg_amount, 1.0 + sp, falloff_factor())
+            }
             "shipModuleAncillaryRemoteArmorRepairer" => rep(1, a.armor_dmg_amount, if paste { 3.0 } else { 1.0 }, falloff_factor()),
             "shipModuleRemoteHullRepairer" => rep(2, a.structure_dmg_amount, 1.0, falloff_factor()),
             "npcEntityRemoteShieldBooster" => rep(0, a.shield_bonus, 1.0, gate(base(a.max_range))),

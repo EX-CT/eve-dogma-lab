@@ -98,8 +98,9 @@ id_table!(EffectIds {
     nos = "energyNosferatuFalloff", f_attack = "fighterAbilityAttackM", f_missiles = "fighterAbilityMissiles",
     f_mwd = "fighterAbilityMicroWarpDrive", f_evasive = "fighterAbilityEvasiveManeuvers", f_mjd = "fighterAbilityMicroJumpDrive",
     skill_effect = "skillEffect", fof_missile = "fofMissileLaunching",
-    ehe = "emergencyHullEnergizer", entosis = "entosisLink", mjfg = "microJumpPortalDrive",
-    odr = "OffensiveDefensiveReduction", bubble = "warpDisruptSphere", lance = "doomsdayBeamDOT", debuff_lance = "debuffLance", dd_slash = "doomsdaySlash",
+    ehe = "emergencyHullEnergizer", entosis = "entosisLink", mjfg = "microJumpPortalDrive", mjfg_cap = "microJumpPortalDriveCapital",
+    sw_amarr = "superWeaponAmarr", sw_caldari = "superWeaponCaldari", sw_gallente = "superWeaponGallente", sw_minmatar = "superWeaponMinmatar",
+    odr = "OffensiveDefensiveReduction", bubble = "warpDisruptSphere", lance = "doomsdayBeamDOT", debuff_lance = "debuffLance", dd_slash = "doomsdaySlash", dd_cone = "doomsdayConeDOT", dd_hog = "doomsdayHOG", online = "online",
 } arrays {
     structure_skill_ok: [5] = ["targetingMaxTargetBonusModAddMaxLockedTargetsLocationChar".into(),
         "skillStructureMissileDamageBonus".into(), "skillStructureElectronicSystemsCapNeedBonus".into(),
