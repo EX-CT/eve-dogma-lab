@@ -1,0 +1,4 @@
+#!/bin/sh
+# eve-dogma-g3 launcher: graphs engine G3 on top of the variant-g dogma engine (same branch, ../variant-g)
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$HERE:$HERE/../variant-g${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m g3 "$@"

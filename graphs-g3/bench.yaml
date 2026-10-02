@@ -1,0 +1,7 @@
+# eve-dogma-bench manifest for G3 (graphs round 2; Python 3.10+ with NumPy; dogma engine = ../variant-g)
+build: python3 -c "import numpy, sys; assert sys.version_info >= (3, 10)" && ./bin/eve-dogma-g3 --dataset {dataset} meta > /dev/null
+cmd: ./bin/eve-dogma-g3 --dataset {dataset} calc
+batch_cmd: ./bin/eve-dogma-g3 --dataset {dataset} batch
+rpc_cmd: ./bin/eve-dogma-g3 --dataset {dataset} serve-stdio
+graph_cmd: ./bin/eve-dogma-g3 --dataset {dataset} graph
+graph_batch_cmd: ./bin/eve-dogma-g3 --dataset {dataset} graph-batch
