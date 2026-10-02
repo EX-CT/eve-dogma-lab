@@ -161,10 +161,32 @@ impl<T: Serialize + serde::de::DeserializeOwned> std::ops::Index<&u32> for LazyT
 }
 
 
+#[cfg(not(target_arch = "wasm32"))]
+use memmap2::Mmap;
+
+/// WebAssembly has no file mapping: `map` always fails, so callers fall back to reading / parsing in memory.
+#[cfg(target_arch = "wasm32")]
+pub struct Mmap(Vec<u8>);
+#[cfg(target_arch = "wasm32")]
+impl Mmap {
+    /// # Safety
+    /// Never maps anything (always an error); `unsafe` only mirrors memmap2's signature.
+    pub unsafe fn map(_: &std::fs::File) -> std::io::Result<Mmap> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no mmap on wasm32"))
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl std::ops::Deref for Mmap {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// Record bytes: owned (fresh parse) or borrowed from the memory-mapped derived cache.
 enum Blob {
     Owned(Vec<u8>),
-    Mapped(std::sync::Arc<memmap2::Mmap>, usize, usize),
+    Mapped(std::sync::Arc<Mmap>, usize, usize),
 }
 impl Blob {
     #[inline]
@@ -178,7 +200,7 @@ impl Blob {
 
 thread_local! {
     /// the mapping being deserialized (lets byte fields borrow from it instead of copying)
-    static MAPPING: std::cell::RefCell<Option<std::sync::Arc<memmap2::Mmap>>> = const { std::cell::RefCell::new(None) };
+    static MAPPING: std::cell::RefCell<Option<std::sync::Arc<Mmap>>> = const { std::cell::RefCell::new(None) };
 }
 
 struct Bytes(Blob);
@@ -731,7 +753,7 @@ impl Dataset {
     pub fn load_path_cached(path: &str) -> Result<Dataset, String> {
         // the dataset is mapped, not read: hashing it for the cache key then touches only the page cache
         let fh = std::fs::File::open(path).map_err(|e| format!("read {path}: {e}"))?;
-        let bytes: Box<dyn std::ops::Deref<Target = [u8]>> = match unsafe { memmap2::Mmap::map(&fh) } {
+        let bytes: Box<dyn std::ops::Deref<Target = [u8]>> = match unsafe { Mmap::map(&fh) } {
             Ok(m) => Box::new(m),
             Err(_) => Box::new(std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?),
         };
@@ -740,7 +762,7 @@ impl Dataset {
         if let Some(f) = &file {
             // memory-mapped: the lazily decoded tables borrow their record bytes from the mapping (the cache is
             // only ever replaced by rename, so the mapped inode never changes underneath us)
-            let map = std::fs::File::open(f).ok().and_then(|fh| unsafe { memmap2::Mmap::map(&fh) }.ok()).map(std::sync::Arc::new);
+            let map = std::fs::File::open(f).ok().and_then(|fh| unsafe { Mmap::map(&fh) }.ok()).map(std::sync::Arc::new);
             if let Some(c) = map {
                 if c.len() > 16 && &c[..8] == CACHE_MAGIC && c[8..16] == key.to_le_bytes() {
                     MAPPING.with(|m| *m.borrow_mut() = Some(c.clone()));

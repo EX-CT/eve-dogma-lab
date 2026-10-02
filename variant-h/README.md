@@ -27,6 +27,21 @@ Other commands:
 
 See [DESIGN.md](DESIGN.md) for the architecture and [RESULTS.md](RESULTS.md) for scores.
 
+## WebAssembly (browser / Node)
+
+`wasm/` builds the same engine crate for `wasm32-unknown-unknown` as a dependency-free C-ABI module
+(`eve_dogma_h_wasm.wasm`, about 1.4 MB). `web/eve-dogma-h.mjs` is a small loader for browsers and Node: give it the
+`.wasm` bytes and the dataset bytes (`.json.gz` or `.json`), then call `calc`, `search`, `eftParse` and `eftExport`.
+
+```bash
+cd wasm && cargo build --release --target wasm32-unknown-unknown && cd ..   # needs the wasm32 std (rustup target add wasm32-unknown-unknown)
+node web/test-node.mjs        # all 326 bench 1.8.0 cases vs Pyfa, plus byte-identical output to the native CLI
+```
+
+In the browser there is no file mapping and no derived cache: the dataset is parsed once in memory (about 0.55 s in
+Node), then each calc takes about 1.8 ms. The native build uses mimalloc and the mmapped cache; WebAssembly uses the
+default allocator.
+
 ## License
 
 LGPL-3.0-or-later (`LICENSE`, plus `LICENSE.GPL-3.0`, which it incorporates), following the EX-CT engine policy in

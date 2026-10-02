@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
 use std::time::Instant;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
