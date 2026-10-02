@@ -2,7 +2,10 @@ package dogma
 
 import (
 	"bytes"
+	"encoding/json"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -68,4 +71,34 @@ func TestPooledReuseConcurrent(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+// TestWireDecodeMatchesReference: the single-pass decoder equals per-type alias decoding (serde defaults).
+func TestWireDecodeMatchesReference(t *testing.T) {
+	files, _ := filepath.Glob("../testdata/requests/*.json")
+	extra := []string{`{"ship":{"type_id":1},"drones":[{"type_id":2}],"fighters":[{"type_id":3,"active":null}],"cargo":[{"type_id":4}],` +
+		`"projected":[{"kind":"drone","drone":{"type_id":5}}],"options":{"factor_reload":true}}`, `{"ship":{"type_id":1},"options":null}`}
+	for _, f := range files {
+		b, _ := os.ReadFile(f)
+		extra = append(extra, string(b))
+	}
+	for _, src := range extra {
+		var got FitRequest
+		if err := json.Unmarshal([]byte(src), &got); err != nil {
+			t.Fatal(err)
+		}
+		type alias FitRequest
+		a := alias{Options: Options{Validate: true}}
+		if err := json.Unmarshal([]byte(src), &a); err != nil {
+			t.Fatal(err)
+		}
+		want := FitRequest(a)
+		if g, w := marshalStd(got), marshalStd(want); !bytes.Equal(g, w) {
+			t.Fatalf("decode differs for %.120s\n got %s\nwant %s", src, g, w)
+		}
+	}
+	var r FitRequest
+	if err := json.Unmarshal([]byte(`{"ship":{"type_id":1},"fleet":{"booster_fits":[{}]}}`), &r); err == nil {
+		t.Fatal("nested fit without ship must fail")
+	}
 }

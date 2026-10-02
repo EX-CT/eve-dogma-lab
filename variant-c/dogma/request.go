@@ -270,24 +270,165 @@ type FitRequest struct {
 }
 
 func (r *FitRequest) UnmarshalJSON(b []byte) error {
-	type alias FitRequest
-	a := alias{Options: Options{Validate: true}}
-	// the outer Ship shadows alias.Ship (shallower field wins), which tells "missing" from "zero" in one pass
-	w := struct {
-		*alias
-		Ship *ShipReq `json:"ship"`
-	}{alias: &a}
+	// One decoding pass into wire structs whose defaulted fields are pointers (no nested custom
+	// unmarshalers, which would re-validate and re-scan every sub-object), then apply serde defaults.
+	var w wireFit
 	err := json.Unmarshal(b, &w)
 	if _, syntax := err.(*json.SyntaxError); syntax {
 		return err
 	}
-	if w.Ship == nil {
+	if w.missingShip() {
 		return fmt.Errorf("missing field `ship`")
 	}
 	if err != nil {
 		return err
 	}
-	a.Ship = *w.Ship
-	*r = FitRequest(a)
+	w.to(r)
 	return nil
+}
+
+type wireDrone struct {
+	TypeID   uint32    `json:"type_id"`
+	Quantity *uint32   `json:"quantity"`
+	Active   *uint32   `json:"active"`
+	Mutation *Mutation `json:"mutation"`
+}
+
+type wireFighter struct {
+	TypeID    uint32    `json:"type_id"`
+	Quantity  *uint32   `json:"quantity"`
+	Active    *bool     `json:"active"`
+	Abilities *[]uint32 `json:"abilities"`
+}
+
+type wireCargo struct {
+	TypeID   uint32  `json:"type_id"`
+	Quantity *uint32 `json:"quantity"`
+}
+
+type wireProjected struct {
+	Kind      string     `json:"kind"`
+	Module    *ModuleReq `json:"module"`
+	Drone     *wireDrone `json:"drone"`
+	Fit       *wireFit   `json:"fit"`
+	Amount    *uint32    `json:"amount"`
+	DistanceM *float64   `json:"distance_m"`
+}
+
+type wireOptions struct {
+	NosNoTargetCap    bool       `json:"nos_no_target_cap"`
+	FactorReload      bool       `json:"factor_reload"`
+	DefaultSpool      *Spool     `json:"default_spool"`
+	Rah               *string    `json:"rah"`
+	IncludeAttributes *string    `json:"include_attributes"`
+	Sources           bool       `json:"sources"`
+	Validate          *bool      `json:"validate"`
+	CapSim            CapSimOpts `json:"cap_sim"`
+}
+
+type wireFleet struct {
+	Buffs       []Buff    `json:"buffs"`
+	BoosterFits []wireFit `json:"booster_fits"`
+}
+
+type wireFit struct {
+	SchemaVersion *uint32         `json:"schema_version"`
+	Ship          *ShipReq        `json:"ship"`
+	Character     Character       `json:"character"`
+	Modules       []ModuleReq     `json:"modules"`
+	Drones        []wireDrone     `json:"drones"`
+	Fighters      []wireFighter   `json:"fighters"`
+	Implants      []uint32        `json:"implants"`
+	Boosters      []BoosterReq    `json:"boosters"`
+	Cargo         []wireCargo     `json:"cargo"`
+	Fleet         wireFleet       `json:"fleet"`
+	Projected     []wireProjected `json:"projected"`
+	Environment   Environment     `json:"environment"`
+	DamagePattern *Resists        `json:"damage_pattern"`
+	TargetProfile *TargetProfile  `json:"target_profile"`
+	Overrides     []Override      `json:"overrides"`
+	Options       *wireOptions    `json:"options"`
+}
+
+// missingShip: a FitRequest (top level or nested booster/projected fit) without "ship".
+func (w *wireFit) missingShip() bool {
+	if w.Ship == nil {
+		return true
+	}
+	for i := range w.Fleet.BoosterFits {
+		if w.Fleet.BoosterFits[i].missingShip() {
+			return true
+		}
+	}
+	for _, p := range w.Projected {
+		if p.Fit != nil && p.Fit.missingShip() {
+			return true
+		}
+	}
+	return false
+}
+
+func orU32(p *uint32, d uint32) uint32 {
+	if p == nil {
+		return d
+	}
+	return *p
+}
+
+func (d *wireDrone) to() DroneReq {
+	return DroneReq{TypeID: d.TypeID, Quantity: orU32(d.Quantity, 1), Active: d.Active, Mutation: d.Mutation}
+}
+
+func (w *wireFit) to(r *FitRequest) {
+	*r = FitRequest{SchemaVersion: w.SchemaVersion, Character: w.Character, Modules: w.Modules, Implants: w.Implants,
+		Boosters: w.Boosters, Environment: w.Environment, DamagePattern: w.DamagePattern, TargetProfile: w.TargetProfile,
+		Overrides: w.Overrides, Options: Options{Validate: true}}
+	if w.Ship != nil {
+		r.Ship = *w.Ship
+	}
+	if w.Drones != nil {
+		r.Drones = make([]DroneReq, len(w.Drones))
+		for i := range w.Drones {
+			r.Drones[i] = w.Drones[i].to()
+		}
+	}
+	if w.Fighters != nil {
+		r.Fighters = make([]FighterReq, len(w.Fighters))
+		for i, x := range w.Fighters {
+			r.Fighters[i] = FighterReq{TypeID: x.TypeID, Quantity: x.Quantity, Active: x.Active == nil || *x.Active, Abilities: x.Abilities}
+		}
+	}
+	if w.Cargo != nil {
+		r.Cargo = make([]CargoReq, len(w.Cargo))
+		for i, x := range w.Cargo {
+			r.Cargo[i] = CargoReq{TypeID: x.TypeID, Quantity: orU32(x.Quantity, 1)}
+		}
+	}
+	r.Fleet.Buffs = w.Fleet.Buffs
+	if w.Fleet.BoosterFits != nil {
+		r.Fleet.BoosterFits = make([]FitRequest, len(w.Fleet.BoosterFits))
+		for i := range w.Fleet.BoosterFits {
+			w.Fleet.BoosterFits[i].to(&r.Fleet.BoosterFits[i])
+		}
+	}
+	if w.Projected != nil {
+		r.Projected = make([]Projected, len(w.Projected))
+		for i, x := range w.Projected {
+			p := Projected{Kind: x.Kind, Module: x.Module, Amount: orU32(x.Amount, 1), DistanceM: x.DistanceM}
+			if x.Drone != nil {
+				d := x.Drone.to()
+				p.Drone = &d
+			}
+			if x.Fit != nil {
+				p.Fit = &FitRequest{}
+				x.Fit.to(p.Fit)
+			}
+			r.Projected[i] = p
+		}
+	}
+	if o := w.Options; o != nil {
+		r.Options = Options{NosNoTargetCap: o.NosNoTargetCap, FactorReload: o.FactorReload, DefaultSpool: o.DefaultSpool,
+			Rah: o.Rah, IncludeAttributes: o.IncludeAttributes, Sources: o.Sources, Validate: o.Validate == nil || *o.Validate,
+			CapSim: o.CapSim}
+	}
 }
