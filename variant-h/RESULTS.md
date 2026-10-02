@@ -40,6 +40,15 @@ The box is shared and loaded, so wall times are noisy. The instruction counts be
 The H cold start assumes the derived cache (`dataset.hcache`) has been warmed; `bench.yaml`'s build step runs
 `meta` once to write it. Without the cache, cold start is about 120 ms.
 
+## WebAssembly build and evaluator dry run
+
+- `wasm/` + `web/` (commit da98a4d): `node web/test-node.mjs` gives 326/326 cases and 21051/21051 values vs Pyfa,
+  with output byte-identical to the native CLI on all 326. Dataset load takes 0.55 s, then 1.8 ms per calc (Node 20).
+- `tools/evaluate.py --dry-run --runs 1 --quick --only H` (bench 33db85a, 07:40 CST, load 7.7) on da98a4d: gate
+  passed (326/326). Maintainability 0.90 (34 tests passing, README/DESIGN/LICENSE present, LGPL-3.0-or-later),
+  features 1.00 (EFT export 326/326, eft_parse 20/20, RPC / search / type 1.00), portability 1.00 (code). Perf in
+  that run: 0.382 ms/calc, 2345 fits/s, cold 4.8 ms.
+
 ## Extra self-checks (beyond the bench corpus)
 
 These use a local, uncommitted copy of the GPL Pyfa oracle as a black box. Requests for A's EFT-based specs were

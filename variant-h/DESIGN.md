@@ -119,3 +119,16 @@ A cycle guard returns the base value. Systems that need evaluated values (buff i
 - Skills whose modifiers cannot reach anything in the request are not spawned (`skill_reach`).
 - Release builds use fat LTO, one codegen unit, `panic = "abort"` and stripping; `--profile profiling` keeps
   debuginfo for callgrind.
+
+## Portability and tests
+
+The engine library has no platform-specific code paths except the derived-cache mmap and the mimalloc allocator,
+which are native-only dependencies. On `wasm32`, a stand-in `Mmap` always fails to map, so the existing
+read-and-parse fallback runs. `wasm/` wraps the library in a C-ABI `cdylib`: inputs go into `h_alloc` buffers and
+results are read back with `h_result_ptr` / `h_result_len`, so there is no generated JS glue. `web/eve-dogma-h.mjs`
+is the loader.
+
+`tests/pyfa_parity.rs` replays every bench 1.8.0 case against the bench's Pyfa-expected values at the bench
+tolerance, one test per case family (fixtures in `tests/fixtures/`, generated from the bench repository). It also
+replays the staged pending-1.9.0 cases. `tests/unit.rs` covers the contract helpers.
+
