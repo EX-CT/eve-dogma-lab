@@ -845,6 +845,34 @@ impl<'a> Fit<'a> {
                     }
                     continue;
                 }
+                if name == "shipModuleTrackingDisruptor" || name == "shipModuleGuidanceDisruptor" {
+                    // Pyfa Effect6424 / 6423: the target's turrets (requiring Gunnery) or missile charges (requiring
+                    // Missile Launcher Operation), postPercent x range factor, stacking-penalised, remote resistance
+                    if no_offense {
+                        continue;
+                    }
+                    let td = name == "shipModuleTrackingDisruptor";
+                    let pairs: &[(&str, &str)] = if td {
+                        &[("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"), ("falloffBonus", "falloff")]
+                    } else {
+                        &[("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"), ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay")]
+                    };
+                    let (skill, kind) = if td { (3300, Kind::Module) } else { (3319, Kind::Charge) };
+                    let mut tg = Vec::new();
+                    self.targets(&v, e, Func::LocationRequiredSkill, Domain::Ship, skill, &mut tg);
+                    tg.retain(|&t| v.item(t).kind == kind);
+                    for &(sa, ta) in pairs {
+                        let (sa, ta) = (ds.attr_id(sa), ds.attr_id(ta));
+                        if sa == 0 || ta == 0 {
+                            continue;
+                        }
+                        for &t in &tg {
+                            pend.push(PendingMod { target: t, attr: ta,
+                                m: Mod { op: 6, penalized: true, src: Src::Projected { e, attr: sa, factor, target: ship, resist, mul: false } } });
+                        }
+                    }
+                    continue;
+                }
                 if name.starts_with("remoteWebifier") || name == "structureModuleEffectStasisWebifier" {
                     push(self, a.max_velocity, a.speed_factor, 6, &mut pend);
                 } else if name.starts_with("remoteTargetPaint") || name == "structureModuleEffectTargetPainter" {
