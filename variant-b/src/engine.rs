@@ -1897,7 +1897,7 @@ pub(crate) fn prof(k: usize) {
 
 // ---------------------------------------------------------------- skill folding (dataset-level)
 /// An outgoing (non-self) modifier of a skill effect.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OutMod {
     func: Func,
     domain: Domain,
@@ -1907,7 +1907,7 @@ pub struct OutMod {
     structure_ok: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SkillFold {
     category: u32,
     outgoing: Vec<OutMod>,
@@ -1916,13 +1916,20 @@ pub struct SkillFold {
     unconditional: bool,
     /// skill filters of *RequiredSkill outgoing modifiers
     extras: Vec<u32>,
+    /// precomputed values (snapshot): all 12 slots of `vals` flattened, slot-major; empty = probe lazily
+    pre: Vec<f64>,
     /// lazily probed: [structure*6 + level][k] = value of outgoing[k]'s modifying attribute
+    #[serde(skip)]
     vals: [std::sync::OnceLock<Vec<f64>>; 12],
 }
 
 impl SkillFold {
     fn values(&self, ds: &Dataset, s: u32, level: u8, structure: bool) -> &[f64] {
         let slot = structure as usize * 6 + level.min(5) as usize;
+        if !self.pre.is_empty() {
+            let k = self.outgoing.len();
+            return &self.pre[slot * k..(slot + 1) * k];
+        }
         self.vals[slot].get_or_init(|| {
             if self.outgoing.is_empty() {
                 return Vec::new();
@@ -1934,7 +1941,7 @@ impl SkillFold {
 }
 
 /// Dense per-attribute metadata (indexed by attribute id) — no hash lookups in compile/eval.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct AttrMeta {
     pub default: f64,
     pub stackable: bool,
@@ -1955,7 +1962,39 @@ pub struct Prepared {
     /// attribute ids used by fit validation (resolved once per dataset)
     pub vids: crate::stats::ValidateIds,
     folds: std::sync::Mutex<Vec<(u32, Option<std::sync::Arc<SkillFold>>)>>,
-    table: Vec<(u32, Option<std::sync::Arc<SkillFold>>)>,
+    table: FoldTable,
+}
+
+enum FoldTable {
+    Built(Vec<(u32, Option<std::sync::Arc<SkillFold>>)>),
+    /// from the dataset snapshot: per-skill folds with precomputed values, decoded on first use
+    Snap(crate::data::LazyTable<Option<SkillFold>>),
+}
+
+/// A skill fold borrowed from the dataset table or shared from the on-demand list.
+pub(crate) enum FoldRef<'p> {
+    R(&'p SkillFold),
+    A(std::sync::Arc<SkillFold>),
+}
+
+impl std::ops::Deref for FoldRef<'_> {
+    type Target = SkillFold;
+    fn deref(&self) -> &SkillFold {
+        match self {
+            FoldRef::R(r) => r,
+            FoldRef::A(a) => a,
+        }
+    }
+}
+
+/// Request-independent part of `Prepared` stored in the dataset snapshot.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PreparedCore {
+    skills_foldable: bool,
+    published_skills: Vec<u32>,
+    modes: Vec<(String, u32)>,
+    attr_meta: Vec<AttrMeta>,
+    vids: crate::stats::ValidateIds,
 }
 
 impl Prepared {
@@ -1999,21 +2038,71 @@ impl Prepared {
             ds.types.ids_in_group(1306).map(|id| (ds.types[&id].name.to_lowercase(), id)).collect();
         modes.sort_by_key(|x| x.1);
         let vids = crate::stats::ValidateIds::new(ds);
-        Prepared { skills_foldable: foldable, published_skills, modes, attr_meta, vids, folds: std::sync::Mutex::new(Vec::new()), table }
+        Prepared { skills_foldable: foldable, published_skills, modes, attr_meta, vids, folds: std::sync::Mutex::new(Vec::new()), table: FoldTable::Built(table) }
     }
 
-    fn fold(&self, ds: &Dataset, s: u32) -> Option<std::sync::Arc<SkillFold>> {
-        if let Ok(p) = self.table.binary_search_by_key(&s, |x| x.0) {
-            return self.table[p].1.clone();
+    /// Snapshot sections: bincode(PreparedCore) and the fold table with every (structure, level) value probed.
+    pub(crate) fn snapshot_sections(&self, ds: &Dataset) -> Result<(Vec<u8>, Vec<u8>), String> {
+        let core = PreparedCore {
+            skills_foldable: self.skills_foldable,
+            published_skills: self.published_skills.clone(),
+            modes: self.modes.clone(),
+            attr_meta: self.attr_meta.clone(),
+            vids: self.vids.clone(),
+        };
+        let mut folds: Vec<(u32, Option<SkillFold>)> = Vec::new();
+        if let FoldTable::Built(t) = &self.table {
+            for (s, f) in t {
+                let f = f.as_ref().map(|f| {
+                    let mut g: SkillFold = (**f).clone();
+                    g.vals = Default::default();
+                    let mut pre = Vec::with_capacity(12 * g.outgoing.len());
+                    for slot in 0..12 {
+                        pre.extend_from_slice(f.values(ds, *s, (slot % 6) as u8, slot >= 6));
+                    }
+                    g.pre = pre;
+                    g
+                });
+                folds.push((*s, f));
+            }
+        }
+        Ok((bincode::serialize(&core).map_err(|e| e.to_string())?, crate::data::LazyTable::encode_pairs(&folds)?))
+    }
+
+    pub(crate) fn from_snapshot(core: &[u8], folds: crate::data::LazyTable<Option<SkillFold>>) -> Option<Prepared> {
+        let c: PreparedCore = bincode::deserialize(core).ok()?;
+        Some(Prepared {
+            skills_foldable: c.skills_foldable,
+            published_skills: c.published_skills,
+            modes: c.modes,
+            attr_meta: c.attr_meta,
+            vids: c.vids,
+            folds: std::sync::Mutex::new(Vec::new()),
+            table: FoldTable::Snap(folds),
+        })
+    }
+
+    fn fold(&self, ds: &Dataset, s: u32) -> Option<FoldRef<'_>> {
+        match &self.table {
+            FoldTable::Built(t) => {
+                if let Ok(p) = t.binary_search_by_key(&s, |x| x.0) {
+                    return t[p].1.clone().map(FoldRef::A);
+                }
+            }
+            FoldTable::Snap(t) => {
+                if let Some(f) = t.get(&s) {
+                    return f.as_ref().map(FoldRef::R);
+                }
+            }
         }
         // explicit non-category-16 "skill" ids: compute on demand (rare)
         let mut g = self.folds.lock().unwrap();
         if let Some(x) = g.iter().find(|x| x.0 == s) {
-            return x.1.clone();
+            return x.1.clone().map(FoldRef::A);
         }
         let f = build_fold(ds, s).map(std::sync::Arc::new);
         g.push((s, f.clone()));
-        f
+        f.map(FoldRef::A)
     }
 }
 
@@ -2051,7 +2140,7 @@ fn build_fold(ds: &Dataset, s: u32) -> Option<SkillFold> {
         .collect();
     extras.sort_unstable();
     extras.dedup();
-    Some(SkillFold { category: t.category, outgoing, modifying, unconditional, extras, vals: Default::default() })
+    Some(SkillFold { category: t.category, outgoing, modifying, unconditional, extras, pre: Vec::new(), vals: Default::default() })
 }
 
 impl<'a> Fit<'a> {

@@ -344,7 +344,7 @@ impl Dataset {
             secs.push((s, e));
             at = e;
         }
-        if secs.len() != 8 {
+        if secs.len() != 10 {
             return None;
         }
         let tm = std::time::Instant::now();
@@ -366,6 +366,11 @@ impl Dataset {
         let attr_by_name = NameIndex::decode(&blob, secs[6].0, secs[6].1)?;
         let effect_by_name = NameIndex::decode(&blob, secs[7].0, secs[7].1)?;
         lap("names");
+        let folds = LazyTable::decode(&blob, secs[9].0, secs[9].1)?;
+        let prep = crate::engine::Prepared::from_snapshot(&b[secs[8].0..secs[8].1], folds)?;
+        lap("prepared");
+        let prepared = std::sync::OnceLock::new();
+        let _ = prepared.set(prep);
         Some(Dataset {
             build: main.build,
             release_date: main.release_date,
@@ -383,7 +388,7 @@ impl Dataset {
             names: std::sync::OnceLock::new(),
             names_blob,
             skills: main.skills,
-            prepared: std::sync::OnceLock::new(),
+            prepared,
         })
     }
 
@@ -399,6 +404,8 @@ impl Dataset {
             skills_foldable: self.skills_foldable,
         };
         let names_of = |ix: &NameIndex| -> Vec<u8> { ix.blob[ix.at..].to_vec() };
+        let prep = self.prepared.get_or_init(|| crate::engine::Prepared::new(self));
+        let (prep_core, prep_folds) = prep.snapshot_sections(self)?;
         let secs: Vec<Vec<u8>> = vec![
             bincode::serialize(&main).map_err(|e| e.to_string())?,
             bincode::serialize(self.names()).map_err(|e| e.to_string())?,
@@ -408,6 +415,8 @@ impl Dataset {
             self.mutaplasmids.encode()?,
             names_of(&self.attr_by_name),
             names_of(&self.effect_by_name),
+            prep_core,
+            prep_folds,
         ];
         let mut out = Vec::with_capacity(8 + secs.iter().map(|x| x.len() + 8).sum::<usize>());
         out.extend_from_slice(SNAP_MAGIC);
@@ -693,7 +702,7 @@ impl<'de> Deserialize<'de> for IdKey {
     }
 }
 
-const SNAPSHOT_VERSION: u32 = 7;
+const SNAPSHOT_VERSION: u32 = 8;
 
 /// Snapshot bytes: memory-mapped cache file (pages faulted in on use) or an owned buffer.
 pub enum Blob {
@@ -829,6 +838,11 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned> LazyTable<T> {
             }
         }
         t
+    }
+
+    /// section bytes for (id, entry) pairs (aux = 0)
+    pub(crate) fn encode_pairs(v: &[(u32, T)]) -> Result<Vec<u8>, String> {
+        Self::encode_entries(v.iter().map(|(k, t)| (*k, 0, t)).collect())
     }
 
     fn encode(&self) -> Result<Vec<u8>, String> {

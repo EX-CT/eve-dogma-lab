@@ -52,3 +52,14 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   zero-allocated; cache key from file identity instead of hashing the gz. Process cold calc ~6.5 ms -> ~5 ms
   (median, loaded box). validate attr ids cached per dataset; rounding JSON formatter (no tidy pass).
 - Parity: 297/297 bench cases byte-identical vs A@e552cb9, eft_export 306/306, tests pass.
+
+## 06:30 CST — bench 1.8.0 (326 cases)
+- Ported A 9f8579c (weather/AoE cloud beacons incl. drone buffs and unpenalised weather buffs, incursion system
+  effects, burst projectors web/paint/damp/neut/ECM/track at full strength, Standup weapon disruptor, Breach
+  Control). 326/326 byte-identical vs A@c629fb8; official quick run 326/326 cases, 21051/21051 values, eft 326/326.
+- Snapshot v8: `Prepared` (attr meta, published skills, T3D modes, validate ids) and the skill-fold table with all
+  12 (structure, level) probe values precomputed are stored in the snapshot (fold table lazily decoded per skill).
+  Saves Prepared::new (~2.8M instr) and the per-process skill probes (~1.2M instr) in every cold process:
+  single-calc ~9.5M -> ~5.5M instructions; cold median ~0.5-1 ms lower at load ~7. Output identical (diff vs A
+  with and without cache).
+- Tried: LSD radix sort for the modifier order — slower than pdqsort on the mostly presorted keys (+2% instr); reverted.

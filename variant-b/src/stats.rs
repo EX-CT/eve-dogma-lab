@@ -182,6 +182,7 @@ fn tidy_mut(v: &mut Value) {
 }
 
 /// Attribute ids `validate` needs, resolved once per dataset (instead of format! + name lookup per module).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ValidateIds {
     can_fit_group: Vec<u32>,
     can_fit_type: Vec<u32>,
