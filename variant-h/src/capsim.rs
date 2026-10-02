@@ -32,19 +32,22 @@ struct Ev {
     reload: f64,
     inj: bool,
     seq: u64,
+    /// rank of (duration, cap_need) among this run's event templates
+    r1: u16,
+    /// rank of (clip, reload, inj) among this run's event templates
+    r2: u16,
 }
 
 impl Ev {
     /// ascending key: Python list order [t, duration, capNeed, shot, clip, reload, isInjector] then insertion
+    /// (template fields never change after creation, so they are compared through precomputed ranks)
+    #[inline]
     fn key_cmp(&self, o: &Self) -> Ordering {
-        let f = |a: f64, b: f64| a.partial_cmp(&b).unwrap_or(Ordering::Equal);
-        f(self.t, o.t)
-            .then(f(self.duration, o.duration))
-            .then(f(self.cap_need, o.cap_need))
+        self.t
+            .total_cmp(&o.t)
+            .then(self.r1.cmp(&o.r1))
             .then(self.shot.cmp(&o.shot))
-            .then(self.clip.cmp(&o.clip))
-            .then(f(self.reload, o.reload))
-            .then(self.inj.cmp(&o.inj))
+            .then(self.r2.cmp(&o.r2))
             .then(self.seq.cmp(&o.seq))
     }
     fn advance(&mut self, now: f64, seq: &mut u64) {
@@ -81,7 +84,7 @@ fn gcd(a: u64, b: u64) -> u64 {
 
 pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool, stagger: bool, t_max_ms: f64) -> CapResult {
     let tau = recharge_ms / 5.0;
-    let mut heap = BinaryHeap::new();
+    let mut heap: Vec<Ev> = Vec::new();
     let mut seq = 0u64;
     let mut period: u64 = 1;
     let mut disable_period = false;
@@ -101,7 +104,7 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool,
         }
     }
     let ev = |t: f64, d: &Drain, inj: bool, seq: &mut u64| {
-        let e = Ev { t, duration: d.duration, cap_need: d.cap_need, shot: 0, clip: d.clip_size, reload: d.reload_ms, inj, seq: *seq };
+        let e = Ev { t, duration: d.duration, cap_need: d.cap_need, shot: 0, clip: d.clip_size, reload: d.reload_ms, inj, seq: *seq, r1: 0, r2: 0 };
         *seq += 1;
         e
     };
@@ -132,6 +135,20 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], reload: bool,
         period = period / gcd(period, dur) * dur;
         heap.push(ev(0.0, &d, false, &mut seq));
     }
+    {
+        let f = |a: f64, b: f64| a.partial_cmp(&b).unwrap_or(Ordering::Equal);
+        let mut k1: Vec<(f64, f64)> = heap.iter().map(|e| (e.duration, e.cap_need)).collect();
+        k1.sort_by(|a, b| f(a.0, b.0).then(f(a.1, b.1)));
+        k1.dedup_by(|a, b| f(a.0, b.0).then(f(a.1, b.1)) == Ordering::Equal);
+        let mut k2: Vec<(u32, f64, bool)> = heap.iter().map(|e| (e.clip, e.reload, e.inj)).collect();
+        k2.sort_by(|a, b| a.0.cmp(&b.0).then(f(a.1, b.1)).then(a.2.cmp(&b.2)));
+        k2.dedup_by(|a, b| a.0.cmp(&b.0).then(f(a.1, b.1)).then(a.2.cmp(&b.2)) == Ordering::Equal);
+        for e in heap.iter_mut() {
+            e.r1 = k1.partition_point(|x| f(x.0, e.duration).then(f(x.1, e.cap_need)) == Ordering::Less) as u16;
+            e.r2 = k2.partition_point(|x| x.0.cmp(&e.clip).then(f(x.1, e.reload)).then(x.2.cmp(&e.inj)) == Ordering::Less) as u16;
+        }
+    }
+    let mut heap = BinaryHeap::from(heap);
     let period = if disable_period || period as f64 > t_max_ms { t_max_ms } else { period as f64 };
 
     let cap_max = capacity;
