@@ -12,6 +12,17 @@ def float_unerr(v):
     return _rnd(v * 1e9) / 1e9
 
 
+def float_unerr7(v):
+    """Pyfa eos.utils.float.floatUnerr: keep 7 significant digits"""
+    if v == 0.0 or not math.isfinite(v):
+        return v
+    rf = 7 - int(math.ceil(math.log10(abs(v))))
+    if rf >= 0:
+        return float(f"{v:.{rf}f}")
+    p = 10.0 ** (-rf)
+    return _rnd(v / p) * p
+
+
 def _rnd(x):
     return math.floor(x + 0.5) if x >= 0 else -math.floor(-x + 0.5)
 
@@ -376,7 +387,13 @@ class FitStats:
             spool = meta[i]["spool"] or default_spool
             sp = spoolup(g(i, "damageMultiplierBonusMax"), g(i, "damageMultiplierBonusPerCycle"), raw / 1000.0, spool)
             vs = [x * (1.0 + sp) for x in base]
-            dps = [x * (1000.0 / cyc) for x in vs] if cyc > 0.0 else dmg()
+            # doomsdays / lances deal their volley every doomsdayDamageCycleTime during doomsdayDamageDuration
+            # (Pyfa getVolleyParameters subcycles; the Reaper slash hits once); volley = one tick
+            dd, dsub = g(i, "doomsdayDamageDuration"), g(i, "doomsdayDamageCycleTime")
+            subc = 1.0
+            if dd != 0.0 and dsub != 0.0 and not self.has_eff(i, ("doomsdaySlash",)):
+                subc = max(float(math.floor(float_unerr7(dd / dsub))), 0.0)
+            dps = [x * (subc * 1000.0 / cyc) for x in vs] if cyc > 0.0 else dmg()
             w_vol = [a + b for a, b in zip(w_vol, vs)]
             w_dps = [a + b for a, b in zip(w_dps, dps)]
             c = meta[i]["charge"]

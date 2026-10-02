@@ -94,10 +94,16 @@ def _join(qkeys, tkeys_sorted, tvals_sorted):
     return q, tvals_sorted[pos]
 
 
+LOCAL_SPECIAL = frozenset((
+    "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente", "superWeaponMinmatar", "doomsdaySlash",
+    "doomsdayBeamDOT", "doomsdayConeDOT", "doomsdayHOG", "debuffLance", "emergencyHullEnergizer", "entosisLink",
+    "microJumpPortalDrive", "microJumpPortalDriveCapital", "warpDisruptSphere"))
+
 DAMAGE_EFFECTS = frozenset((
     "projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack", "missileLaunchingForEntity",
     "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente",
-    "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching", "ChainLightning"))
+    "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching", "ChainLightning",
+    "salvageDroneEffect"))
 
 
 def _sec_set(ds, src):
@@ -716,6 +722,9 @@ class Batch:
             elif sp == SPECIAL_HARDPOINT:
                 for t, s in (("turretSlotsLeft", "turretHardPointModifier"), ("launcherSlotsLeft", "launcherHardPointModifier")):
                     self.push(ship, a(t), 2, SRC_ATTR, K(i, a(s)), src_item=i, src_cat=cat, order=o)
+        for i in fit.modules:
+            if self.meta[i]["state"] >= ACTIVE:
+                self._register_local_special(fit, i)
         for i in fit.items:
             if self.meta[i]["kind"] == PROJECTED:
                 self._register_projected(fit, i)
@@ -733,6 +742,64 @@ class Batch:
             else:
                 agg[b["buff_id"]] = max(agg[b["buff_id"]], b["value"])
         fit.explicit_buffs = agg  # applied in run() together with the bursts, sorted by buff id
+
+    def _register_local_special(self, fit, i):
+        """Pyfa 'active' handlers for local module effects that have no modifierInfo in the SDE (eos/effects.py,
+        LGPL; re-expressed): superweapons/lances (speed, warp scramble status), Emergency Hull Energizer, Entosis
+        Link, Micro Jump Field Generator, Warp Disruption Field Generator. Source category 6 = unpenalised."""
+        ds = self.ds
+        m = self.meta[i]
+        effs = m["effects"]
+        names = [ds.effect_name.get(e) for e, _ in effs]
+        if not any(nm in LOCAL_SPECIAL for nm in names):
+            return
+        a = ds.a
+        K = self.key
+        ship = fit.ship
+        cat = m["category"]
+        # o2 = position of the effect's (would-be) template rows in the item's row order
+        ti = m["ti"]
+        r_eff = ds.tm["eff"][ds.tm_ptr[ti]:ds.tm_ptr[ti + 1]].tolist()
+        for en, (eid, _) in enumerate(effs):
+            nm = names[en]
+            if nm not in LOCAL_SPECIAL:
+                continue
+            e = ds.eff_info.get(eid)
+            if e is None or e["mods"]:
+                continue
+            before = {x for x, _ in effs[:en]}
+            o = (i, sum(1 for x in r_eff if x in before))
+
+            def push(tgt, attr, op, src_attr=None, const=None, src_cat=cat):
+                if const is not None:
+                    self.push(tgt, attr, op, SRC_CONST, const=const, src_item=i, src_cat=src_cat, order=o)
+                else:
+                    self.push(tgt, attr, op, SRC_ATTR, K(i, a(src_attr)), src_item=i, src_cat=src_cat, order=o)
+
+            if nm in ("superWeaponAmarr", "superWeaponCaldari", "superWeaponGallente", "superWeaponMinmatar",
+                      "doomsdaySlash", "doomsdayBeamDOT", "doomsdayConeDOT", "doomsdayHOG", "debuffLance"):
+                push(ship, a("maxVelocity"), 6, "speedFactor")
+                push(ship, a("warpScrambleStatus"), 2, "siegeModeWarpStatus")
+            elif nm == "emergencyHullEnergizer":
+                for t in ("Em", "Thermal", "Kinetic", "Explosive"):
+                    push(ship, a(f"{t.lower()}DamageResonance"), 4, f"hull{t}DamageResonance")
+            elif nm == "entosisLink":
+                push(ship, a("disallowAssistance"), 7, "disallowAssistance", src_cat=6)
+                for t in ("Gravimetric", "Magnetometric", "Radar", "Ladar"):
+                    push(ship, a(f"scan{t}Strength"), 6, f"scan{t}StrengthPercent")
+            elif nm in ("microJumpPortalDrive", "microJumpPortalDriveCapital"):
+                push(ship, a("signatureRadius"), 6, "signatureRadiusBonusPercent")
+            elif nm == "warpDisruptSphere":
+                push(ship, a("disallowAssistance"), 7, const=1.0, src_cat=6)
+                if m["charge"] is None:
+                    push(ship, 4, 6, "massBonusPercentage", src_cat=6)
+                    push(ship, a("signatureRadius"), 6, "signatureRadiusBonus", src_cat=6)
+                    for t in fit.items:
+                        mt = self.meta[t]
+                        if mt is not None and mt["kind"] == MODULE and self.it_loc[t] == L_SHIP and \
+                                ds.group_name.get(mt["group"]) == "Propulsion Module":
+                            push(t, a("speedBoostFactor"), 6, "speedBoostFactorBonus", src_cat=6)
+                            push(t, a("speedFactor"), 6, "speedFactorBonus", src_cat=6)
 
     def _register_projected(self, fit, i):
         ds = self.ds
@@ -804,7 +871,8 @@ class Batch:
             elif nm.startswith("remoteSensorDamp") or nm == "structureModuleEffectRemoteSensorDampener":
                 push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
                 push(a("scanResolution"), a("scanResolutionBonus"), 6)
-            elif nm in ("shipModuleTrackingDisruptor", "shipModuleGuidanceDisruptor", "shipModuleRemoteTrackingComputer"):
+            elif nm in ("shipModuleTrackingDisruptor", "shipModuleGuidanceDisruptor", "shipModuleRemoteTrackingComputer",
+                        "npcEntityWeaponDisruptor"):
                 # Pyfa Effect6424 / Effect6423 / shipModuleRemoteTrackingComputer: the target's gunnery modules
                 # (TD, remote tracking computer) / missile charges (GD), postPercent
                 if nm == "shipModuleRemoteTrackingComputer":
@@ -825,7 +893,10 @@ class Batch:
                             ("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"),
                             ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay"))
                     sk = ds.type_by_name.get(skill.lower()) or 0
-                    tf = range_factor(pb("maxRange"), pb("falloffEffectiveness"), it["distance"], True)
+                    if nm == "npcEntityWeaponDisruptor":  # TD drones (Pyfa Effect6694): full inside maxRange, else 0
+                        tf = 0.0 if pb("maxRange") < (it["distance"] or 0.0) else 1.0
+                    else:
+                        tf = range_factor(pb("maxRange"), pb("falloffEffectiveness"), it["distance"], True)
                     for t in fit.items:
                         mt = self.meta[t]
                         if mt is None or mt["kind"] != want_kind or self.it_loc[t] != L_SHIP or not self.it_owned[t]:
@@ -952,8 +1023,9 @@ def range_factor(optimal, falloff, distance, restricted):
 MOD_COLS = ("tgt", "attr", "op", "pen", "kind", "a", "b", "c", "const", "factor", "mul", "src_item", "o1", "o2")
 
 
-def _round_half_away(x):
-    return np.sign(x) * np.floor(np.abs(x) * 100.0 + 0.5) / 100.0
+def _py_round2(x):
+    """Python round(x, 2) (Pyfa): correctly rounded on the exact binary value, ties to even"""
+    return round(x, 2) if math.isfinite(x) else x
 
 
 class Evaluated:
@@ -1263,7 +1335,8 @@ def evaluate(batch, fit_mask=None):
                     v = np.where(hs, np.where(cv < v, cv, v), v)
         r = rnd[nodes]
         if r.any():
-            v = np.where(r, _round_half_away(v), v)
+            rr = np.nonzero(r)[0]
+            v[rr] = [_py_round2(x) for x in v[rr].tolist()]
         val[nodes] = v
     return Evaluated(keys, val, base, full)
 
