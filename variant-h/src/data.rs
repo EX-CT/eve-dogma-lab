@@ -14,7 +14,7 @@ pub struct LazyTable<T> {
     ids: Vec<u32>,
     /// record i = blob[offs[i]..offs[i + 1]]
     offs: Vec<u32>,
-    blob: Vec<u8>,
+    blob: Blob,
     cells: Vec<OnceLock<T>>,
     /// dense id -> index + 1 (0 = absent), for ids below DENSE_MAX
     dense: Vec<u32>,
@@ -47,7 +47,7 @@ impl<T: Serialize + serde::de::DeserializeOwned> LazyTable<T> {
             cells.push(c);
         }
         let dense = dense_of(&ids);
-        LazyTable { ids, offs, blob, cells, dense }
+        LazyTable { ids, offs, blob: Blob::Owned(blob), cells, dense }
     }
     #[inline]
     fn idx(&self, id: u32) -> Option<usize> {
@@ -62,7 +62,7 @@ impl<T: Serialize + serde::de::DeserializeOwned> LazyTable<T> {
     }
     #[inline]
     fn at(&self, i: usize) -> &T {
-        self.cells[i].get_or_init(|| bincode::deserialize(&self.blob[self.offs[i] as usize..self.offs[i + 1] as usize]).expect("type record"))
+        self.cells[i].get_or_init(|| bincode::deserialize(&self.blob.bytes()[self.offs[i] as usize..self.offs[i + 1] as usize]).expect("type record"))
     }
     #[inline]
     pub fn get(&self, id: &u32) -> Option<&T> {
@@ -101,10 +101,30 @@ fn bytes_to_u32s(b: &[u8]) -> Vec<u32> {
     b.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
 }
 
-struct Bytes(Vec<u8>);
+/// Record bytes: owned (fresh parse) or borrowed from the memory-mapped derived cache.
+enum Blob {
+    Owned(Vec<u8>),
+    Mapped(std::sync::Arc<memmap2::Mmap>, usize, usize),
+}
+impl Blob {
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Blob::Owned(v) => v,
+            Blob::Mapped(m, off, len) => &m[*off..*off + *len],
+        }
+    }
+}
+
+thread_local! {
+    /// the mapping being deserialized (lets byte fields borrow from it instead of copying)
+    static MAPPING: std::cell::RefCell<Option<std::sync::Arc<memmap2::Mmap>>> = const { std::cell::RefCell::new(None) };
+}
+
+struct Bytes(Blob);
 impl Serialize for Bytes {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_bytes(&self.0)
+        s.serialize_bytes(self.0.bytes())
     }
 }
 impl<'de> Deserialize<'de> for Bytes {
@@ -115,29 +135,38 @@ impl<'de> Deserialize<'de> for Bytes {
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("bytes")
             }
+            fn visit_borrowed_bytes<E: serde::de::Error>(self, v: &'de [u8]) -> Result<Bytes, E> {
+                let mapped = MAPPING.with(|m| {
+                    let m = m.borrow();
+                    let map = m.as_ref()?;
+                    let (base, p) = (map.as_ptr() as usize, v.as_ptr() as usize);
+                    (p >= base && p + v.len() <= base + map.len()).then(|| Blob::Mapped(map.clone(), p - base, v.len()))
+                });
+                Ok(Bytes(mapped.unwrap_or_else(|| Blob::Owned(v.to_vec()))))
+            }
             fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Bytes, E> {
-                Ok(Bytes(v.to_vec()))
+                Ok(Bytes(Blob::Owned(v.to_vec())))
             }
             fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Bytes, E> {
-                Ok(Bytes(v))
+                Ok(Bytes(Blob::Owned(v)))
             }
         }
-        d.deserialize_byte_buf(V)
+        d.deserialize_bytes(V)
     }
 }
 
 impl<T> Serialize for LazyTable<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        (Bytes(u32s_to_bytes(&self.ids)), Bytes(u32s_to_bytes(&self.offs)), Bytes(self.blob.clone())).serialize(s)
+        (Bytes(Blob::Owned(u32s_to_bytes(&self.ids))), Bytes(Blob::Owned(u32s_to_bytes(&self.offs))), Bytes(Blob::Owned(self.blob.bytes().to_vec()))).serialize(s)
     }
 }
 impl<'de, T> Deserialize<'de> for LazyTable<T> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let (ids, offs, blob) = <(Bytes, Bytes, Bytes)>::deserialize(d)?;
-        let ids = bytes_to_u32s(&ids.0);
+        let ids = bytes_to_u32s(ids.0.bytes());
         let cells = (0..ids.len()).map(|_| OnceLock::new()).collect();
         let dense = dense_of(&ids);
-        Ok(LazyTable { ids, offs: bytes_to_u32s(&offs.0), blob: blob.0, cells, dense })
+        Ok(LazyTable { ids, offs: bytes_to_u32s(offs.0.bytes()), blob: blob.0, cells, dense })
     }
 }
 
@@ -640,13 +669,24 @@ fn cache_file() -> Option<std::path::PathBuf> {
 impl Dataset {
     /// Load with the derived cache (read if valid, else parse and write it best-effort).
     pub fn load_path_cached(path: &str) -> Result<Dataset, String> {
-        let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+        // the dataset is mapped, not read: hashing it for the cache key then touches only the page cache
+        let fh = std::fs::File::open(path).map_err(|e| format!("read {path}: {e}"))?;
+        let bytes: Box<dyn std::ops::Deref<Target = [u8]>> = match unsafe { memmap2::Mmap::map(&fh) } {
+            Ok(m) => Box::new(m),
+            Err(_) => Box::new(std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?),
+        };
         let key = cache_key(&bytes);
         let file = cache_file();
         if let Some(f) = &file {
-            if let Ok(c) = std::fs::read(f) {
+            // memory-mapped: the lazily decoded tables borrow their record bytes from the mapping (the cache is
+            // only ever replaced by rename, so the mapped inode never changes underneath us)
+            let map = std::fs::File::open(f).ok().and_then(|fh| unsafe { memmap2::Mmap::map(&fh) }.ok()).map(std::sync::Arc::new);
+            if let Some(c) = map {
                 if c.len() > 16 && &c[..8] == CACHE_MAGIC && c[8..16] == key.to_le_bytes() {
-                    if let Ok(ds) = bincode::deserialize::<Dataset>(&c[16..]) {
+                    MAPPING.with(|m| *m.borrow_mut() = Some(c.clone()));
+                    let r = bincode::deserialize::<Dataset>(&c[16..]);
+                    MAPPING.with(|m| *m.borrow_mut() = None);
+                    if let Ok(ds) = r {
                         return Ok(ds);
                     }
                 }

@@ -845,13 +845,22 @@ impl<'a> Fit<'a> {
                     }
                     continue;
                 }
-                if name == "shipModuleTrackingDisruptor" || name == "shipModuleGuidanceDisruptor" {
+                if matches!(name, "shipModuleTrackingDisruptor" | "shipModuleGuidanceDisruptor" | "shipModuleRemoteTrackingComputer") {
                     // Pyfa Effect6424 / 6423: the target's turrets (requiring Gunnery) or missile charges (requiring
-                    // Missile Launcher Operation), postPercent x range factor, stacking-penalised, remote resistance
-                    if no_offense {
+                    // Missile Launcher Operation), postPercent x range factor, stacking-penalised, remote resistance.
+                    // Effect6428 (remote tracking computer): the same turret boost, no resistance, blocked by
+                    // the target's disallowAssistance instead of disallowOffensive.
+                    let rtc = name == "shipModuleRemoteTrackingComputer";
+                    let resist = if rtc { 0 } else { resist };
+                    if rtc {
+                        let c = self.calc();
+                        if c.has(ship, a.disallow_assistance) && c.get(ship, a.disallow_assistance) != 0.0 {
+                            continue;
+                        }
+                    } else if no_offense {
                         continue;
                     }
-                    let td = name == "shipModuleTrackingDisruptor";
+                    let td = name != "shipModuleGuidanceDisruptor";
                     let pairs: &[(&str, &str)] = if td {
                         &[("trackingSpeedBonus", "trackingSpeed"), ("maxRangeBonus", "maxRange"), ("falloffBonus", "falloff")]
                     } else {
