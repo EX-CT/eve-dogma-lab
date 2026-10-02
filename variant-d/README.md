@@ -17,7 +17,7 @@ python3 score_bench.py                                                # bench ca
 
 Library: `import { calc, search, typeInfo } from './dist/index.js'` with a `Dataset` from
 `dist/node.js` (`loadDatasetFile`) or `dist/browser.js` (`loadDatasetUrl`, uses DecompressionStream + SubtleCrypto).
-The cache (`VDC3`) is a pure re-layout of the dataset (columnar type table + lazily decoded per-type bodies); set
+The cache (`VDC4`) is a pure re-layout of the dataset (columnar type table + lazily decoded per-type bodies); set
 `EVE_DOGMA_TS_NO_CACHE=1` to bypass it, `EVE_DOGMA_TS_CACHE_DIR` to move it (library default `~/.cache/eve-dogma-ts`).
 
 ## Browser

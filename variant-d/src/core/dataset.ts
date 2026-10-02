@@ -61,6 +61,29 @@ export interface MutaInfo { attrs: Record<string, [number, number]>; mapping: { 
 /** Type-level fields injected as attributes: mass(4), capacity(38), volume(161), radius(162). */
 export const TYPE_FIELD_ATTRS = [4, 38, 161, 162] as const;
 
+export interface EffectStore {
+  get(id: number): EffectInfo | undefined;
+  readonly size: number;
+}
+
+/** dataset effect record -> EffectInfo */
+export function effectInfo(id: number, e: any): EffectInfo {
+  const mods = (e.mods ?? []).map((m: number[]) => ({
+    func: (m[0] >= 0 && m[0] <= 4 ? m[0] : 5) as Func,
+    domain: (m[1] >= 0 && m[1] <= 6 ? m[1] : 7) as Domain,
+    modified: m[2], modifying: m[3], op: m[4], extra: m[5],
+  }));
+  return {
+    id, name: e.name, category: e.category ?? 0,
+    durationAttr: e.duration_attr ?? null, dischargeAttr: e.discharge_attr ?? null, rangeAttr: e.range_attr ?? null,
+    falloffAttr: e.falloff_attr ?? null, trackingAttr: e.tracking_attr ?? null, resistanceAttr: e.resistance_attr ?? null,
+    fittingUsageChanceAttr: e.fitting_usage_chance_attr ?? null,
+    isOffensive: !!e.is_offensive, isAssistance: !!e.is_assistance,
+    mods,
+    itemOnly: mods.every((m: { domain: Domain }) => m.domain === Domain.Item),
+  };
+}
+
 export class Dataset {
   build = 0;
   releaseDate: string | null = null;
@@ -70,9 +93,23 @@ export class Dataset {
   /** category id -> name */
   categories = new Map<number, string>();
   attrs = new Map<number, AttrInfo>();
-  effects = new Map<number, EffectInfo>();
+  effects: EffectStore = new Map<number, EffectInfo>();
   dbuffs = new Map<number, DbuffInfo>();
-  mutaplasmids = new Map<number, MutaInfo>();
+  /** mutaplasmids, materialised on first use */
+  mutaSource: () => Record<string, MutaInfo> = () => ({});
+  private mutaMap: Map<number, MutaInfo> | null = null;
+  get mutaplasmids(): Map<number, MutaInfo> {
+    if (this.mutaMap === null) {
+      const raw = this.mutaSource();
+      this.mutaMap = new Map();
+      for (const k in raw) this.mutaMap.set(+k, raw[k]);
+    }
+    return this.mutaMap;
+  }
+  /** register effect names of a lazily decoded effect table (cache loader) */
+  setEffectNames(ids: ArrayLike<number>, names: string[]): void {
+    for (let i = 0; i < ids.length; i++) this.effectByName.set(names[i], ids[i]);
+  }
   /** all skill type ids (category 16), sorted */
   skills: number[] = [];
   /** published skills, sorted */
@@ -140,30 +177,18 @@ export class Dataset {
     for (const id of ds.attrs.keys()) if (id > maxA) maxA = id;
     ds.defArr = new Float64Array(maxA + 1);
     for (const [id, a] of ds.attrs) ds.defArr[id] = a.default;
-    for (const k in raw.effects) {
-      const e = raw.effects[k];
-      const id = +k;
-      ds.effectByName.set(e.name, id);
-      ds.effects.set(id, {
-        id, name: e.name, category: e.category ?? 0,
-        durationAttr: e.duration_attr ?? null, dischargeAttr: e.discharge_attr ?? null, rangeAttr: e.range_attr ?? null,
-        falloffAttr: e.falloff_attr ?? null, trackingAttr: e.tracking_attr ?? null, resistanceAttr: e.resistance_attr ?? null,
-        fittingUsageChanceAttr: e.fitting_usage_chance_attr ?? null,
-        isOffensive: !!e.is_offensive, isAssistance: !!e.is_assistance,
-        mods: (e.mods ?? []).map((m: number[]) => ({
-          func: (m[0] >= 0 && m[0] <= 4 ? m[0] : 5) as Func,
-          domain: (m[1] >= 0 && m[1] <= 6 ? m[1] : 7) as Domain,
-          modified: m[2], modifying: m[3], op: m[4], extra: m[5],
-        })),
-        itemOnly: false,
-      });
-      const ei = ds.effects.get(id)!;
-      ei.itemOnly = ei.mods.every((m) => m.domain === Domain.Item);
+    if (raw.effects) {
+      const em = ds.effects as Map<number, EffectInfo>;
+      for (const k in raw.effects) {
+        const id = +k;
+        ds.effectByName.set(raw.effects[k].name, id);
+        em.set(id, effectInfo(id, raw.effects[k]));
+      }
     }
     for (const k in raw.groups) ds.groups.set(+k, { name: raw.groups[k].name ?? '', category: raw.groups[k].category });
     for (const k in raw.categories ?? {}) ds.categories.set(+k, raw.categories[k].name ?? '');
     for (const k in raw.dbuffs ?? {}) ds.dbuffs.set(+k, raw.dbuffs[k]);
-    for (const k in raw.mutaplasmids ?? {}) ds.mutaplasmids.set(+k, raw.mutaplasmids[k]);
+    if (raw.mutaplasmids) ds.mutaSource = () => raw.mutaplasmids;
   }
 
   /** register one type (raw dataset shape, or a cache record exposing the same fields); ids ascending */

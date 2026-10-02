@@ -1,15 +1,16 @@
 /**
- * Variant-D dataset cache ("VDC3"): the same dataset, re-laid-out for fast cold start. Platform-neutral (bytes in).
- *   "VDC3\n" <header byte length> "\n" <header JSON> <body bytes>
- * - header: sde info, sha256, attributes, effects, groups, categories, dbuffs, mutaplasmids and the types as
+ * Variant-D dataset cache ("VDC4"): the same dataset, re-laid-out for fast cold start. Platform-neutral (bytes in).
+ *   "VDC4\n" <header byte length> "\n" <header JSON> <body bytes>
+ * - header: sde info, sha256, attributes, groups, categories, dbuffs, an effect index and the types as
  *   *columns* (ids, group, category, published, mass, ... and byte offset/length of each type's body slice)
- * - body: per-type JSON `[attrs, effects]` slices, the type-name array and the zh-name table.
+ * - body: per-type JSON `[attrs, effects]` slices, the type-name array, per-effect JSON slices (decoded on first
+ *   lookup), the mutaplasmid table and the zh-name table.
  * Nothing per type is allocated at load: TypeInfo objects are created on first access (TypeTable) and their
  * attrs/effects decoded on first use (memoised, so the effects array keeps its identity for the plan WeakMap).
  */
-import { Dataset, TypeInfo, TypeStore } from './dataset.js';
+import { Dataset, EffectInfo, EffectStore, TypeInfo, TypeStore, effectInfo } from './dataset.js';
 
-const MAGIC = 'VDC3';
+const MAGIC = 'VDC4';
 const enc = new TextEncoder();
 
 export function buildCache(raw: any, sha256: string): Uint8Array {
@@ -25,11 +26,17 @@ export function buildCache(raw: any, sha256: string): Uint8Array {
     offs.push(o); lens.push(l);
   }
   const names = add(JSON.stringify(col((t) => t.name ?? '')));
+  // effects: one JSON slice each, decoded on first lookup; mutaplasmids: one slice, decoded on first use
+  const eids = Object.keys(raw.effects).map(Number).sort((a, b) => a - b);
+  const eoff: number[] = [], elen: number[] = [];
+  for (const id of eids) { const [o, l] = add(JSON.stringify(raw.effects[id])); eoff.push(o); elen.push(l); }
+  const muta = add(JSON.stringify(raw.mutaplasmids ?? {}));
   const zh = add(JSON.stringify(raw.names?.zh ?? {}));
   const header = enc.encode(JSON.stringify({
     format: raw.format, format_version: raw.format_version, sde: raw.sde, sha256,
-    attributes: raw.attributes, effects: raw.effects, groups: raw.groups, categories: raw.categories ?? {},
-    dbuffs: raw.dbuffs ?? {}, mutaplasmids: raw.mutaplasmids ?? {},
+    attributes: raw.attributes, groups: raw.groups, categories: raw.categories ?? {},
+    dbuffs: raw.dbuffs ?? {}, muta,
+    effect_index: { id: eids, name: eids.map((id) => raw.effects[id].name), off: eoff, len: elen },
     types: {
       id: ids, group: col((t) => t.group), category: col((t) => t.category), published: col((t) => (t.published ? 1 : 0)),
       mass: col((t) => t.mass ?? 0), volume: col((t) => t.volume ?? 0), capacity: col((t) => t.capacity ?? 0), radius: col((t) => t.radius ?? 0),
@@ -118,6 +125,22 @@ class TypeTable implements TypeStore {
   }
 }
 
+/** effect table decoded per effect on first lookup */
+class LazyEffects implements EffectStore {
+  private rowOf = new Map<number, number>();
+  private objs: (EffectInfo | undefined)[];
+  constructor(private tab: TypeTable, ids: number[], private off: number[], private len: number[]) {
+    for (let r = 0; r < ids.length; r++) this.rowOf.set(ids[r], r);
+    this.objs = new Array(ids.length);
+  }
+  get size() { return this.objs.length; }
+  get(id: number): EffectInfo | undefined {
+    const r = this.rowOf.get(id);
+    if (r === undefined) return undefined;
+    return (this.objs[r] ??= effectInfo(id, JSON.parse(this.tab.slice(this.off[r], this.len[r]))));
+  }
+}
+
 const MAGIC_BYTES = enc.encode(MAGIC + '\n');
 export function isCache(bytes: Uint8Array): boolean {
   if (bytes.length < MAGIC_BYTES.length) return false;
@@ -141,6 +164,10 @@ export function datasetFromCache(bytes: Uint8Array): Dataset {
   ds.types = tab;
   for (let r = 0; r < c.id.length; r++) if (c.category[r] === 16) ds.skills.push(c.id[r]);
   ds.finishTypes();
+  const ei = h.effect_index;
+  ds.effects = new LazyEffects(tab, ei.id, ei.off, ei.len);
+  ds.setEffectNames(ei.id, ei.name);
+  ds.mutaSource = () => JSON.parse(tab.slice(h.muta[0], h.muta[1]));
   const [zo, zl] = h.zh;
   ds.zhSource = () => JSON.parse(tab.slice(zo, zl));
   return ds;

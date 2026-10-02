@@ -121,11 +121,11 @@ RAH, cap sim with Pyfa heap ordering, nos income, passive shield regen peak `10/
 builds its objects in a fixed key order and floats are rounded to 1e-6 (same as eve-dogma-rs), so output is
 byte-stable for a given request (verified by the bench's determinism check).
 
-### 7. Cold start: the VDC3 dataset cache and the CLI bundle
+### 7. Cold start: the VDC4 dataset cache and the CLI bundle
 
 One process per request is dominated by loading the 5 MB dataset (gunzip + `JSON.parse` of ~25 MB + building maps).
 `node dist-cli/eve-dogma-ts.cjs cache --dataset X` (bench `build` step) writes
-`.cache/<hash(path)>-<size>-<mtime>.vdc3`, a pure re-layout of the same dataset: a header JSON (sde info, sha256,
+`.cache/<hash(path)>-<size>-<mtime>.vdc4`, a pure re-layout of the same dataset: a header JSON (sde info, sha256,
 attributes, effects, groups, categories, dbuffs, mutaplasmids), a columnar type table (id/group/category/mass/... as
 arrays + byte offsets) and a body of per-type `[attrs, effects]` JSON slices, the type-name array and the zh table.
 `ds.types` is a `TypeStore` interface: a Map on the JSON path, a `TypeTable` of lazily created `LazyType` objects on

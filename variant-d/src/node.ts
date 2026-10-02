@@ -1,4 +1,4 @@
-/** Node-only helpers (file + gzip + sha256 + VDC3 cache). The core never imports this. */
+/** Node-only helpers (file + gzip + sha256 + VDC4 cache). The core never imports this. */
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -36,16 +36,16 @@ function readJsonBytes(path: string): Buffer {
 let pkgDir: string | null = null;
 export function setPackageDir(dir: string): void { pkgDir = dir; }
 
-/** cache location for a dataset file: $EVE_DOGMA_TS_CACHE_DIR, <package>/.cache (CLI) or ~/.cache/eve-dogma-ts, <fnv64(abs path)>-<size>-<mtime>.vdc3 */
+/** cache location for a dataset file: $EVE_DOGMA_TS_CACHE_DIR, <package>/.cache (CLI) or ~/.cache/eve-dogma-ts, <fnv64(abs path)>-<size>-<mtime>.vdc4 */
 export function cachePath(datasetFile: string): string {
   const abs = resolve(datasetFile);
   const st = statSync(abs);
   const key = fnv64(abs);
   const dir = process.env.EVE_DOGMA_TS_CACHE_DIR ?? (pkgDir !== null ? join(pkgDir, '.cache') : join(homedir(), '.cache', 'eve-dogma-ts'));
-  return join(dir, `${key}-${st.size}-${Math.trunc(st.mtimeMs)}.vdc3`);
+  return join(dir, `${key}-${st.size}-${Math.trunc(st.mtimeMs)}.vdc4`);
 }
 
-/** Load a dataset: a VDC3 cache file, a prebuilt cache for this dataset file if present, else the gz/JSON itself. */
+/** Load a dataset: a VDC4 cache file, a prebuilt cache for this dataset file if present, else the gz/JSON itself. */
 export function loadDatasetFile(path: string, useCache = true): Dataset {
   if (useCache && !process.env.EVE_DOGMA_TS_NO_CACHE) {
     try {
@@ -59,7 +59,7 @@ export function loadDatasetFile(path: string, useCache = true): Dataset {
   return Dataset.fromJson(JSON.parse(bytes.toString('utf8')), sha);
 }
 
-/** Build (or rebuild) the VDC3 cache for a dataset file; returns its path. */
+/** Build (or rebuild) the VDC4 cache for a dataset file; returns its path. */
 export function writeCache(path: string): string {
   const bytes = readJsonBytes(path);
   const sha = sha256Hex(bytes);
