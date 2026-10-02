@@ -95,18 +95,23 @@ type attrSet struct {
 }
 
 func (s *attrSet) get(id uint32) (float64, bool) {
+	// branchless lower bound: attribute ids are effectively random per lookup,
+	// so a branchy binary search mispredicts about half its steps
 	ids := s.ids
-	lo, hi := 0, len(ids)
-	for lo < hi {
-		m := int(uint(lo+hi) >> 1)
-		if ids[m] < id {
-			lo = m + 1
-		} else {
-			hi = m
-		}
+	n := len(ids)
+	if n == 0 {
+		return 0, false
 	}
-	if lo < len(ids) && ids[lo] == id {
-		return s.vals[lo], true
+	base := 0
+	for n > 1 {
+		half := n >> 1
+		// mask is all ones when ids[base+half-1] < id (arithmetic select: Go does not emit CMOV here)
+		mask := int((int64(ids[base+half-1]) - int64(id)) >> 63)
+		base += half & mask
+		n -= half
+	}
+	if ids[base] == id {
+		return s.vals[base], true
 	}
 	return 0, false
 }
