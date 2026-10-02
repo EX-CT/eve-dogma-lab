@@ -121,7 +121,7 @@ RAH, cap sim with Pyfa heap ordering, nos income, passive shield regen peak `10/
 builds its objects in a fixed key order and floats are rounded to 1e-6 (same as eve-dogma-rs), so output is
 byte-stable for a given request (verified by the bench's determinism check).
 
-### 7. Cold start: the VDC1 dataset cache
+### 7. Cold start: the VDC2 dataset cache
 
 One process per request is dominated by loading the 5 MB dataset (gunzip + `JSON.parse` of ~25 MB + building maps).
 `node dist/cli.js cache --dataset X` (run by the bench `build` step) writes `.cache/<hash(path)>-<size>-<mtime>.vdc`,

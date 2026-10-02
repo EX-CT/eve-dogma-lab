@@ -137,42 +137,139 @@ export function parseEft(ds: Dataset, text: string): FitRequest {
   return req as FitRequest;
 }
 
-export function exportEft(ds: Dataset, req: FitRequest, name: string): string {
+/** Python float repr (str(float)) for EFT mutation values */
+function pyFloat(v: number): string {
+  if (!Number.isFinite(v)) return v > 0 ? 'inf' : v < 0 ? '-inf' : 'nan';
+  if (Number.isInteger(v) && Math.abs(v) < 1e16) return v.toFixed(1);
+  let s = String(v);
+  if (s.includes('e')) {
+    // JS 1e-7 / 1.5e+21 -> Python 1e-07 / 1.5e+21
+    s = s.replace(/e([+-])(\d)$/, 'e$10$2');
+  } else if (Math.abs(v) < 1e-4) {
+    s = v.toExponential().replace(/e([+-])(\d)$/, 'e$10$2');
+  }
+  return s;
+}
+
+/** Pyfa floatUnerr: round to keep 7 significant digits */
+function floatUnerr(v: number): number {
+  if (v === 0 || v === Infinity) return v;
+  const f = Math.trunc(7 - Math.ceil(Math.log10(Math.abs(v))));
+  if (f >= 0) return Number(v.toFixed(Math.min(f, 100)));
+  const p = Math.pow(10, -f);
+  return Math.round(v / p) * p;
+}
+
+// Pyfa exporter orders (service/port/eft.py): drones by market group, fighters by group
+const DRONE_ORDER_MG: number[][] = [
+  [837, 1531], [3881], [838, 1532], [3882], [359, 839], [3883], [911, 1533], [843, 1586], [841, 1029], [842, 1030], [158, 358], [1643, 1646],
+];
+const FIGHTER_ORDER = ['Light Fighter', 'Structure Light Fighter', 'Heavy Fighter', 'Structure Heavy Fighter', 'Support Fighter', 'Structure Support Fighter'];
+
+const stableSort = <T>(xs: T[], key: (x: T) => (number | string)[]): T[] =>
+  xs.map((x, i) => [key(x), i, x] as const).sort((a, b) => {
+    for (let k = 0; k < a[0].length; k++) if (a[0][k] !== b[0][k]) return a[0][k] < b[0][k] ? -1 : 1;
+    return a[1] - b[1];
+  }).map((t) => t[2]);
+
+/**
+ * EFT export, byte-identical to Pyfa's exportEft with all options on, after fit.fill() (contract 1.4.1 ruling 4):
+ * racks low/med/high/rig/subsystem/service padded with "[Empty X slot]" up to the ship's (modified) slot counts,
+ * then drones+fighters, implants+boosters, cargo and mutation blocks, sections separated by two blank lines.
+ * `slotTotals` = modified ship slot counts (from a calc); omitted -> no padding.
+ */
+export function exportEft(ds: Dataset, req: FitRequest, name: string, slotTotals?: Record<string, number>): string {
   const n = (id: number) => ds.types.get(id)?.name ?? String(id);
-  let out = `[${n(req.ship.type_id)}, ${name}]\n`;
-  const muts: Mutation[] = [];
-  const tag = (m: Mutation | null | undefined) => (m ? (muts.push(m), ` [${muts.length}]`) : '');
+  const attrOf = (tid: number, attr: string) => {
+    const a = ds.attrId(attr);
+    const v = ds.types.get(tid)?.rawAttrs[String(a)];
+    return v ?? ds.attrDefault(a);
+  };
+  const mutants: { base: number; muta: number | null; typeId: number; attrs: Record<string, number> }[] = [];
+  const ref = (typeId: number, m: Mutation | null | undefined) => {
+    if (!m || m.mutaplasmid_type_id == null) return '';
+    mutants.push({ base: m.base_type_id, muta: m.mutaplasmid_type_id, typeId, attrs: m.attributes ?? {} });
+    return ` [${mutants.length}]`;
+  };
+  const isMut = (m: Mutation | null | undefined) => !!m && m.mutaplasmid_type_id != null;
+  const sections: string[] = [];
+  // 1: modules
   const slotOf = (m: ModuleReq) => m.slot ?? (ds.types.has(m.type_id) ? inferSlot(ds.types.get(m.type_id)!.effects) : null);
-  for (const slot of ['low', 'mid', 'high', 'rig', 'subsystem', 'service'] as const) {
-    let any = false;
-    for (const m of (req.modules ?? []).filter((m) => slotOf(m) === slot)) {
-      any = true;
-      out += m.mutation ? n(m.mutation.base_type_id) : n(m.type_id);
-      if (m.charge_type_id != null) out += `, ${n(m.charge_type_id)}`;
-      if (m.state === 'offline') out += ' /OFFLINE';
-      out += tag(m.mutation) + '\n';
+  const racks: string[] = [];
+  const SLOTS = [['low', 'Low'], ['mid', 'Med'], ['high', 'High'], ['rig', 'Rig'], ['subsystem', 'Subsystem'], ['service', 'Service']] as const;
+  for (const [slot, label] of SLOTS) {
+    const lines: string[] = [];
+    for (const m of (req.modules ?? []).filter((x) => slotOf(x) === slot)) {
+      const modName = isMut(m.mutation) ? n(m.mutation!.base_type_id) : n(m.type_id);
+      const suffix = ref(m.type_id, m.mutation);
+      const off = m.state === 'offline' ? ' /offline' : '';
+      lines.push(m.charge_type_id != null ? `${modName}, ${n(m.charge_type_id)}${off}${suffix}` : `${modName}${off}${suffix}`);
     }
-    if (any) out += '\n';
+    const total = slotTotals ? Math.trunc(slotTotals[slot] ?? 0) : 0;
+    for (let k = lines.length; k < total; k++) lines.push(`[Empty ${label} slot]`);
+    if (lines.length) racks.push(lines.join('\n'));
   }
-  for (const d of req.drones ?? []) out += `${n(d.mutation?.base_type_id ?? d.type_id)} x${d.quantity ?? 1}${tag(d.mutation)}\n`;
-  for (const f of req.fighters ?? []) out += `${n(f.type_id)} x${f.quantity ?? 1}\n`;
-  if ((req.implants ?? []).length || (req.boosters ?? []).length) {
-    out += '\n';
-    for (const i of req.implants ?? []) out += `${n(i)}\n`;
-    for (const b of req.boosters ?? []) out += `${n(b.type_id)}\n`;
+  if (racks.length) sections.push(racks.join('\n\n'));
+  // 2: drones, fighters
+  const minions: string[] = [];
+  const mgOrder = (tid: number) => {
+    const t = ds.types.get(tid);
+    const mg = t?.marketGroup ?? (t?.variationParent != null ? ds.types.get(t.variationParent)?.marketGroup : null) ?? null;
+    const k = mg === null ? -1 : DRONE_ORDER_MG.findIndex((l) => l.includes(mg));
+    return k < 0 ? DRONE_ORDER_MG.length : k;
+  };
+  const drones = stableSort(req.drones ?? [], (d) => {
+    const item = isMut(d.mutation) ? d.mutation!.base_type_id : d.type_id;
+    return [mgOrder(item), isMut(d.mutation) ? 1 : 0, n(d.type_id)];
+  });
+  const droneLines = drones.map((d) => `${n(isMut(d.mutation) ? d.mutation!.base_type_id : d.type_id)} x${d.quantity ?? 1}${ref(d.type_id, d.mutation)}`);
+  if (droneLines.length) minions.push(droneLines.join('\n'));
+  const fighters = stableSort(req.fighters ?? [], (f) => {
+    const g = ds.groups.get(ds.types.get(f.type_id)?.group ?? -1)?.name ?? '';
+    const k = FIGHTER_ORDER.indexOf(g);
+    return [k < 0 ? FIGHTER_ORDER.length : k, n(f.type_id)];
+  });
+  const fighterLines = fighters.map((f) => {
+    const maxsq = Math.max(Math.trunc(attrOf(f.type_id, 'fighterSquadronMaxSize')), 1);
+    return `${n(f.type_id)} x${Math.min(Math.max(f.quantity ?? maxsq, 1), maxsq)}`;
+  });
+  if (fighterLines.length) minions.push(fighterLines.join('\n'));
+  if (minions.length) sections.push(minions.join('\n\n'));
+  // 3: implants, boosters
+  const charSec: string[] = [];
+  const imps = stableSort(req.implants ?? [], (i) => [attrOf(i, 'implantness')]).map(n);
+  if (imps.length) charSec.push(imps.join('\n'));
+  const boos = stableSort(req.boosters ?? [], (b) => [attrOf(b.type_id, 'boosterness')]).map((b) => n(b.type_id));
+  if (boos.length) charSec.push(boos.join('\n'));
+  if (charSec.length) sections.push(charSec.join('\n\n'));
+  // 4: cargo
+  const cargo = stableSort(req.cargo ?? [], (c) => {
+    const t = ds.types.get(c.type_id);
+    const g = ds.groups.get(t?.group ?? -1);
+    return [ds.categories.get(g?.category ?? -1) ?? '', g?.name ?? '', n(c.type_id)];
+  }).map((c) => `${n(c.type_id)} x${c.quantity ?? 1}`);
+  if (cargo.length) sections.push(cargo.join('\n'));
+  // 5: mutations
+  if (mutants.length) {
+    sections.push(mutants.map((m, k) => {
+      const mu = ds.mutaplasmids.get(m.muta!);
+      const base = ds.types.get(m.base)?.rawAttrs ?? {};
+      const own = ds.types.get(m.typeId)?.rawAttrs ?? {};
+      const kv: [string, number][] = [];
+      for (const a of Object.keys(mu?.attrs ?? {})) {
+        const bv = base[a] ?? own[a];
+        if (bv === undefined) continue;
+        let v = m.attrs[a] ?? bv;
+        const r = mu!.attrs[a];
+        if (r && bv !== 0) {
+          const lo = bv * r[0], hi = bv * r[1];
+          v = Math.min(Math.max(v, Math.min(lo, hi)), Math.max(lo, hi));
+        }
+        kv.push([ds.attrs.get(Number(a))?.name ?? a, v]);
+      }
+      kv.sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
+      return [`[${k + 1}] ${n(m.base)}`, `  ${n(m.muta!)}`, `  ${kv.map(([a, v]) => `${a} ${pyFloat(floatUnerr(v))}`).join(', ')}`].join('\n');
+    }).join('\n'));
   }
-  if ((req.cargo ?? []).length) {
-    out += '\n';
-    for (const c of req.cargo ?? []) out += `${n(c.type_id)} x${c.quantity ?? 1}\n`;
-  }
-  if (muts.length) {
-    out += '\n';
-    muts.forEach((m, k) => {
-      out += `[${k + 1}] ${n(m.base_type_id)}\n`;
-      if (m.mutaplasmid_type_id != null) out += `  ${n(m.mutaplasmid_type_id)}\n`;
-      const kv = Object.keys(m.attributes ?? {}).sort().map((a) => `${ds.attrs.get(Number(a))?.name ?? a} ${m.attributes![a]}`);
-      if (kv.length) out += `  ${kv.join(', ')}\n`;
-    });
-  }
-  return out;
+  return `[${n(req.ship.type_id)}, ${name}]\n\n${sections.join('\n\n\n')}`;
 }

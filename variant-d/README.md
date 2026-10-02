@@ -15,5 +15,5 @@ node dist/test/parity.js --dataset ...                                # 249 case
 
 Library: `import { calc, search, typeInfo } from './dist/index.js'` with a `Dataset` from
 `dist/node.js` (`loadDatasetFile`) or `dist/browser.js` (`loadDatasetUrl`, uses DecompressionStream + SubtleCrypto).
-The cache (`VDC1`) is a pure re-layout of the dataset (header JSON + lazily decoded per-type bodies); set
+The cache (`VDC2`) is a pure re-layout of the dataset (header JSON + lazily decoded per-type bodies); set
 `EVE_DOGMA_TS_NO_CACHE=1` to bypass it.

@@ -1,4 +1,4 @@
-/** Node-only helpers (file + gzip + sha256 + VDC1 cache). The core never imports this. */
+/** Node-only helpers (file + gzip + sha256 + VDC2 cache). The core never imports this. */
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -19,10 +19,10 @@ export function cachePath(datasetFile: string): string {
   const st = statSync(abs);
   const key = createHash('sha1').update(abs).digest('hex').slice(0, 16);
   const pkg = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  return join(pkg, '.cache', `${key}-${st.size}-${Math.trunc(st.mtimeMs)}.vdc`);
+  return join(pkg, '.cache', `${key}-${st.size}-${Math.trunc(st.mtimeMs)}.vdc2`);
 }
 
-/** Load a dataset: a VDC1 cache file, a prebuilt cache for this dataset file if present, else the gz/JSON itself. */
+/** Load a dataset: a VDC2 cache file, a prebuilt cache for this dataset file if present, else the gz/JSON itself. */
 export function loadDatasetFile(path: string, useCache = true): Dataset {
   if (useCache && !process.env.EVE_DOGMA_TS_NO_CACHE) {
     try {
@@ -31,12 +31,12 @@ export function loadDatasetFile(path: string, useCache = true): Dataset {
     } catch { /* fall back to the full load */ }
   }
   const bytes = readJsonBytes(path);
-  if (bytes.length > 4 && bytes.subarray(0, 5).toString() === 'VDC1\n') return datasetFromCache(bytes.toString('utf8'));
+  if (bytes.length > 4 && bytes.subarray(0, 5).toString() === 'VDC2\n') return datasetFromCache(bytes.toString('utf8'));
   const sha = createHash('sha256').update(bytes).digest('hex');
   return Dataset.fromJson(JSON.parse(bytes.toString('utf8')), sha);
 }
 
-/** Build (or rebuild) the VDC1 cache for a dataset file; returns its path. */
+/** Build (or rebuild) the VDC2 cache for a dataset file; returns its path. */
 export function writeCache(path: string): string {
   const bytes = readJsonBytes(path);
   const sha = createHash('sha256').update(bytes).digest('hex');

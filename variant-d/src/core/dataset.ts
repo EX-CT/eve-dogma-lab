@@ -54,6 +54,8 @@ export class Dataset {
   sha256 = '';
   types = new Map<number, TypeInfo>();
   groups = new Map<number, GroupInfo>();
+  /** category id -> name */
+  categories = new Map<number, string>();
   attrs = new Map<number, AttrInfo>();
   effects = new Map<number, EffectInfo>();
   dbuffs = new Map<number, DbuffInfo>();
@@ -131,6 +133,7 @@ export class Dataset {
       ei.itemOnly = ei.mods.every((m) => m.domain === Domain.Item);
     }
     for (const k in raw.groups) ds.groups.set(+k, { name: raw.groups[k].name ?? '', category: raw.groups[k].category });
+    for (const k in raw.categories ?? {}) ds.categories.set(+k, raw.categories[k].name ?? '');
     for (const k in raw.dbuffs ?? {}) ds.dbuffs.set(+k, raw.dbuffs[k]);
     for (const k in raw.mutaplasmids ?? {}) ds.mutaplasmids.set(+k, raw.mutaplasmids[k]);
   }

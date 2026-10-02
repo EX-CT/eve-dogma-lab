@@ -3,3 +3,4 @@
 build: npm ci --silent && npm run build --silent && node dist/cli.js cache --dataset {dataset}
 cmd: node dist/cli.js calc --dataset {dataset}
 batch_cmd: node dist/cli.js batch --dataset {dataset}
+rpc_cmd: node dist/cli.js serve-stdio --dataset {dataset}

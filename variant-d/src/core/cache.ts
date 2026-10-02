@@ -1,12 +1,12 @@
 /**
- * Variant-D dataset cache ("VDC1"): the same dataset, re-laid-out for fast cold start.
+ * Variant-D dataset cache ("VDC2"): the same dataset, re-laid-out for fast cold start.
  * - header JSON: sde info, sha256, attributes, effects, groups, dbuffs, mutaplasmids, compact type headers
  * - body: concatenated per-type JSON `[attrs, effects]` and the zh-name table, decoded lazily on first access.
  * Built from the official dataset only (no other data); pure function of it.
  */
 import { Dataset, TypeInfo } from './dataset.js';
 
-const MAGIC = 'VDC1';
+const MAGIC = 'VDC2';
 
 export function buildCache(raw: any, sha256: string): string {
   const bodyParts: string[] = [];
@@ -23,7 +23,7 @@ export function buildCache(raw: any, sha256: string): string {
   const zh = add(JSON.stringify(raw.names?.zh ?? {}));
   const header = JSON.stringify({
     format: raw.format, format_version: raw.format_version, sde: raw.sde, sha256,
-    attributes: raw.attributes, effects: raw.effects, groups: raw.groups, dbuffs: raw.dbuffs ?? {}, mutaplasmids: raw.mutaplasmids ?? {},
+    attributes: raw.attributes, effects: raw.effects, groups: raw.groups, categories: raw.categories ?? {}, dbuffs: raw.dbuffs ?? {}, mutaplasmids: raw.mutaplasmids ?? {},
     types, zh,
   });
   return `${MAGIC}\n${header.length}\n${header}${bodyParts.join('')}`;
@@ -50,7 +50,7 @@ export function isCache(text: string): boolean {
 }
 
 export function datasetFromCache(text: string): Dataset {
-  if (!isCache(text)) throw new Error('not a VDC1 cache');
+  if (!isCache(text)) throw new Error('not a VDC2 cache');
   const nl = text.indexOf('\n', MAGIC.length + 1);
   const hlen = Number(text.slice(MAGIC.length + 1, nl));
   const h = JSON.parse(text.slice(nl + 1, nl + 1 + hlen));
