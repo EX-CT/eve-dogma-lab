@@ -153,7 +153,13 @@ impl<'a> Fit<'a> {
         self.world.get::<&Power>(e).unwrap().0
     }
     pub fn calc(&self) -> Calc<'_> {
-        Calc::new(self.ds, &self.world)
+        let mut order = rustc_hash::FxHashMap::default();
+        for &m in &self.modules {
+            if let Ok(f) = self.world.get::<&Fitted>(m) {
+                order.insert(m.id(), f.req_index as u32);
+            }
+        }
+        Calc::new(self.ds, &self.world, order)
     }
     pub fn views(&self) -> Views<'_> {
         Views::new(self.ds, &self.world)
@@ -815,6 +821,11 @@ impl<'a> Fit<'a> {
                         continue;
                     }
                 }
+                let overload_idx = if eff.category == 5 && it.kind == Kind::Module {
+                    self.world.get::<&Fitted>(e).ok().filter(|_| self.modules.contains(&e)).map(|f| f.req_index as u32)
+                } else {
+                    None
+                };
                 for m in &eff.mods {
                     if m.func == Func::EffectStopper || m.op == 9 || matches!(m.domain, Domain::TargetId | Domain::Target) {
                         continue;
@@ -827,7 +838,11 @@ impl<'a> Fit<'a> {
                     if !tg.is_empty() {
                         let stackable = ds.attrs.get(&m.modified).map(|x| x.stackable).unwrap_or(true);
                         let penalized = !stackable && !EXEMPT_CATEGORIES.contains(&cat);
-                        let md = Mod { op: m.op as i8, penalized, src: Src::Attr { e, attr: m.modifying } };
+                        let src = match overload_idx {
+                            Some(idx) => Src::Before { e, attr: m.modifying, idx },
+                            None => Src::Attr { e, attr: m.modifying },
+                        };
+                        let md = Mod { op: m.op as i8, penalized, src };
                         pend.extend(tg.iter().map(|&t| PendingMod { target: t, attr: m.modified, m: md }));
                     }
                 }

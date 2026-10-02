@@ -12,6 +12,8 @@ pub struct Calc<'w> {
     pub ds: &'w Dataset,
     view: ViewBorrow<'w, &'static Attrs>,
     memo: RefCell<FxHashMap<u64, Option<f64>>>,
+    /// local fitted modules -> request index (fit order), for `Src::Before`
+    order: FxHashMap<u32, u32>,
 }
 
 #[inline]
@@ -21,8 +23,34 @@ fn key(e: Entity, attr: u32) -> u64 {
 
 
 impl<'w> Calc<'w> {
-    pub fn new(ds: &'w Dataset, world: &'w World) -> Self {
-        Calc { ds, view: world.view::<&Attrs>(), memo: RefCell::new(FxHashMap::default()) }
+    pub fn new(ds: &'w Dataset, world: &'w World, order: FxHashMap<u32, u32>) -> Self {
+        Calc { ds, view: world.view::<&Attrs>(), memo: RefCell::new(FxHashMap::default()), order }
+    }
+
+    fn src_entity(s: &Src) -> Option<Entity> {
+        match *s {
+            Src::Attr { e, .. } | Src::Before { e, .. } | Src::Projected { e, .. } => Some(e),
+            Src::Prop { module, .. } => Some(module),
+            Src::Const(_) => None,
+        }
+    }
+
+    /// `attr` on `e` counting only modifiers whose source is not a local module listed after `idx` (not memoised)
+    fn get_before(&self, e: Entity, attr: u32, idx: u32) -> f64 {
+        let a = self.attrs(e);
+        match a.slots.get(&attr) {
+            Some(s) => {
+                let later = |m: &crate::components::Mod| {
+                    Self::src_entity(&m.src).and_then(|x| self.order.get(&x.id())).map(|&i| i > idx).unwrap_or(false)
+                };
+                if !s.mods.iter().any(|m| later(m)) {
+                    return self.get(e, attr);
+                }
+                let kept = AttrSlot { base: s.base, mods: s.mods.iter().filter(|m| !later(m)).copied().collect() };
+                self.eval(e, attr, &kept)
+            }
+            None => self.get(e, attr),
+        }
     }
 
     #[inline]
@@ -105,6 +133,7 @@ impl<'w> Calc<'w> {
     fn src_value(&self, s: &Src) -> f64 {
         match *s {
             Src::Attr { e, attr } => self.get(e, attr),
+            Src::Before { e, attr, idx } => self.get_before(e, attr, idx),
             Src::Const(v) => v,
             Src::Prop { module, ship } => {
                 let a = &self.ds.a;

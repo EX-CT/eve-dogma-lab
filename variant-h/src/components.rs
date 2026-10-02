@@ -92,6 +92,9 @@ pub enum Src {
     Prop { module: Entity, ship: Entity },
     /// projected effect value scaled by range factor and (lazily) by the target's resistance attribute
     Projected { e: Entity, attr: u32, factor: f64, target: Entity, resist: u32, mul: bool },
+    /// overload (overheat) effects: Pyfa applies items in fit order, so the module's own attribute is read before
+    /// modules listed after it (request index > idx) have applied their modifiers
+    Before { e: Entity, attr: u32, idx: u32 },
 }
 
 #[derive(Debug, Clone, Copy)]
