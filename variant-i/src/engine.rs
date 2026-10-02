@@ -307,6 +307,47 @@ pub fn index(db: &dyn Db, fit: FitIn) -> Arc<Index> {
     Arc::new(Index { items, sets })
 }
 
+/// Slots of the item kinds that drive bursts / RAH layers. Reads only module and beacon specs (via the
+/// index's kind column), so skills - most of a fit - are never visited.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Roles {
+    /// active modules, canonical order
+    pub active_modules: Vec<u32>,
+    /// beacons with weather / AoE cloud effects
+    pub weather: Vec<u32>,
+    /// active reactive armor hardeners
+    pub rah: Vec<u32>,
+}
+
+#[salsa::tracked(returns(ref))]
+pub fn roles(db: &dyn Db, fit: FitIn) -> Roles {
+    let c = db.consts();
+    let ds = db.ds();
+    let slots = fit.slots(db);
+    let mut r = Roles::default();
+    for it in index(db, fit).items.iter() {
+        match it.kind {
+            Kind::Module => {
+                let sp = slots[it.slot as usize].spec(db);
+                if sp.state >= State::Active {
+                    r.active_modules.push(it.slot);
+                    if c.e_rah != 0 && sp.effects.iter().any(|(e, _)| *e == c.e_rah) {
+                        r.rah.push(it.slot);
+                    }
+                }
+            }
+            Kind::Beacon => {
+                let sp = slots[it.slot as usize].spec(db);
+                if sp.effects.iter().any(|(e, _)| ds.effects.get(e).is_some_and(|ei| ei.name.starts_with("weather_") || ei.name.starts_with("aoe_beacon_"))) {
+                    r.weather.push(it.slot);
+                }
+            }
+            _ => {}
+        }
+    }
+    r
+}
+
 /// charge/parent links (slot ids) - separate query so link changes don't touch everything else
 #[salsa::tracked(returns(copy))]
 pub fn links(db: &dyn Db, item: ItemIn) -> (Option<u32>, Option<u32>) {
@@ -932,10 +973,24 @@ pub fn incoming(db: &dyn Db, fit: FitIn) -> Arc<Vec<Arc<ModMap>>> {
     Arc::new(maps.into_iter().map(|m| if m.is_empty() { empty.clone() } else { Arc::new(m) }).collect())
 }
 
+/// One target's spec and layer-0 modifier map. Carrying the spec here means attribute queries record a
+/// single dependency (this memo) instead of separate `slots` / `spec` input reads.
+#[derive(Debug, Clone)]
+pub struct ItemMods {
+    pub spec: Arc<ItemSpec>,
+    pub mods: Arc<ModMap>,
+}
+impl PartialEq for ItemMods {
+    fn eq(&self, o: &Self) -> bool {
+        (Arc::ptr_eq(&self.spec, &o.spec) || *self.spec == *o.spec) && (Arc::ptr_eq(&self.mods, &o.mods) || *self.mods == *o.mods)
+    }
+}
+
 #[salsa::tracked(returns(ref))]
-pub fn item_mods(db: &dyn Db, fit: FitIn, item: ItemIn) -> Arc<ModMap> {
+pub fn item_mods(db: &dyn Db, fit: FitIn, slot: u32) -> ItemMods {
     qcount(5);
-    incoming(db, fit)[item.slot(db) as usize].clone()
+    let spec = fit.slots(db)[slot as usize].spec(db).clone();
+    ItemMods { spec, mods: incoming(db, fit)[slot as usize].clone() }
 }
 
 /// Local command bursts (need evaluated warfareBuffNID at layer 0).
@@ -945,7 +1000,6 @@ pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
     let c = db.consts();
     let ctx = fit.ctx(db);
     let core = fit.core(db);
-    let slots = fit.slots(db);
     let mut out = Vec::new();
     // Pyfa keeps, per buff id, the strongest (|value|) source among own bursts and booster fits;
     // explicit fleet.buffs override both.
@@ -959,11 +1013,8 @@ pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
         }
         None => best.push((id, v, src)),
     };
-    for &s in fit.order(db) {
-        let sp = slots[s as usize].spec(db);
-        if sp.kind != Kind::Module || sp.state < State::Active {
-            continue;
-        }
+    let roles = roles(db, fit);
+    for &s in &roles.active_modules {
         for (ida, vala) in c.warfare {
             let id = if has(db, fit, s, ida) { value(db, fit, s, ida, 0) as u32 } else { 0 };
             if id == 0 || explicit(id) {
@@ -975,16 +1026,7 @@ pub fn burst_mods(db: &dyn Db, fit: FitIn) -> Arc<Vec<Out>> {
     }
     // abyssal weather / AoE cloud beacons (Pyfa weather_* / aoe_beacon_* effects): warfareBuff1/2 of the
     // environment item join the same command-bonus pool (strongest |value| per buff id)
-    let ds = db.ds();
-    for &s in fit.order(db) {
-        let sp = slots[s as usize].spec(db);
-        if sp.kind != Kind::Beacon {
-            continue;
-        }
-        let weather = sp.effects.iter().any(|(e, _)| ds.effects.get(e).is_some_and(|ei| ei.name.starts_with("weather_") || ei.name.starts_with("aoe_beacon_")));
-        if !weather {
-            continue;
-        }
+    for &s in &roles.weather {
         for &(ida, vala) in &c.warfare[..2] {
             let id = if has(db, fit, s, ida) { value(db, fit, s, ida, 0) as u32 } else { 0 };
             if id == 0 || explicit(id) {
@@ -1027,19 +1069,7 @@ pub struct Plan {
 pub fn plan(db: &dyn Db, fit: FitIn) -> Plan {
     qcount(7);
     let c = db.consts();
-    let slots = fit.slots(db);
-    let rah: Vec<u32> = if c.e_rah == 0 {
-        vec![]
-    } else {
-        fit.order(db)
-            .iter()
-            .copied()
-            .filter(|&s| {
-                let sp = slots[s as usize].spec(db);
-                sp.kind == Kind::Module && sp.state >= State::Active && sp.effects.iter().any(|(e, _)| *e == c.e_rah)
-            })
-            .collect()
-    };
+    let rah: Vec<u32> = if c.e_rah == 0 { vec![] } else { roles(db, fit).rah.clone() };
     let burst = !burst_mods(db, fit).is_empty();
     let final_layer = burst as u32 + rah.len() as u32;
     Plan { burst, rah, final_layer }
@@ -1125,16 +1155,16 @@ pub fn layer_mods<'db>(db: &'db dyn Db, fit: FitIn, l: LKey<'db>) -> Arc<LayerMa
 }
 
 pub fn has(db: &dyn Db, fit: FitIn, item: u32, attr: u32) -> bool {
-    let it = fit.slots(db)[item as usize];
-    it.spec(db).base(attr).is_some() || item_mods(db, fit, it).contains_key(&attr)
+    let im = item_mods(db, fit, item);
+    im.spec.base(attr).is_some() || im.mods.contains_key(&attr)
 }
 
 /// Evaluated attribute. Fast path: an attribute without modifiers, caps or rounding is its base value, so no
 /// memoised query (and no interned key) is created for it; the caller then depends on `item_mods` + the spec.
 #[inline]
 pub fn value(db: &dyn Db, fit: FitIn, item: u32, attr: u32, layer: u32) -> f64 {
-    let it = fit.slots(db)[item as usize];
-    if !item_mods(db, fit, it).contains_key(&attr) && !db.consts().special(attr) {
+    let im = item_mods(db, fit, item);
+    if !im.mods.contains_key(&attr) && !db.consts().special(attr) {
         let mut plain = true;
         for l in 1..=layer {
             if layer_mods(db, fit, LKey::new(db, l)).contains_key(&(item, attr)) {
@@ -1143,7 +1173,7 @@ pub fn value(db: &dyn Db, fit: FitIn, item: u32, attr: u32, layer: u32) -> f64 {
             }
         }
         if plain {
-            return it.spec(db).base(attr).unwrap_or_else(|| db.ds().attr_default(attr));
+            return im.spec.base(attr).unwrap_or_else(|| db.ds().attr_default(attr));
         }
     }
     attr_value(db, fit, AKey::new(db, item, attr, layer)).0
@@ -1178,12 +1208,12 @@ pub fn attr_value<'db>(db: &'db dyn Db, fit: FitIn, k: AKey<'db>) -> F {
     qcount(9);
     let (item, attr_id, layer) = (k.item(db), k.attr(db), k.layer(db));
     let ds = db.ds();
-    let it = fit.slots(db)[item as usize];
-    let base = it.spec(db).base(attr_id).unwrap_or_else(|| ds.attr_default(attr_id));
+    let im = item_mods(db, fit, item);
+    let base = im.spec.base(attr_id).unwrap_or_else(|| ds.attr_default(attr_id));
     let info = ds.attrs.get(&attr_id);
     let mut val = base;
     let mut vals: Vec<(i8, bool, f64)> = Vec::new();
-    if let Some(ms) = item_mods(db, fit, it).get(&attr_id) {
+    if let Some(ms) = im.mods.get(&attr_id) {
         for m in ms {
             vals.push((m.op, m.penalized, src_value(db, fit, &m.src, layer)));
         }

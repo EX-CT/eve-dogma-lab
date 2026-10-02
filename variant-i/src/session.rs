@@ -81,16 +81,39 @@ pub struct Fit<'a> {
     /// per-view memo of evaluated values (skips salsa interning/validation on repeated reads)
     pub vcache: std::cell::RefCell<FxHashMap<u64, f64>>,
     pub capmemo: &'a std::cell::RefCell<FxHashMap<Vec<u64>, crate::capsim::CapResult>>,
+    /// layer maps 1..=layer, fetched once per view
+    pub layers: Vec<&'a Arc<engine::LayerMap>>,
+    /// per canonical item: its layer-0 modifier map (fetched lazily, once per view)
+    pub imods: std::cell::RefCell<Vec<Option<&'a Arc<engine::ModMap>>>>,
 }
 
 impl<'a> Fit<'a> {
+    #[inline]
+    fn imods(&self, item: usize) -> &'a Arc<engine::ModMap> {
+        if let Some(m) = self.imods.borrow()[item] {
+            return m;
+        }
+        let m = &engine::item_mods(self.db, self.fit, self.slot_of[item]).mods;
+        self.imods.borrow_mut()[item] = Some(m);
+        m
+    }
+    #[inline]
+    fn modified(&self, item: usize, attr: u32) -> bool {
+        let s = self.slot_of[item];
+        self.imods(item).contains_key(&attr) || self.layers.iter().any(|l| l.contains_key(&(s, attr)))
+    }
     #[inline]
     pub fn get(&self, item: usize, attr: u32) -> f64 {
         let k = ((item as u64) << 32) | attr as u64;
         if let Some(v) = self.vcache.borrow().get(&k) {
             return *v;
         }
-        let v = engine::value(self.db, self.fit, self.slot_of[item], attr, self.layer);
+        // plain attribute (no modifiers, caps or rounding): its base value, no engine call
+        let v = if !self.modified(item, attr) && !self.db.consts().special(attr) {
+            self.items[item].base(attr).unwrap_or_else(|| self.ds.attr_default(attr))
+        } else {
+            engine::value(self.db, self.fit, self.slot_of[item], attr, self.layer)
+        };
         self.vcache.borrow_mut().insert(k, v);
         v
     }
@@ -98,15 +121,10 @@ impl<'a> Fit<'a> {
         if self.has(item, attr) { Some(self.get(item, attr)) } else { None }
     }
     pub fn has(&self, item: usize, attr: u32) -> bool {
-        let s = self.slot_of[item];
-        if engine::has(self.db, self.fit, s, attr) {
-            return true;
-        }
-        (1..=self.layer).any(|l| engine::layer_mods(self.db, self.fit, engine::LKey::new(self.db, l)).contains_key(&(s, attr)))
+        self.items[item].base(attr).is_some() || self.modified(item, attr)
     }
     pub fn base(&self, item: usize, attr: u32) -> f64 {
-        let it = self.fit.slots(self.db)[self.slot_of[item] as usize];
-        it.spec(self.db).base(attr).unwrap_or_else(|| self.ds.attr_default(attr))
+        self.items[item].base(attr).unwrap_or_else(|| self.ds.attr_default(attr))
     }
     /// capacitor simulation, memoised on its exact (bitwise) inputs: a pure function, so a hit is exact
     #[allow(clippy::too_many_arguments)]
@@ -131,7 +149,7 @@ impl<'a> Fit<'a> {
         let s = self.slot_of[item];
         let it = self.fit.slots(self.db)[s as usize];
         let mut k: Vec<u32> = it.spec(self.db).attrs.iter().map(|x| x.0).collect();
-        k.extend(engine::item_mods(self.db, self.fit, it).keys().copied());
+        k.extend(engine::item_mods(self.db, self.fit, s).mods.keys().copied());
         for l in 1..=self.layer {
             for (t, a) in engine::layer_mods(self.db, self.fit, engine::LKey::new(self.db, l)).keys() {
                 if *t == s {
@@ -153,6 +171,18 @@ impl Session {
 
     pub fn ds(&self) -> &Dataset {
         &self.db.ds
+    }
+
+    /// New salsa database, keeping the dataset, constants and the spec / capsim caches (pure-function memos).
+    pub fn soft_reset(&mut self) {
+        let db = EngineDb { storage: salsa::Storage::default(), ds: self.db.ds.clone(), consts: self.db.consts.clone() };
+        self.db = db;
+        self.fit = None;
+        self.slots.clear();
+        self.slot_of.clear();
+        for s in self.subs.values_mut() {
+            s.soft_reset();
+        }
     }
 
     /// Drop all memoised state (keeps the dataset).
@@ -258,7 +288,8 @@ impl Session {
         warnings.extend(boost_warn);
         let items: Vec<Arc<ItemSpec>> = built.items.clone();
         let layer = engine::plan(db, fit).final_layer;
-        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special, vcache: Default::default(), capmemo: &self.capmemo })
+        let layers: Vec<&Arc<engine::LayerMap>> = (1..=layer).map(|l| engine::layer_mods(db, fit, engine::LKey::new(db, l))).collect();
+        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special, vcache: Default::default(), capmemo: &self.capmemo, layers, imods: std::cell::RefCell::new(vec![None; n]) })
     }
 
     fn load(&mut self, req: &FitRequest, b: &spec::Built, offers: Vec<(u32, F)>) -> FitIn {

@@ -102,6 +102,7 @@ pub struct SpecCache {
     modes: Option<Vec<(u32, String)>>,
     /// per skill: conditions under which one of its modifiers can reach an item (see `skill_relevant`)
     reach: FxHashMap<u32, Arc<Reach>>,
+    levels: Option<(u8, Vec<(String, u8)>, Arc<Vec<(u32, u8, Arc<Reach>)>>)>,
 }
 
 /// When can a skill's modifiers reach something? `always`, or any listed group present / skill required.
@@ -378,29 +379,45 @@ pub fn build(ds: &Dataset, cache: &mut SpecCache, req: &FitRequest, proj_fit: &m
         }
     }
     let default_level = req.character.skills.default_level.unwrap_or(0);
-    let mut levels: FxHashMap<u32, u8> = FxHashMap::default();
-    for s in &ds.skills {
-        if ds.types[s].published {
-            levels.insert(*s, default_level);
+    // the (skill, level) list depends only on the character's skills: memoised (one entry; most requests share it)
+    let mut lkey: Vec<(String, u8)> = req.character.skills.levels.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    lkey.sort_unstable();
+    let hit = match &b.cache.levels {
+        Some((d, k, lv)) if *d == default_level && *k == lkey => Some(lv.clone()),
+        _ => None,
+    };
+    let lv: Arc<Vec<(u32, u8, Arc<Reach>)>> = match hit {
+        Some(lv) => lv,
+        None => {
+            let mut levels: FxHashMap<u32, u8> = FxHashMap::default();
+            for s in &ds.skills {
+                if ds.types[s].published {
+                    levels.insert(*s, default_level);
+                }
+            }
+            for (k, v) in &req.character.skills.levels {
+                if let Ok(id) = k.parse::<u32>() {
+                    levels.insert(id, *v);
+                } else if let Some(id) = ds.type_by_name(k) {
+                    levels.insert(id, *v);
+                }
+            }
+            let mut lv: Vec<(u32, u8)> = levels.into_iter().filter(|(s, _)| ds.types.contains_key(s)).collect();
+            lv.sort();
+            let lv: Vec<(u32, u8, Arc<Reach>)> = lv
+                .into_iter()
+                .map(|(s, l)| (s, l, b.cache.reach.entry(s).or_insert_with(|| Arc::new(reach_of(ds, s))).clone()))
+                .collect();
+            let lv = Arc::new(lv);
+            b.cache.levels = Some((default_level, lkey, lv.clone()));
+            lv
         }
-    }
-    for (k, v) in &req.character.skills.levels {
-        if let Ok(id) = k.parse::<u32>() {
-            levels.insert(id, *v);
-        } else if let Some(id) = ds.type_by_name(k) {
-            levels.insert(id, *v);
-        }
-    }
-    let mut lv: Vec<(u32, u8)> = levels.into_iter().collect();
-    lv.sort();
+    };
     let (need, groups) = fit_skill_context(ds, req);
-    for (s, l) in lv {
-        if !ds.types.contains_key(&s) {
-            continue;
-        }
+    for (s, l, r) in lv.iter() {
+        let (s, l) = (*s, *l);
         // perf (as Variant A): a skill whose modifiers can reach nothing in this fit is not instantiated
         if !need.contains(&s) {
-            let r = b.cache.reach.entry(s).or_insert_with(|| Arc::new(reach_of(ds, s)));
             if !(r.always || r.groups.iter().any(|g| groups.contains(g)) || r.skills.iter().any(|k| need.contains(k))) {
                 continue;
             }
