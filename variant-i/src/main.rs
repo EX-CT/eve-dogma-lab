@@ -228,6 +228,34 @@ fn main() {
             let el = t1.elapsed().as_secs_f64();
             writeln!(out, "{}", json!({"dataset_load_ms": load_ms, "iterations": n, "total_s": el, "per_calc_us": el / n as f64 * 1e6})).unwrap();
         }
+        "bench-edit" => {
+            // incremental editing latency: alternate the state of the last module (active <-> online) N times
+            let n: usize = take_flag(&mut args, "-n").and_then(|v| v.parse().ok()).unwrap_or(1000);
+            let ds = load(dataset);
+            let s = read_input(args.get(1));
+            let req: FitRequest = serde_json::from_str(&s).expect("bad request");
+            let mut alt = req.clone();
+            if let Some(m) = alt.modules.iter_mut().rev().find(|m| m.state.is_some()) {
+                m.state = Some(match m.state {
+                    Some(eve_dogma_salsa::request::State::Active) => eve_dogma_salsa::request::State::Online,
+                    _ => eve_dogma_salsa::request::State::Active,
+                });
+            }
+            let mut sess = Session::new(ds.clone());
+            let _ = sess.calc(&req);
+            let t1 = Instant::now();
+            for k in 0..n {
+                let r = if k % 2 == 0 { &alt } else { &req };
+                if fresh {
+                    sess.reset();
+                }
+                std::hint::black_box(sess.calc(r));
+            }
+            let el = t1.elapsed().as_secs_f64();
+            // correctness: incremental result == fresh result
+            let same = Session::new(ds.clone()).calc(&alt) == { let mut s2 = Session::new(ds.clone()); let _ = s2.calc(&req); s2.calc(&alt) };
+            writeln!(out, "{}", json!({"iterations": n, "per_edit_us": el / n as f64 * 1e6, "incremental_equals_fresh": same})).unwrap();
+        }
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(if cmd.is_empty() || cmd == "help" || cmd == "--help" { 0 } else { 2 });
