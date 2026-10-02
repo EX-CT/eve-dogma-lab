@@ -172,11 +172,14 @@ struct Graph {
 
 pub struct Fit<'a> {
     pub ds: &'a Dataset,
+    prep: &'a Prepared,
     pub items: Vec<Item<'a>>,
     pub ship: usize,
     pub char: usize,
     pub warnings: Vec<String>,
     pub is_structure: bool,
+    /// incoming remote reps / cap transfers / neuts from projected items, evaluated in stats
+    pub proj_special: Vec<ProjSpecial>,
     raw: Vec<RawMod>,
     g: Graph,
     /// index lists for target selection
@@ -184,10 +187,23 @@ pub struct Fit<'a> {
     idx_owned: Vec<u32>,
     idx_char_loc: Vec<u32>,
     idx_char_skillable: Vec<u32>,
+    /// (required skill, item) pairs, sorted: O(log n) LocationRequiredSkill / OwnerRequiredSkill lookups
+    by_skill_ship: Vec<(u32, u32)>,
+    by_skill_owned: Vec<(u32, u32)>,
+    by_skill_char: Vec<(u32, u32)>,
     pub stats_evals: Cell<u64>,
     /// trained skill levels (type id, level 0..5), sorted; skills are folded, not instantiated
     pub skills: Vec<(u32, u8)>,
     folded: bool,
+}
+
+/// A projected effect that does not modify attributes but feeds tank or capacitor stats (Pyfa: fit._armorRr, addDrain).
+#[derive(Debug, Clone, Copy)]
+pub enum ProjSpecial {
+    /// layer 0 shield, 1 armor, 2 hull; amount attr * mult * factor every `duration`
+    Rep { item: usize, layer: u8, amount: u32, mult: f64, factor: f64 },
+    /// capacitor drain (sign +1) or fill (sign -1) per cycle of `duration` attr
+    Drain { item: usize, amount: u32, duration: u32, factor: f64, resist: u32, sign: f64 },
 }
 
 #[derive(Debug)]
@@ -328,17 +344,22 @@ impl<'a> Fit<'a> {
     pub fn build(ds: &'a Dataset, req: &FitRequest) -> Result<Fit<'a>, EngineError> {
         let mut fit = Fit {
             ds,
+            prep: ds.prepared.get_or_init(|| Prepared::new(ds)),
             items: Vec::with_capacity(ds.skills.len() + 64),
             ship: 0,
             char: 0,
             warnings: Vec::new(),
             is_structure: false,
+            proj_special: Vec::new(),
             raw: Vec::with_capacity(4096),
             g: Graph::default(),
             idx_ship_loc: Vec::new(),
             idx_owned: Vec::new(),
             idx_char_loc: Vec::new(),
             idx_char_skillable: Vec::new(),
+            by_skill_ship: Vec::new(),
+            by_skill_owned: Vec::new(),
+            by_skill_char: Vec::new(),
             stats_evals: Cell::new(0),
             skills: Vec::new(),
             folded: false,
@@ -367,8 +388,7 @@ impl<'a> Fit<'a> {
                 }
             }
         }
-        let mut skill_ids: Vec<(u32, u8)> =
-            ds.skills.iter().filter(|s| ds.types[s].published).map(|s| (*s, default_level)).collect();
+        let mut skill_ids: Vec<(u32, u8)> = fit.prep.published_skills.iter().map(|s| (*s, default_level)).collect();
         for (id, l) in explicit {
             match skill_ids.binary_search_by_key(&id, |x| x.0) {
                 Ok(p) => skill_ids[p].1 = l,
@@ -379,7 +399,7 @@ impl<'a> Fit<'a> {
         for x in skill_ids.iter_mut() {
             x.1 = x.1.min(5);
         }
-        let prep = ds.prepared.get_or_init(|| Prepared::new(ds));
+        let prep = fit.prep;
         // folding is exact unless something can modify skill attributes from outside the skill itself
         fit.folded = prep.skills_foldable && !req.overrides.iter().any(|o| ds.types.get(&o.type_id).map(|t| t.category == 16).unwrap_or(false));
         if !fit.folded {
@@ -392,12 +412,7 @@ impl<'a> Fit<'a> {
         fit.skills = skill_ids;
         let mode_id = req.ship.mode_type_id.or_else(|| {
             let ship_name = ds.types.get(&req.ship.type_id)?.name.to_lowercase();
-            let m = ds
-                .types
-                .iter()
-                .filter(|(_, t)| t.group == 1306 && t.name.to_lowercase().starts_with(&ship_name))
-                .map(|(id, _)| *id)
-                .min()?;
+            let m = fit.prep.modes.iter().filter(|(n, _)| n.starts_with(&ship_name)).map(|(_, id)| *id).min()?;
             fit.warnings.push(format!("no tactical mode given; defaulted to type {m}"));
             Some(m)
         });
@@ -479,6 +494,12 @@ impl<'a> Fit<'a> {
                             it.state = m.state.unwrap_or(State::Active);
                             it.distance = p.distance_m;
                             it.req_index = Some(i);
+                            if let Some(c) = m.charge_type_id {
+                                let cidx = fit.new_item(c, Kind::Charge, Loc::Nowhere, &format!("/projected/{i}/module/charge_type_id"))?;
+                                fit.items[cidx].parent = Some(idx);
+                                fit.items[cidx].owned = false;
+                                fit.items[idx].charge = Some(cidx);
+                            }
                         }
                     }
                 }
@@ -490,6 +511,53 @@ impl<'a> Fit<'a> {
                             it.owned = false;
                             it.state = State::Active;
                             it.distance = p.distance_m;
+                        }
+                    }
+                }
+                "fit" => {
+                    // whole projected fit: compute the source fit on its own, then project each active module /
+                    // drone as a frozen item carrying the source-modified values as base attributes.
+                    if let Some(src_req) = &p.fit {
+                        let mut sreq = (**src_req).clone();
+                        sreq.projected.clear();
+                        let src = match Fit::build(ds, &sreq) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                fit.warnings.push(format!("projected[{i}] fit: {e:?}"));
+                                continue;
+                            }
+                        };
+                        let mut frozen: Vec<(u32, u32, Vec<(u32, f64)>)> = Vec::new();
+                        for (si, it) in src.items.iter().enumerate() {
+                            let copies = match it.kind {
+                                Kind::Module if it.state >= State::Active => 1,
+                                Kind::Drone => it.active_count,
+                                _ => 0,
+                            };
+                            if copies == 0 {
+                                continue;
+                            }
+                            let vals: Vec<(u32, f64)> = src.attr_keys(si).into_iter().map(|a| (a, src.get(si, a))).collect();
+                            frozen.push((it.type_id, copies, vals));
+                        }
+                        for (type_id, copies, vals) in frozen {
+                            for _ in 0..copies * p.amount.max(1) {
+                                let idx = fit.new_item(type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
+                                let it = &mut fit.items[idx];
+                                it.owned = false;
+                                it.state = State::Active;
+                                it.distance = p.distance_m;
+                                it.req_index = Some(i);
+                                // vals is sorted and covers every attribute the item has
+                                let mut full = vals.clone();
+                                for &(a, v) in it.patch.iter() {
+                                    if let Err(pos) = full.binary_search_by_key(&a, |x| x.0) {
+                                        full.insert(pos, (a, v));
+                                    }
+                                }
+                                it.patch = full;
+                                it.type_attrs = &[];
+                            }
                         }
                     }
                 }
@@ -550,12 +618,21 @@ impl<'a> Fit<'a> {
                 self.idx_char_skillable.push(i);
             }
         }
+        let pairs = |items: &Vec<Item>, list: &Vec<u32>| -> Vec<(u32, u32)> {
+            let mut v: Vec<(u32, u32)> = list.iter().flat_map(|&i| items[i as usize].req_skills.iter().map(move |&s| (s, i))).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        self.by_skill_ship = pairs(&self.items, &self.idx_ship_loc);
+        self.by_skill_owned = pairs(&self.items, &self.idx_owned);
+        self.by_skill_char = pairs(&self.items, &self.idx_char_skillable);
     }
 
     // ---------------------------------------------------------------- registration
     #[inline]
     fn push_mod(&mut self, target: usize, attr: u32, op: i32, src: Src, source_cat: u32) {
-        let stackable = self.ds.attrs.get(&attr).map(|a| a.stackable).unwrap_or(true);
+        let stackable = self.prep.meta(attr).stackable;
         let penalized = !stackable && !EXEMPT_CATEGORIES.contains(&source_cat);
         let seq = self.raw.len() as u32;
         self.raw.push(RawMod { item: target as u32, attr, op: op as i8, penalized, seq, src });
@@ -589,11 +666,8 @@ impl<'a> Fit<'a> {
                     Func::LocationGroup => {
                         out.extend(self.idx_ship_loc.iter().copied().filter(|&i| items[i as usize].group == extra))
                     }
-                    Func::LocationRequiredSkill => out.extend(
-                        self.idx_ship_loc.iter().copied().filter(|&i| items[i as usize].req_skills.contains(&extra)),
-                    ),
-                    Func::OwnerRequiredSkill => out
-                        .extend(self.idx_owned.iter().copied().filter(|&i| items[i as usize].req_skills.contains(&extra))),
+                    Func::LocationRequiredSkill => skill_range(&self.by_skill_ship, extra, out),
+                    Func::OwnerRequiredSkill => skill_range(&self.by_skill_owned, extra, out),
                     Func::EffectStopper => {}
                 }
             }
@@ -603,9 +677,7 @@ impl<'a> Fit<'a> {
                 Func::LocationGroup => {
                     out.extend(self.idx_char_loc.iter().copied().filter(|&i| items[i as usize].group == extra))
                 }
-                Func::LocationRequiredSkill | Func::OwnerRequiredSkill => out.extend(
-                    self.idx_char_skillable.iter().copied().filter(|&i| items[i as usize].req_skills.contains(&extra)),
-                ),
+                Func::LocationRequiredSkill | Func::OwnerRequiredSkill => skill_range(&self.by_skill_char, extra, out),
                 Func::EffectStopper => {}
             },
             _ => {}
@@ -756,9 +828,17 @@ impl<'a> Fit<'a> {
         let ds = self.ds;
         let prep = ds.prepared.get().expect("prepared");
         let skills = std::mem::take(&mut self.skills);
+        // skill ids that some fitted item requires (only these can be reached by *RequiredSkill filters)
+        let mut required: Vec<u32> =
+            self.by_skill_ship.iter().chain(self.by_skill_owned.iter()).chain(self.by_skill_char.iter()).map(|x| x.0).collect();
+        required.sort_unstable();
+        required.dedup();
         for &(s, l) in &skills {
             let Some(f) = prep.fold(ds, s) else { continue };
-            let vals = if self.is_structure { &f.values_structure[l as usize] } else { &f.values[l as usize] };
+            if !f.unconditional && !f.extras.iter().any(|e| required.binary_search(e).is_ok()) {
+                continue; // no modifier of this skill can reach anything in this fit
+            }
+            let vals = f.values(ds, s, l, self.is_structure);
             for (k, m) in f.outgoing.iter().enumerate() {
                 if self.is_structure && !m.structure_ok {
                     continue;
@@ -772,7 +852,46 @@ impl<'a> Fit<'a> {
         self.skills = skills;
     }
 
+    /// Pyfa's 'projected' handlers for remote reps, cap transfers and neuts/nos (eos/effects.py, LGPL).
+    fn proj_special_for(&self, i: usize, name: &str, resist: u32) -> Option<Vec<ProjSpecial>> {
+        let ds = self.ds;
+        let a = |n: &str| ds.attr_id(n);
+        let it = &self.items[i];
+        let base = |n: &str| it.base_opt(ds.attr_id(n)).unwrap_or(0.0);
+        let dist = it.distance;
+        let falloff_factor = || crate::stats::range_factor(base("maxRange"), base("falloffEffectiveness"), dist, true);
+        let gate = |opt: f64| if opt < dist.unwrap_or(0.0) { 0.0 } else { 1.0 };
+        let no_assist = self.items[self.ship].base_opt(a("disallowAssistance")).map(|x| x != 0.0).unwrap_or(false);
+        let rep = |layer: u8, amt: &str, mult: f64, factor: f64| {
+            if no_assist { vec![] } else { vec![ProjSpecial::Rep { item: i, layer, amount: a(amt), mult, factor }] }
+        };
+        let drain = |amt: &str, dur: &str, factor: f64, sign: f64| vec![ProjSpecial::Drain { item: i, amount: a(amt), duration: a(dur), factor, resist, sign }];
+        let paste = it.charge.map(|c| ds.types.get(&self.items[c].type_id).map(|t| t.name == "Nanite Repair Paste").unwrap_or(false)).unwrap_or(false);
+        Some(match name {
+            "shipModuleRemoteShieldBooster" | "shipModuleAncillaryRemoteShieldBooster" => rep(0, "shieldBonus", 1.0, falloff_factor()),
+            "shipModuleRemoteArmorRepairer" | "ShipModuleRemoteArmorMutadaptiveRepairer" => rep(1, "armorDamageAmount", 1.0, falloff_factor()),
+            "shipModuleAncillaryRemoteArmorRepairer" => rep(1, "armorDamageAmount", if paste { 3.0 } else { 1.0 }, falloff_factor()),
+            "shipModuleRemoteHullRepairer" => rep(2, "structureDamageAmount", 1.0, falloff_factor()),
+            "npcEntityRemoteShieldBooster" => rep(0, "shieldBonus", 1.0, gate(base("maxRange"))),
+            "npcEntityRemoteArmorRepairer" => rep(1, "armorDamageAmount", 1.0, gate(base("maxRange"))),
+            "npcEntityRemoteHullRepairer" => rep(2, "structureDamageAmount", 1.0, gate(base("maxRange"))),
+            "shipModuleRemoteCapacitorTransmitter" => {
+                if no_assist { vec![] } else { drain("powerTransferAmount", "duration", gate(base("maxRange")), -1.0) }
+            }
+            "energyNeutralizerFalloff" => drain("energyNeutralizerAmount", "duration", falloff_factor(), 1.0),
+            "energyNosferatuFalloff" => drain("powerTransferAmount", "duration", falloff_factor(), 1.0),
+            "structureEnergyNeutralizerFalloff" => drain("energyNeutralizerAmount", "duration", 1.0, 1.0),
+            "entityEnergyNeutralizerFalloff" => {
+                drain("energyNeutralizerAmount", "energyNeutralizerDuration", gate(base("energyNeutralizerRangeOptimal")), 1.0)
+            }
+            _ => return None,
+        })
+    }
+
     fn register_projected(&mut self, i: usize) {
+        const DAMAGE_EFFECTS: &[&str] = &["projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack",
+            "missileLaunchingForEntity", "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari",
+            "superWeaponGallente", "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching"];
         let ds = self.ds;
         let src_cat = self.items[i].category;
         let state = self.items[i].state;
@@ -824,6 +943,15 @@ impl<'a> Fit<'a> {
             {
                 push(self, ds.attr_id("maxTargetRange"), ds.attr_id("maxTargetRangeBonus"), 6);
                 push(self, ds.attr_id("scanResolution"), ds.attr_id("scanResolutionBonus"), 6);
+                if name.starts_with("remoteSensorBoost") {
+                    for t in ["Gravimetric", "Ladar", "Magnetometric", "Radar"] {
+                        push(self, ds.attr_id(&format!("scan{t}Strength")), ds.attr_id(&format!("scan{t}StrengthPercent")), 6);
+                    }
+                }
+            } else if let Some(ps) = self.proj_special_for(i, name, resist) {
+                self.proj_special.extend(ps);
+            } else if DAMAGE_EFFECTS.contains(&name) {
+                // weapon damage onto the target: not part of the target's own stats
             } else {
                 self.warnings.push(format!("projected effect '{name}' not modelled yet"));
             }
@@ -1005,15 +1133,21 @@ impl<'a> Fit<'a> {
 
     // ---------------------------------------------------------------- compilation
     fn compile(&mut self) {
-        let ds = self.ds;
+        let prep = self.prep;
         // 1. order raw modifiers by (target item, attr, op, registration order)
         let mut order: Vec<u32> = (0..self.raw.len() as u32).collect();
         {
             let raw = &self.raw;
-            order.sort_unstable_by_key(|&k| {
-                let r = &raw[k as usize];
-                (r.item, r.attr, r.op, r.seq)
-            });
+            // packed key: item(16) | attr(20) | op+1(4) | seq(24) — one u64 compare per step
+            debug_assert!(raw.len() < 1 << 24);
+            let mut keyed: Vec<u64> = raw
+                .iter()
+                .map(|r| ((r.item as u64) << 48) | ((r.attr as u64 & 0xFFFFF) << 28) | (((r.op as i64 + 1) as u64 & 0xF) << 24) | r.seq as u64)
+                .collect();
+            keyed.sort_unstable();
+            for (o, k) in order.iter_mut().zip(keyed) {
+                *o = (k & 0xFF_FFFF) as u32;
+            }
         }
         // 2. nodes
         for it in self.items.iter_mut() {
@@ -1029,11 +1163,11 @@ impl<'a> Fit<'a> {
                 let nid = meta.len() as u32;
                 let it = &mut self.items[r.item as usize];
                 it.nodes.push((r.attr, nid)); // sorted because order is sorted by attr within item
-                let info = ds.attrs.get(&r.attr);
+                let am = prep.meta(r.attr);
                 meta.push(NodeMeta {
-                    base: it.base_opt(r.attr).unwrap_or_else(|| ds.attr_default(r.attr)),
-                    high_is_good: info.map(|i| i.high_is_good).unwrap_or(true),
-                    round2: info.map(|i| matches!(i.name.as_str(), "cpu" | "power" | "cpuOutput" | "powerOutput")).unwrap_or(false),
+                    base: it.base_opt(r.attr).unwrap_or(am.default),
+                    high_is_good: am.high_is_good,
+                    round2: am.round2,
                     min: None,
                     max: None,
                 });
@@ -1045,7 +1179,7 @@ impl<'a> Fit<'a> {
             let it = &items[item as usize];
             match it.node(attr) {
                 Some(n) => Ref::Node(n),
-                None => Ref::Const(it.base_opt(attr).unwrap_or_else(|| ds.attr_default(attr))),
+                None => Ref::Const(it.base_opt(attr).unwrap_or(prep.meta(attr).default)),
             }
         };
         let mut node_item: Vec<(u32, u32)> = vec![(0, 0); meta.len()];
@@ -1056,9 +1190,12 @@ impl<'a> Fit<'a> {
         }
         for (n, m) in meta.iter_mut().enumerate() {
             let (item, attr) = node_item[n];
-            if let Some(info) = ds.attrs.get(&attr) {
-                m.min = info.min_attr.map(|a| resolve(&self.items, item, a));
-                m.max = info.max_attr.map(|a| resolve(&self.items, item, a));
+            let am = prep.meta(attr);
+            if am.min != 0 {
+                m.min = Some(resolve(&self.items, item, am.min));
+            }
+            if am.max != 0 {
+                m.max = Some(resolve(&self.items, item, am.max));
             }
         }
         let mut mods: Vec<CMod> = Vec::with_capacity(order.len());
@@ -1297,7 +1434,7 @@ impl<'a> Fit<'a> {
         let it = &self.items[item];
         match it.node(attr) {
             Some(n) => self.eval_node(n),
-            None => it.base_opt(attr).unwrap_or_else(|| self.ds.attr_default(attr)),
+            None => it.base_opt(attr).unwrap_or(self.prep.meta(attr).default),
         }
     }
 
@@ -1311,7 +1448,7 @@ impl<'a> Fit<'a> {
     }
 
     pub fn base(&self, item: usize, attr: u32) -> f64 {
-        self.items[item].base_opt(attr).unwrap_or_else(|| self.ds.attr_default(attr))
+        self.items[item].base_opt(attr).unwrap_or(self.prep.meta(attr).default)
     }
 
     /// All attribute ids present on an item (base ∪ modified), sorted.
@@ -1327,6 +1464,12 @@ impl<'a> Fit<'a> {
     pub fn graph_stats(&self) -> (usize, usize, u64) {
         (self.g.meta.len(), self.g.mods.len(), self.stats_evals.get())
     }
+}
+
+#[inline]
+fn skill_range(v: &[(u32, u32)], skill: u32, out: &mut Vec<u32>) {
+    let lo = v.partition_point(|x| x.0 < skill);
+    out.extend(v[lo..].iter().take_while(|x| x.0 == skill).map(|x| x.1));
 }
 
 /// Stacking penalty: strongest first, factor exp(-(i/2.67)^2).
@@ -1361,19 +1504,19 @@ pub fn infer_slot(_ds: &Dataset, t: &TypeInfo) -> Option<Slot> {
 thread_local! {
     static PROF_ON: Cell<bool> = const { Cell::new(false) };
     static PROF_T: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
-    pub static PROF_ACC: RefCell<[f64; 4]> = const { RefCell::new([0.0; 4]) };
+    pub static PROF_ACC: RefCell<[f64; 6]> = const { RefCell::new([0.0; 6]) };
 }
 pub fn prof_enable(on: bool) {
     PROF_ON.with(|p| p.set(on));
 }
 #[inline]
-fn prof_start() {
+pub(crate) fn prof_start() {
     if PROF_ON.with(|p| p.get()) {
         PROF_T.with(|t| t.set(Some(std::time::Instant::now())));
     }
 }
 #[inline]
-fn prof(k: usize) {
+pub(crate) fn prof(k: usize) {
     if PROF_ON.with(|p| p.get()) {
         let now = std::time::Instant::now();
         PROF_T.with(|t| {
@@ -1401,19 +1544,57 @@ pub struct OutMod {
 pub struct SkillFold {
     category: u32,
     outgoing: Vec<OutMod>,
-    /// values[level][k] = value of outgoing[k]'s modifying attribute on the skill at `level`
-    values: Vec<Vec<f64>>,
-    values_structure: Vec<Vec<f64>>,
+    modifying: Vec<u32>,
+    /// any outgoing modifier with an unconditional target (Item / Location / LocationGroup)
+    unconditional: bool,
+    /// skill filters of *RequiredSkill outgoing modifiers
+    extras: Vec<u32>,
+    /// lazily probed: [structure*6 + level][k] = value of outgoing[k]'s modifying attribute
+    vals: [std::sync::OnceLock<Vec<f64>>; 12],
 }
+
+impl SkillFold {
+    fn values(&self, ds: &Dataset, s: u32, level: u8, structure: bool) -> &[f64] {
+        let slot = structure as usize * 6 + level.min(5) as usize;
+        self.vals[slot].get_or_init(|| {
+            if self.outgoing.is_empty() {
+                return Vec::new();
+            }
+            let probe = Fit::probe(ds, s, level, structure);
+            self.modifying.iter().map(|&a| probe.get(0, a)).collect()
+        })
+    }
+}
+
+/// Dense per-attribute metadata (indexed by attribute id) — no hash lookups in compile/eval.
+#[derive(Debug, Clone, Copy)]
+pub struct AttrMeta {
+    pub default: f64,
+    pub stackable: bool,
+    pub high_is_good: bool,
+    pub round2: bool,
+    pub min: u32,
+    pub max: u32,
+}
+const ATTR_META_UNKNOWN: AttrMeta = AttrMeta { default: 0.0, stackable: true, high_is_good: true, round2: false, min: 0, max: 0 };
 
 /// Dataset-derived, request-independent precomputation. Built once per dataset (OnceLock), immutable.
 pub struct Prepared {
     pub skills_foldable: bool,
+    pub published_skills: Vec<u32>,
+    /// tactical destroyer modes (group 1306): (lowercase name, type id)
+    pub modes: Vec<(String, u32)>,
+    pub attr_meta: Vec<AttrMeta>,
     folds: std::sync::Mutex<Vec<(u32, Option<std::sync::Arc<SkillFold>>)>>,
     table: Vec<(u32, Option<std::sync::Arc<SkillFold>>)>,
 }
 
 impl Prepared {
+    #[inline]
+    pub fn meta(&self, attr: u32) -> &AttrMeta {
+        self.attr_meta.get(attr as usize).unwrap_or(&ATTR_META_UNKNOWN)
+    }
+
     pub fn new(ds: &Dataset) -> Prepared {
         // can any modifier reach a skill from outside? (char-location / char-location-group on a skill group)
         let skill_groups: Vec<u32> = ds.groups.iter().filter(|(_, g)| g.category == 16).map(|(id, _)| *id).collect();
@@ -1428,7 +1609,23 @@ impl Prepared {
                 table.push((s, build_fold(ds, s).map(std::sync::Arc::new)));
             }
         }
-        Prepared { skills_foldable: foldable, folds: std::sync::Mutex::new(Vec::new()), table }
+        let max_attr = ds.attrs.keys().copied().max().unwrap_or(0) as usize;
+        let mut attr_meta = vec![ATTR_META_UNKNOWN; max_attr + 1];
+        for (id, a) in &ds.attrs {
+            attr_meta[*id as usize] = AttrMeta {
+                default: a.default,
+                stackable: a.stackable,
+                high_is_good: a.high_is_good,
+                round2: matches!(a.name.as_str(), "cpu" | "power" | "cpuOutput" | "powerOutput"),
+                min: a.min_attr.unwrap_or(0),
+                max: a.max_attr.unwrap_or(0),
+            };
+        }
+        let published_skills: Vec<u32> = ds.skills.iter().copied().filter(|s| ds.types[s].published).collect();
+        let mut modes: Vec<(String, u32)> =
+            ds.types.iter().filter(|(_, t)| t.group == 1306).map(|(id, t)| (t.name.to_lowercase(), *id)).collect();
+        modes.sort_by_key(|x| x.1);
+        Prepared { skills_foldable: foldable, published_skills, modes, attr_meta, folds: std::sync::Mutex::new(Vec::new()), table }
     }
 
     fn fold(&self, ds: &Dataset, s: u32) -> Option<std::sync::Arc<SkillFold>> {
@@ -1472,16 +1669,15 @@ fn build_fold(ds: &Dataset, s: u32) -> Option<SkillFold> {
             modifying.push(m.modifying);
         }
     }
-    let mut values = Vec::with_capacity(6);
-    let mut values_structure = Vec::with_capacity(6);
-    for structure in [false, true] {
-        for level in 0..=5u8 {
-            let probe = Fit::probe(ds, s, level, structure);
-            let v: Vec<f64> = modifying.iter().map(|&a| probe.get(0, a)).collect();
-            if structure { values_structure.push(v) } else { values.push(v) }
-        }
-    }
-    Some(SkillFold { category: t.category, outgoing, values, values_structure })
+    let unconditional = outgoing.iter().any(|m| matches!(m.func, Func::Item | Func::Location | Func::LocationGroup));
+    let mut extras: Vec<u32> = outgoing
+        .iter()
+        .filter(|m| matches!(m.func, Func::LocationRequiredSkill | Func::OwnerRequiredSkill))
+        .map(|m| m.extra)
+        .collect();
+    extras.sort_unstable();
+    extras.dedup();
+    Some(SkillFold { category: t.category, outgoing, modifying, unconditional, extras, vals: Default::default() })
 }
 
 impl<'a> Fit<'a> {
@@ -1489,17 +1685,22 @@ impl<'a> Fit<'a> {
     fn probe(ds: &'a Dataset, s: u32, level: u8, structure: bool) -> Fit<'a> {
         let mut fit = Fit {
             ds,
+            prep: ds.prepared.get_or_init(|| Prepared::new(ds)),
             items: Vec::with_capacity(1),
             ship: 0,
             char: 0,
             warnings: Vec::new(),
             is_structure: structure,
+            proj_special: Vec::new(),
             raw: Vec::new(),
             g: Graph::default(),
             idx_ship_loc: Vec::new(),
             idx_owned: Vec::new(),
             idx_char_loc: Vec::new(),
             idx_char_skillable: Vec::new(),
+            by_skill_ship: Vec::new(),
+            by_skill_owned: Vec::new(),
+            by_skill_char: Vec::new(),
             stats_evals: Cell::new(0),
             skills: Vec::new(),
             folded: false,

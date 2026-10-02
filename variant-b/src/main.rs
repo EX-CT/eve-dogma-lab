@@ -212,7 +212,7 @@ fn main() {
             let acc = eve_dogma::engine::PROF_ACC.with(|a| *a.borrow());
             let us = |x: f64| x / n as f64 * 1e6;
             writeln!(out, "{}", json!({"per_calc_us": us(el), "build_items_us": us(acc[0]), "register_us": us(acc[1]), "compile_us": us(acc[2]),
-                "staged_us": us(acc[3]), "stats_us": us(st), "nodes": gs.0, "mods": gs.1, "evaluated_nodes": gs.2, "items": 0})).unwrap();
+                "staged_us": us(acc[3]), "capsim_us": us(acc[4]), "stats_us": us(st), "nodes": gs.0, "mods": gs.1, "evaluated_nodes": gs.2, "items": 0})).unwrap();
         }
         "bench" => {
             let n: usize = take_flag(&mut args, "-n").and_then(|v| v.parse().ok()).unwrap_or(1000);
