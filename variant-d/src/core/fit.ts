@@ -803,6 +803,8 @@ function planFor(ds: Dataset, typeId: number, effects: [number, number][], eBast
       if (m.domain !== Domain.Item) p.outgoing.push(pm);
     }
     const active = e.mods.length === 0 ? activeSpecial(e.name) ?? null : null;
+    // effects that can never do anything here are left out of the plan (registration loops over plan.effects only)
+    if (mods.length === 0 && special === null && active === null && e.name !== 'OffensiveDefensiveReduction') continue;
     p.effects.push({ eid, e, isDefault: d !== 0, special, active, mods });
   }
   PLANS.set(effects, p);
