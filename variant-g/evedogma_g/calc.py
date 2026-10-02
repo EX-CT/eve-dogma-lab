@@ -10,22 +10,72 @@ def _err(code, message, path=""):
     return {"error": {"code": code, "message": message, "path": path}}
 
 
+def _debug_err(e):
+    """Rust Debug formatting of the reference EngineError (used in warnings)"""
+    return f'EngineError {{ code: "{e.code}", message: "{e.message}", path: "{e.path}" }}'
+
+
+def _batch(ds, parsed):
+    """parsed requests -> (batch, values, fits-or-errors). Fleet booster fits of every request are evaluated
+    first as one extra batch; their active burst modules become constant buff offers."""
+    boosters = []  # (owner request index, booster index, request)
+    for k, p in enumerate(parsed):
+        if isinstance(p, RequestError):
+            continue
+        for j, b in enumerate(p["fleet"]["booster_fits"]):
+            bb = dict(b)
+            bb["fleet"] = {"buffs": b["fleet"]["buffs"], "booster_fits": []}
+            boosters.append((k, j, bb))
+    offers = {}
+    warn = {}
+    if boosters:
+        bbatch, bvals, bfits = _batch(ds, [b[2] for b in boosters])
+        pairs = [(ds.a(i), ds.a(v)) for i, v in engine.WARFARE_PAIRS]
+        for (k, j, _), f in zip(boosters, bfits):
+            if isinstance(f, RequestError):
+                warn.setdefault(k, []).append(f"fleet.booster_fits[{j}]: {_debug_err(f)}")
+                continue
+            lst = offers.setdefault(k, [])
+            for i in f.modules:
+                if bbatch.meta[i]["state"] < engine.ACTIVE:
+                    continue
+                for ida, vala in pairs:
+                    bid = int(bvals.get(i, ida)) if bvals.has(i, ida) else 0
+                    if bid:
+                        lst.append((bid, bvals.get(i, vala)))
+    batch = engine.Batch(ds)
+    fits = []
+    for k, p in enumerate(parsed):
+        if isinstance(p, RequestError):
+            fits.append(p)
+            continue
+        try:
+            f = batch.add_fit(p)
+        except RequestError as e:
+            fits.append(e)
+            continue
+        f.booster_offers = offers.get(k, [])
+        f.booster_warnings = warn.get(k, [])
+        fits.append(f)
+    vals = engine.run(batch) if batch.fits else None
+    return batch, vals, fits
+
+
 def calc_many(ds, reqs):
     """reqs: list of parsed-JSON request objects (dicts) -> list of response dicts (same order)"""
-    out = [None] * len(reqs)
-    batch = engine.Batch(ds)
-    slots = []
-    for k, r in enumerate(reqs):
+    parsed = []
+    for r in reqs:
         try:
-            p = parse(r)
-            batch.add_fit(p)
-            slots.append(k)
+            parsed.append(parse(r))
         except RequestError as e:
-            out[k] = _err(e.code, e.message, e.path)
-    if batch.fits:
-        vals = engine.run(batch)
-        for fit, k in zip(batch.fits, slots):
-            out[k] = FitStats(batch, fit, vals).compute()
+            parsed.append(e)
+    batch, vals, fits = _batch(ds, parsed)
+    out = []
+    for f in fits:
+        if isinstance(f, RequestError):
+            out.append(_err(f.code, f.message, f.path))
+        else:
+            out.append(FitStats(batch, f, vals).compute())
     return out
 
 

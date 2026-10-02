@@ -44,6 +44,7 @@ STAGE_OF_OP = {op: s for s, op in enumerate(OP_STAGES)}
 SRC_ATTR, SRC_CONST, SRC_PROP, SRC_PROJ = range(4)
 PENALTY_DENOM = 7.1289
 MAX_LEVELS = 64
+LATE_ORDER = 1 << 40  # registration order of rows added after the item-effect pass
 
 # target table classes (see Batch._target_table)
 T_LOC_SHIP, T_LOC_CHAR, T_GRP_SHIP, T_GRP_CHAR, T_RS_SHIP, T_RS_OWNED, T_RS_CHAR = range(7)
@@ -438,11 +439,13 @@ class Batch:
         lo, hi = ds.tm_ptr[ti], ds.tm_ptr[ti + 1]
         src, rows = _expand_ranges(lo, hi)
         src = src.astype(np.int64)
+        seq = rows - lo[src]  # position of the row in the item's own effect/modifier order
         # template rows from mutation base types (effects the mutated type does not have itself)
         for i, bti, own in self.extra_rows:
             r = np.arange(ds.tm_ptr[bti], ds.tm_ptr[bti + 1])
             r = r[~np.isin(tm["eff"][r], list(own))]
             src = np.concatenate([src, np.full(len(r), i, np.int64)])
+            seq = np.concatenate([seq, 100000 + np.arange(len(r))])  # base-type effects come after own
             rows = np.concatenate([rows, r])
         eff = tm["eff"][rows]
         ecat = tm["ecat"][rows].astype(np.int64)
@@ -465,11 +468,13 @@ class Batch:
             ok = np.array([int(eff[j]) in self.meta[int(src[j])]["fighter_abilities"] for j in fi], bool)
             keep[fi[~ok]] = False
         keep &= STATE_OK[np.clip(ecat, 0, 7), self.it_estate[src]] & (ecat <= 7)
-        src, rows, eff = src[keep], rows[keep], eff[keep]
+        src, rows, eff, seq = src[keep], rows[keep], eff[keep], seq[keep]
         special = tm["special"][rows]
         sp = special != 0
-        self.special_rows = list(zip(src[sp].tolist(), special[sp].tolist()))
-        src, rows, eff = src[~sp], rows[~sp], eff[~sp]
+        self.special_rows = {}
+        for i, code, sq in zip(src[sp].tolist(), special[sp].tolist(), seq[sp].tolist()):
+            self.special_rows.setdefault(int(self.it_fit[i]), []).append((i, code, sq))
+        src, rows, eff, seq = src[~sp], rows[~sp], eff[~sp], seq[~sp]
         func = tm["func"][rows].astype(np.int64)
         dom = tm["dom"][rows].astype(np.int64)
         extra = tm["extra"][rows].copy()
@@ -520,12 +525,16 @@ class Batch:
             "a": (src[q] << ATTR_BITS) | tm["modifying"][rq].astype(np.int64),
             "b": np.full(len(q), -1, np.int64), "c": np.full(len(q), -1, np.int64),
             "const": np.zeros(len(q)), "factor": np.ones(len(q)), "mul": np.zeros(len(q), bool),
-            "src_item": src[q]})
+            "src_item": src[q], "o1": src[q], "o2": seq[q]})
 
     # small per-fit registrations -------------------------------------------------
-    def push(self, tgt, attr, op, kind, a=-1, b=-1, c=-1, const=0.0, factor=1.0, mul=False, src_item=-1, src_cat=0):
+    def push(self, tgt, attr, op, kind, a=-1, b=-1, c=-1, const=0.0, factor=1.0, mul=False, src_item=-1, src_cat=0,
+             order=None):
+        """append one modifier row. `order` = (item, position) inside the item-effect registration pass;
+        rows registered later (buffs, RAH) are ordered by insertion."""
         pen = (not self.ds.attr_stack[attr]) and src_cat not in (6, 8, 16, 20, 32, 65)
-        self.small.append((tgt, attr, op, pen, kind, a, b, c, const, factor, mul, src_item))
+        o1, o2 = order if order is not None else (LATE_ORDER + len(self.small), 0)
+        self.small.append((tgt, attr, op, pen, kind, a, b, c, const, factor, mul, src_item, o1, o2))
 
     @staticmethod
     def key(item, attr):
@@ -536,22 +545,23 @@ class Batch:
         a = ds.a
         K = self.key
         ship = fit.ship
-        for i, sp in [r for r in self.special_rows if self.it_fit[r[0]] == fit.index]:
+        for i, sp, sq in self.special_rows.get(fit.index, ()):
             cat = self.meta[i]["category"]
+            o = (i, sq)
             if sp in (SPECIAL_AB, SPECIAL_MWD):
-                self.push(ship, 4, 2, SRC_ATTR, K(i, a("massAddition")), src_item=i, src_cat=cat)
+                self.push(ship, 4, 2, SRC_ATTR, K(i, a("massAddition")), src_item=i, src_cat=cat, order=o)
                 self.push(ship, a("maxVelocity"), 4, SRC_PROP, K(i, a("speedFactor")), K(i, a("speedBoostFactor")),
-                          K(ship, 4), src_item=i, src_cat=cat)
+                          K(ship, 4), src_item=i, src_cat=cat, order=o)
                 if sp == SPECIAL_MWD:
-                    self.push(ship, a("signatureRadius"), 6, SRC_ATTR, K(i, a("signatureRadiusBonus")), src_item=i, src_cat=cat)
+                    self.push(ship, a("signatureRadius"), 6, SRC_ATTR, K(i, a("signatureRadiusBonus")), src_item=i, src_cat=cat, order=o)
             elif sp == SPECIAL_MJD:
-                self.push(ship, a("signatureRadius"), 6, SRC_ATTR, K(i, a("signatureRadiusBonusPercent")), src_item=i, src_cat=6)
+                self.push(ship, a("signatureRadius"), 6, SRC_ATTR, K(i, a("signatureRadiusBonusPercent")), src_item=i, src_cat=6, order=o)
             elif sp == SPECIAL_SLOT:
                 for t, s in (("hiSlots", "hiSlotModifier"), ("medSlots", "medSlotModifier"), ("lowSlots", "lowSlotModifier")):
-                    self.push(ship, a(t), 2, SRC_ATTR, K(i, a(s)), src_item=i, src_cat=cat)
+                    self.push(ship, a(t), 2, SRC_ATTR, K(i, a(s)), src_item=i, src_cat=cat, order=o)
             elif sp == SPECIAL_HARDPOINT:
                 for t, s in (("turretSlotsLeft", "turretHardPointModifier"), ("launcherSlotsLeft", "launcherHardPointModifier")):
-                    self.push(ship, a(t), 2, SRC_ATTR, K(i, a(s)), src_item=i, src_cat=cat)
+                    self.push(ship, a(t), 2, SRC_ATTR, K(i, a(s)), src_item=i, src_cat=cat, order=o)
         for i in fit.items:
             if self.meta[i]["kind"] == PROJECTED:
                 self._register_projected(fit, i)
@@ -568,8 +578,7 @@ class Batch:
                 agg[b["buff_id"]] = min(agg[b["buff_id"]], b["value"])
             else:
                 agg[b["buff_id"]] = max(agg[b["buff_id"]], b["value"])
-        for bid in sorted(agg):
-            self.apply_buff(fit, bid, SRC_CONST, -1, agg[bid], ship)
+        fit.explicit_buffs = agg  # applied in run() together with the bursts, sorted by buff id
 
     def _register_projected(self, fit, i):
         ds = self.ds
@@ -582,7 +591,7 @@ class Batch:
         for (k_item, k_attr), v in self.overrides.items():
             if k_item == i:
                 base[k_attr] = v
-        for eid, _ in it["effects"]:
+        for en, (eid, _) in enumerate(it["effects"]):
             e = ds.eff_info.get(eid)
             if e is None or e["category"] not in (2, 3):
                 continue
@@ -595,7 +604,7 @@ class Batch:
 
             def push(tattr, sattr, op):
                 self.push(ship, tattr, op, SRC_PROJ, K(i, sattr), -1, K(ship, resist) if resist else -1,
-                          factor=factor, mul=op in (0, 4), src_item=i, src_cat=it["category"])
+                          factor=factor, mul=op in (0, 4), src_item=i, src_cat=it["category"], order=(i, en))
 
             if e["mods"]:
                 for f, dom, mod_, mding, op, extra in e["mods"]:
@@ -652,7 +661,7 @@ def range_factor(optimal, falloff, distance, restricted):
 
 
 # ====================================================================== evaluation
-MOD_COLS = ("tgt", "attr", "op", "pen", "kind", "a", "b", "c", "const", "factor", "mul", "src_item")
+MOD_COLS = ("tgt", "attr", "op", "pen", "kind", "a", "b", "c", "const", "factor", "mul", "src_item", "o1", "o2")
 
 
 def _round_half_away(x):
@@ -780,7 +789,8 @@ def evaluate(batch, fit_mask=None):
     if not work.any():
         return Evaluated(keys, val, base)
     mlev = lev[tgt]
-    order = np.argsort(mlev, kind="stable")
+    reg = np.lexsort((M["o2"], M["o1"]))  # registration order (like the reference engine)
+    order = reg[np.argsort(mlev[reg], kind="stable")]
     mstarts = np.searchsorted(mlev[order], np.arange(MAX_LEVELS + 2))
     nodes_by_lev = np.argsort(lev, kind="stable")
     nstarts = np.searchsorted(lev[nodes_by_lev], np.arange(MAX_LEVELS + 2))
@@ -827,50 +837,56 @@ def evaluate(batch, fit_mask=None):
             if asg.any():
                 h = hig[M["attr"][mi[asg]]]
                 np.maximum.at(assign, flat[asg], np.where(h, sv[asg], -sv[asg]))
-            addv = np.zeros(9 * nl)
-            ad = (op == 2) | (op == 3)
-            if ad.any():
-                np.add.at(addv, flat[ad], sv[ad])
-            mulv = np.ones(9 * nl)
-            mu = ~asg & ~ad
+            # multiplicative operators -> factor per row; stacking penalty by rank inside its group
+            mu = ~asg & (op != 2) & (op != 3)
+            fac = np.ones(len(mi))
+            seqk = np.zeros(len(mi))  # application order inside a (node, stage): unpenalised rows first
             if mu.any():
                 mv = sv[mu]
                 o = op[mu]
-                with np.errstate(divide="ignore"):
-                    inv = np.where(mv == 0.0, 1.0, 1.0 / np.where(mv == 0.0, 1.0, mv))
-                mm = np.where((o == 0) | (o == 4), mv, np.where((o == 1) | (o == 5), inv,
+                safe = np.where(mv == 0.0, 1.0, mv)
+                mm = np.where((o == 0) | (o == 4), mv, np.where((o == 1) | (o == 5), 1.0 / safe,
                                                                 np.where(o == 6, 1.0 + mv / 100.0, 1.0)))
-                pen = M["pen"][mi[mu]] & (mm != 1.0)
-                fac = mm.copy()
-                if pen.any():
-                    pm = mm[pen]
-                    grp = flat[mu][pen] * 2 + (pm < 1.0)
-                    srt = np.lexsort((-np.abs(pm - 1.0), grp))
+                pen = M["pen"][mi[mu]]
+                f_mu = mm.copy()
+                k_mu = np.zeros(len(mm))
+                pidx = np.nonzero(pen & (mm != 1.0))[0]
+                if len(pidx):
+                    pm = mm[pidx]
+                    neg = pm < 1.0
+                    grp = flat[mu][pidx] * 2 + neg
+                    srt = np.lexsort((np.arange(len(pm)), -np.abs(pm - 1.0), grp))
                     g_s = grp[srt]
                     first = np.r_[True, g_s[1:] != g_s[:-1]]
                     start = np.maximum.accumulate(np.where(first, np.arange(len(g_s)), 0))
-                    rank = np.arange(len(g_s)) - start
-                    pf = np.empty(len(pm))
-                    pf[srt] = 1.0 + (pm[srt] - 1.0) * np.exp(-(rank * rank) / PENALTY_DENOM)
-                    fac[pen] = pf
-                np.multiply.at(mulv, flat[mu], fac)
+                    rank = np.empty(len(pm))
+                    rank[srt] = np.arange(len(g_s)) - start
+                    f_mu[pidx] = 1.0 + (pm - 1.0) * np.exp(-(rank * rank) / PENALTY_DENOM)
+                    k_mu[pidx] = 1.0 + neg + rank / (len(pm) + 1.0)
+                # penalised rows with factor exactly 1 are dropped (no-op)
+                k_mu[pen & (mm == 1.0)] = 3.0
+                fac[mu] = f_mu
+                seqk[mu] = k_mu
             attr_n = node_attr[nodes]
             hn = hig[attr_n]
-            for s, opv in enumerate(OP_STAGES):
-                sl = slice(s * nl, (s + 1) * nl)
+            for s_, opv in enumerate(OP_STAGES):
+                sl = slice(s_ * nl, (s_ + 1) * nl)
                 pr = present[sl]
                 if not pr.any():
                     continue
+                sel = st == s_
                 if opv in (-1, 7):
                     a = assign[sl]
                     a = np.where(hn, a, -a)
                     v = np.where(pr, a, v)
                 elif opv == 2:
-                    v = v + addv[sl]
+                    np.add.at(v, t_loc[sel], sv[sel])
                 elif opv == 3:
-                    v = v - addv[sl]
+                    np.subtract.at(v, t_loc[sel], sv[sel])
                 else:
-                    v = v * mulv[sl]
+                    j = np.nonzero(sel)[0]
+                    j = j[np.argsort(seqk[j], kind="stable")]  # rows are already in registration order
+                    np.multiply.at(v, t_loc[j], fac[j])
         for has, ci, fb in cap_node:
             hs = has[nodes]
             if hs.any():
@@ -968,12 +984,23 @@ def run(batch):
                 if i in tgt_attrs or any(ds.type_attr(ti, a) is not None for a in id_attrs) or \
                         any((i, a) in batch.overrides for a in id_attrs):
                     need[fit.index] = True
-    if need.any():
-        vals = Values(batch, evaluate(batch, need))
-        for fit in batch.fits:
-            if not need[fit.index]:
-                continue
-            explicit = {b["buff_id"] for b in fit.req["fleet"]["buffs"]}
+    vals = Values(batch, evaluate(batch, need)) if need.any() else None
+    for fit in batch.fits:
+        fit.warnings.extend(getattr(fit, "booster_warnings", None) or [])
+        offers = getattr(fit, "booster_offers", None) or []
+        explicit = fit.explicit_buffs
+        if not need[fit.index] and not offers and not explicit:
+            continue
+        # Pyfa keeps per buff id the single strongest (|value|) source among the fit's own bursts and the
+        # fleet booster fits; explicit fleet.buffs (already registered) override both.
+        best = {}
+
+        def offer(bid, v, src):
+            old = best.get(bid)
+            if old is None or abs(old[0]) < abs(v):
+                best[bid] = (v, src)
+
+        if need[fit.index]:
             for i in fit.modules:
                 if batch.meta[i]["state"] < ACTIVE:
                     continue
@@ -981,7 +1008,16 @@ def run(batch):
                     bid = int(vals.get(i, ida)) if vals.has(i, ida) else 0
                     if bid == 0 or bid in explicit:
                         continue
-                    batch.apply_buff(fit, bid, SRC_ATTR, Batch.key(i, vala), 0.0, i)
+                    offer(bid, vals.get(i, vala), (SRC_ATTR, Batch.key(i, vala), 0.0, i))
+        for bid, v in offers:
+            if bid == 0 or bid in explicit:
+                continue
+            offer(bid, v, (SRC_CONST, -1, v, fit.ship))
+        for bid, v in explicit.items():
+            best[bid] = (v, (SRC_CONST, -1, v, fit.ship))
+        for bid in sorted(best):
+            kind, akey, const, src_item = best[bid][1]
+            batch.apply_buff(fit, bid, kind, akey, const, src_item)
     # ---- Reactive Armor Hardener adaptation (sequential per RAH, like the reference)
     eid = ds.e("adaptiveArmorHardener")
     if eid:

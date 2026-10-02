@@ -1,0 +1,259 @@
+{
+ "variant": "variant-g-local",
+ "cmd": "/workspace/exct-eve/lab-g/variant-g/bin/eve-dogma-g --dataset /workspace/exct-eve/data/dataset-3569502.json.gz calc",
+ "batch_cmd": "/workspace/exct-eve/lab-g/variant-g/bin/eve-dogma-g --dataset /workspace/exct-eve/data/dataset-3569502.json.gz batch",
+ "cases": 226,
+ "cases_fully_correct": 226,
+ "values_correct": 10732,
+ "values_total": 10732,
+ "accuracy": 1.0,
+ "groups": {
+  "capacitor": {
+   "ok": 792,
+   "total": 792
+  },
+  "defense": {
+   "ok": 4066,
+   "total": 4066
+  },
+  "fitting": {
+   "ok": 2034,
+   "total": 2034
+  },
+  "navigation": {
+   "ok": 1128,
+   "total": 1128
+  },
+  "offense": {
+   "ok": 904,
+   "total": 904
+  },
+  "tank": {
+   "ok": 904,
+   "total": 904
+  },
+  "targeting": {
+   "ok": 904,
+   "total": 904
+  }
+ },
+ "metrics": {
+  "align_time_s": {
+   "ok": 225,
+   "total": 225
+  },
+  "calibration_used": {
+   "ok": 226,
+   "total": 226
+  },
+  "cap_capacity": {
+   "ok": 225,
+   "total": 225
+  },
+  "cap_recharge_s": {
+   "ok": 226,
+   "total": 226
+  },
+  "cap_stable": {
+   "ok": 226,
+   "total": 226
+  },
+  "cap_stable_percent": {
+   "ok": 115,
+   "total": 115
+  },
+  "cpu_total": {
+   "ok": 226,
+   "total": 226
+  },
+  "cpu_used": {
+   "ok": 226,
+   "total": 226
+  },
+  "drone_bandwidth_used": {
+   "ok": 226,
+   "total": 226
+  },
+  "drone_dps": {
+   "ok": 226,
+   "total": 226
+  },
+  "drone_volley": {
+   "ok": 226,
+   "total": 226
+  },
+  "ehp.armor": {
+   "ok": 225,
+   "total": 225
+  },
+  "ehp.hull": {
+   "ok": 226,
+   "total": 226
+  },
+  "ehp.shield": {
+   "ok": 226,
+   "total": 226
+  },
+  "hi_slots": {
+   "ok": 226,
+   "total": 226
+  },
+  "hp.armor": {
+   "ok": 225,
+   "total": 225
+  },
+  "hp.hull": {
+   "ok": 226,
+   "total": 226
+  },
+  "hp.shield": {
+   "ok": 226,
+   "total": 226
+  },
+  "low_slots": {
+   "ok": 226,
+   "total": 226
+  },
+  "mass": {
+   "ok": 226,
+   "total": 226
+  },
+  "max_target_range": {
+   "ok": 226,
+   "total": 226
+  },
+  "max_targets": {
+   "ok": 226,
+   "total": 226
+  },
+  "max_velocity": {
+   "ok": 225,
+   "total": 225
+  },
+  "med_slots": {
+   "ok": 226,
+   "total": 226
+  },
+  "power_total": {
+   "ok": 226,
+   "total": 226
+  },
+  "power_used": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.armor.em": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.armor.explosive": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.armor.kinetic": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.armor.thermal": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.hull.em": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.hull.explosive": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.hull.kinetic": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.hull.thermal": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.shield.em": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.shield.explosive": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.shield.kinetic": {
+   "ok": 226,
+   "total": 226
+  },
+  "res.shield.thermal": {
+   "ok": 226,
+   "total": 226
+  },
+  "scan_resolution": {
+   "ok": 226,
+   "total": 226
+  },
+  "scan_strength": {
+   "ok": 226,
+   "total": 226
+  },
+  "signature_radius": {
+   "ok": 226,
+   "total": 226
+  },
+  "tank.armor": {
+   "ok": 226,
+   "total": 226
+  },
+  "tank.hull": {
+   "ok": 226,
+   "total": 226
+  },
+  "tank.passive": {
+   "ok": 226,
+   "total": 226
+  },
+  "tank.shield": {
+   "ok": 226,
+   "total": 226
+  },
+  "warp_speed": {
+   "ok": 226,
+   "total": 226
+  },
+  "weapon_dps": {
+   "ok": 226,
+   "total": 226
+  },
+  "weapon_volley": {
+   "ok": 226,
+   "total": 226
+  }
+ },
+ "errors": 0,
+ "perf": {
+  "single_process_per_case_ms": {
+   "median": 214.67982000103802,
+   "min": 144.77710299979663,
+   "max": 293.22358399804216
+  },
+  "batch_corpus": {
+   "requests": 1130,
+   "total_s": 7.252238241999294,
+   "fits_per_s": 155.813965605256,
+   "avg_ms_incl_startup": 6.417909948671941,
+   "responses": 1130,
+   "exit": 0
+  },
+  "latency_one_fit": {
+   "case": "exct_rifter",
+   "n": 500,
+   "startup_plus_one_ms": 251.1734450017684,
+   "per_calc_ms": 4.999306801588621
+  },
+  "deterministic": true
+ },
+ "host": "x86_64",
+ "time": "2026-10-03T04:13:35+0800"
+}
