@@ -72,6 +72,11 @@ pub struct Frozen {
 }
 
 /// weapon / mining effects of projected items: they damage the target, not part of its own stats
+/// 0 = the launcher, 1 = its charge
+fn x_ent(which: u32, launcher: Entity, charge: Entity) -> Entity {
+    if which == 0 { launcher } else { charge }
+}
+
 const DAMAGE_EFFECTS: &[&str] = &["projectileFired", "targetAttack", "useMissiles", "barrage", "targetDisintegratorAttack",
     "missileLaunchingForEntity", "fighterAbilityAttackM", "fighterAbilityMissiles", "superWeaponAmarr", "superWeaponCaldari",
     "superWeaponGallente", "superWeaponMinmatar", "mining", "miningLaser", "miningClouds", "dotMissileLaunching"];
@@ -712,8 +717,9 @@ impl<'a> Fit<'a> {
                 let Some(eff) = ds.effects.get(&eid) else { continue };
                 let name = eff.name.as_str();
                 // category-1 effects that Pyfa still applies when projected (ECM bursts, lockbreaker bombs)
+                let launcher_group = if name == "useMissiles" { ds.group_names.get(&it.group).map(|g| g.as_str()) } else { None };
                 let projected_active = matches!(name, "ECMBurstJammer" | "doomsdayAOEECM")
-                    || (name == "useMissiles" && ds.group_names.get(&it.group).map(|g| g == "Missile Launcher Bomb").unwrap_or(false));
+                    || matches!(launcher_group, Some("Missile Launcher Bomb" | "Interdiction Sphere Launcher"));
                 if (eff.category != 2 && eff.category != 3 && !projected_active) || state < State::Active {
                     continue;
                 }
@@ -765,7 +771,7 @@ impl<'a> Fit<'a> {
                         "fighterAbilityEnergyNeutralizer" => specials.push((e, Special::Drain(IncomingDrain {
                             amount_attr: ds.attr_id("fighterAbilityEnergyNeutralizerAmount"),
                             duration_attr: ds.attr_id("fighterAbilityEnergyNeutralizerDuration"),
-                            factor, resist, sign: 1.0,
+                            bomb: None, factor, resist, sign: 1.0,
                         }))),
                         "fighterAbilityECM" if !no_offense => specials.push((e, Special::Ecm(IncomingEcm { src: e, fighter: true, factor, resist }))),
                         _ => {}
@@ -773,11 +779,27 @@ impl<'a> Fit<'a> {
                     continue;
                 }
                 if name == "useMissiles" {
-                    // lockbreaker bombs jam (strength on the charge)
-                    if let Some(ch) = v.charge(e) {
-                        if !no_offense {
-                            specials.push((e, Special::Ecm(IncomingEcm { src: ch, fighter: false, factor: 1.0, resist })));
+                    // Pyfa's projected launcher rules: no range, resist or offensive-modifier checks
+                    let Some(ch) = v.charge(e) else { continue };
+                    let c = self.calc();
+                    // missing attributes read as their defaults, like Pyfa's getModified*Attr
+                    let get = |x: u32, y: u32| if y != 0 { c.get(x_ent(x, e, ch), y) } else { 0.0 };
+                    if launcher_group == Some("Missile Launcher Bomb") {
+                        // void bombs: a cap drain every (speed + reactivation delay)
+                        let (delay, amount, speed) = (get(0, a.reactivation), get(1, a.neut_amount), get(0, a.speed));
+                        if delay != 0.0 && amount != 0.0 && speed != 0.0 {
+                            specials.push((e, Special::Drain(IncomingDrain {
+                                amount_attr: a.neut_amount, duration_attr: a.speed, bomb: Some((ch, a.reactivation)),
+                                factor: 1.0, resist: 0, sign: 1.0,
+                            })));
                         }
+                        // lockbreaker bombs jam (strength on the charge)
+                        specials.push((e, Special::Ecm(IncomingEcm { src: ch, fighter: false, factor: 1.0, resist: 0 })));
+                    } else if get(1, a.speed_factor) != 0.0 {
+                        // interdiction sphere: unpenalized speed boost from the probe's speedFactor
+                        drop(c);
+                        pend.push(PendingMod { target: ship, attr: a.max_velocity,
+                            m: Mod { op: 6, penalized: false, src: Src::Attr { e: ch, attr: a.speed_factor } } });
                     }
                     continue;
                 }
@@ -840,7 +862,7 @@ impl<'a> Fit<'a> {
             if no_assist { vec![] } else { vec![(e, Special::Rep(IncomingRep { layer, amount_attr, mult, factor }))] }
         };
         let drain = |amount_attr: u32, duration_attr: u32, factor: f64, sign: f64| {
-            vec![(e, Special::Drain(IncomingDrain { amount_attr, duration_attr, factor, resist, sign }))]
+            vec![(e, Special::Drain(IncomingDrain { amount_attr, duration_attr, bomb: None, factor, resist, sign }))]
         };
         let paste = self
             .world

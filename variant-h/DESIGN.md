@@ -94,7 +94,10 @@ A cycle guard returns the base value. Systems that need evaluated values (buff i
   `serve-stdio`. Export reimplements the behaviour of Pyfa's EFT exporter, checked black-box. No Pyfa code is used.
 - Known divergences from Pyfa are the bench's `known_divergences.json` entries: invalid fits and SDE/eve.db data
   drift.
-- Void bombs (projected cap drain from a bomb charge) are not modelled. Lockbreaker bomb ECM is modelled.
+- Projected bomb launchers follow Pyfa's rules. Void and focused void bombs drain the charge's
+  `energyNeutralizerAmount` every `speed + moduleReactivationDelay`. Lockbreaker bombs add jam strength with no
+  resist. The interdiction sphere gives an unpenalized `maxVelocity` boost of the probe's `speedFactor`
+  (attribute default when the type doesn't set it).
 
 ## Performance notes
 

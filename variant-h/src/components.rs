@@ -148,6 +148,8 @@ pub struct IncomingEcm {
 pub struct IncomingDrain {
     pub amount_attr: u32,
     pub duration_attr: u32,
+    /// void bombs: amount read from the loaded charge, duration = launcher `speed` + this attribute
+    pub bomb: Option<(hecs::Entity, u32)>,
     pub factor: f64,
     pub resist: u32,
     pub sign: f64,

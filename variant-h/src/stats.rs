@@ -531,7 +531,8 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     let sig_now = g(ship, a.sig);
     for (e, d) in in_spawn_order::<IncomingDrain>(fit) {
         {
-            let mut need = g(e, d.amount_attr) * d.factor * d.sign;
+            let amount_src = d.bomb.map(|b| b.0).unwrap_or(e);
+            let mut need = g(amount_src, d.amount_attr) * d.factor * d.sign;
             if d.resist != 0 {
                 need *= g(ship, d.resist);
             }
@@ -539,7 +540,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             if sres != 0.0 {
                 need *= (sig_now / sres).min(1.0);
             }
-            let dur = g(e, d.duration_attr);
+            let dur = g(e, d.duration_attr) + d.bomb.map(|b| g(e, b.1)).unwrap_or(0.0);
             if need != 0.0 && dur > 0.0 {
                 // like Pyfa's capUsed / capRecharge, incoming drains and transfers count in the rates
                 let rate = need / (dur.trunc() / 1000.0);

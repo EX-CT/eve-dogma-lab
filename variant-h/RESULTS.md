@@ -55,6 +55,12 @@ Every output leaf was compared, abs 1e-6 / rel 1e-9, against A's working-tree bu
 | component queries for incoming effects | 0.997 G |
 | + ECM/fighter abilities/EFT tools (same 249 fits) | 1.006 G |
 
+## Bomb launchers (local Pyfa oracle)
+
+- 6 local cases (void bomb, 2x focused void, lockbreaker, lockbreaker + void, interdiction sphere, 2x surgical
+  probe): **6/6 cases, 375/375 values** match Pyfa. Reference A doesn't model these yet: 0/6 identical to A (cap,
+  sustained tank, jam chance, velocity).
+
 ## Helpers (contract v1.4.1)
 
 - `eft` import of all 129 fits in A's tests/fits: **129/129 identical** FitRequests to A.
