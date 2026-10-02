@@ -20,6 +20,41 @@ public sealed class PropulsionRule : IEffectRule
     }
 }
 
+/// <summary>
+/// Fighter self abilities without modifierInfo (Pyfa hand-written handlers, eos LGPL): afterburner / MWD / evasive
+/// maneuvers boost the squadron's own speed, signature and shield resonances while the ability is on.
+/// </summary>
+public sealed class FighterSelfAbilityRule : IEffectRule
+{
+    private static readonly Dictionary<string, (string Target, string Source, Op Op)[]> Table = new()
+    {
+        ["fighterAbilityMicroWarpDrive"] = new[]
+        {
+            ("maxVelocity", "fighterAbilityMicroWarpDriveSpeedBonus", Op.PostPercent),
+            ("signatureRadius", "fighterAbilityMicroWarpDriveSignatureRadiusBonus", Op.PostPercent),
+        },
+        ["fighterAbilityAfterburner"] = new[] { ("maxVelocity", "fighterAbilityAfterburnerSpeedBonus", Op.PostPercent) },
+        ["fighterAbilityEvasiveManeuvers"] = new[]
+        {
+            ("maxVelocity", "fighterAbilityEvasiveManeuversSpeedBonus", Op.PostPercent),
+            ("signatureRadius", "fighterAbilityEvasiveManeuversSignatureRadiusBonus", Op.PostPercent),
+            ("shieldEmDamageResonance", "fighterAbilityEvasiveManeuversEmResonance", Op.PostMul),
+            ("shieldThermalDamageResonance", "fighterAbilityEvasiveManeuversThermResonance", Op.PostMul),
+            ("shieldKineticDamageResonance", "fighterAbilityEvasiveManeuversKinResonance", Op.PostMul),
+            ("shieldExplosiveDamageResonance", "fighterAbilityEvasiveManeuversExpResonance", Op.PostMul),
+        },
+    };
+
+    public string Name => "fighter-self-ability";
+    public bool Matches(EffectInfo e, KnownIds k) => e.Modifiers.Length == 0 && Table.ContainsKey(e.Name);
+    public void Apply(in EffectContext c)
+    {
+        if (c.Item.Kind != ItemKind.Fighter) return;
+        foreach (var (target, source, op) in Table[c.Effect.Name])
+            c.Fit.AddModifier(c.Source, c.Ds.AttrIdOf(target), op, c.FromSelf(c.Ds.AttrIdOf(source)), c.Source, c.SourceCategory);
+    }
+}
+
 /// <summary>Micro jump drive signature bloom; unlike the MWD's it is not stacking penalised.</summary>
 public sealed class MicroJumpDriveRule : IEffectRule
 {

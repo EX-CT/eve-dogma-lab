@@ -148,7 +148,7 @@ public static class FitBuilder
     }
 
     /// <summary>Pyfa default: standard attack on; other abilities (except MWD/evasive/MJD) only if listed before it.</summary>
-    private static int[] PyfaDefaultAbilities(Dataset ds, Item it)
+    internal static int[] PyfaDefaultAbilities(Dataset ds, Item it)
     {
         var on = new List<int>();
         bool stdSeen = false;
@@ -198,7 +198,22 @@ public static class FitBuilder
                         fit[idx].DistanceM = p.DistanceM;
                     }
                     break;
-                case "module": case "drone": case "fit": break;
+                case "fighter" when p.Fighter != null:
+                    for (int n = 0; n < Math.Max(p.Amount, 1); n++)
+                    {
+                        int idx = NewItem(fit, p.Fighter.TypeId, ItemKind.Projected, ItemLocation.Nowhere, $"/projected/{i}");
+                        var it = fit[idx];
+                        int maxSq = Math.Max(fit.Has(idx, fit.K.FighterSquadronMaxSize) ? (int)fit.Base(idx, fit.K.FighterSquadronMaxSize) : 1, 1);
+                        it.Owned = false;
+                        it.State = p.Fighter.Active ? ModuleState.Active : ModuleState.Offline;
+                        it.Quantity = Math.Clamp(p.Fighter.Quantity ?? maxSq, 1, maxSq);
+                        it.ActiveCount = it.Quantity;
+                        it.DistanceM = p.DistanceM;
+                        it.RequestIndex = i;
+                        it.FighterAbilities = p.Fighter.Abilities ?? PyfaDefaultAbilities(fit.Ds, it);
+                    }
+                    break;
+                case "module": case "drone": case "fit": case "fighter": break;
                 default: fit.Warnings.Add($"projected kind '{p.Kind}' not supported yet (index {i})"); break;
             }
         }
@@ -217,21 +232,22 @@ public static class FitBuilder
             fit.Warnings.Add($"projected[{i}] fit: EngineError {{ code: \"{e.Code}\", message: \"{e.Message}\", path: \"{e.Path}\" }}");
             return;
         }
-        var frozen = new List<(int TypeId, int Copies, List<(AttrId, double)> Values)>();
+        var frozen = new List<(int TypeId, int Copies, List<(AttrId, double)> Values, Item Source)>();
         foreach (var it in src.Items)
         {
             int copies = it.Kind switch
             {
                 ItemKind.Module when it.State >= ModuleState.Active => 1,
                 ItemKind.Drone => it.ActiveCount,
+                ItemKind.Fighter when it.State >= ModuleState.Active => 1,
                 _ => 0,
             };
             if (copies == 0) continue;
             var keys = new SortedSet<int>(it.Nodes.Keys);
             foreach (var (a, _) in it.BaseAttrs.Entries()) keys.Add(a.Value);
-            frozen.Add((it.TypeId, copies, keys.Select(k => (new AttrId(k), src.Get(it.Index, new AttrId(k)))).ToList()));
+            frozen.Add((it.TypeId, copies, keys.Select(k => (new AttrId(k), src.Get(it.Index, new AttrId(k)))).ToList(), it));
         }
-        foreach (var (typeId, copies, values) in frozen)
+        foreach (var (typeId, copies, values, source) in frozen)
             for (int n = 0; n < copies * Math.Max(p.Amount, 1); n++)
             {
                 int idx = NewItem(fit, typeId, ItemKind.Projected, ItemLocation.Nowhere, $"/projected/{i}");
@@ -239,6 +255,12 @@ public static class FitBuilder
                 it.State = ModuleState.Active;
                 it.DistanceM = p.DistanceM;
                 it.RequestIndex = i;
+                if (source.Kind == ItemKind.Fighter)
+                {
+                    it.Quantity = source.Quantity;
+                    it.ActiveCount = source.Quantity;
+                    it.FighterAbilities = source.FighterAbilities;
+                }
                 foreach (var (a, v) in values) fit.SetBase(idx, a, v);
             }
     }

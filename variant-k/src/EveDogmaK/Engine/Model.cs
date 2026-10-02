@@ -107,4 +107,7 @@ public abstract record IncomingEffect(int Item);
 public sealed record IncomingRepair(int Item, int Layer, AttrId Amount, double Mult, double Factor) : IncomingEffect(Item);
 
 /// <summary>Capacitor drain (Sign +1: neut/nos) or fill (Sign -1: cap transfer) per cycle of the Duration attr.</summary>
+/// <summary>ECM jammer aimed at this ship (Pyfa addProjectedEcm): strength attrs per sensor type, times Factor, resisted by Resist.</summary>
+public sealed record IncomingEcm(int Item, bool Fighter, double Factor, AttrId Resist) : IncomingEffect(Item);
+
 public sealed record IncomingCapacitor(int Item, AttrId Amount, AttrId Duration, double Factor, AttrId Resist, double Sign) : IncomingEffect(Item);

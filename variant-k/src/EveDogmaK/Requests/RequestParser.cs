@@ -45,8 +45,7 @@ public static class RequestParser
         }
         var modules = Arr(e, "modules", path, (x, p) => Module(x, p));
         var drones = Arr(e, "drones", path, (x, p) => Drone(x, p));
-        var fighters = Arr(e, "fighters", path, (x, p) => new FighterReq(ReqInt(x, "type_id", p), OptInt(x, "quantity", p),
-            OptBool(x, "active", p) ?? true, Opt(x, "abilities") is { ValueKind: JsonValueKind.Array } ab ? ab.EnumerateArray().Select(a => Int(a, p)).ToArray() : null));
+        var fighters = Arr(e, "fighters", path, (x, p) => Fighter(x, p));
         var implants = Arr(e, "implants", path, (x, p) => Int(x, p));
         var boosters = Arr(e, "boosters", path, (x, p) => new BoosterReq(ReqInt(x, "type_id", p),
             Opt(x, "side_effects") is { ValueKind: JsonValueKind.Array } se ? se.EnumerateArray().Select(a => Int(a, p)).ToArray() : Array.Empty<int>()));
@@ -63,7 +62,8 @@ public static class RequestParser
             Opt(x, "module") is { ValueKind: JsonValueKind.Object } m ? Module(m, p + "/module") : null,
             Opt(x, "drone") is { ValueKind: JsonValueKind.Object } d ? Drone(d, p + "/drone") : null,
             Opt(x, "fit") is { ValueKind: JsonValueKind.Object } f ? Fit(f, p + "/fit") : null,
-            OptInt(x, "amount", p) ?? 1, OptNum(x, "distance_m", p)));
+            OptInt(x, "amount", p) ?? 1, OptNum(x, "distance_m", p),
+            Opt(x, "fighter") is { ValueKind: JsonValueKind.Object } fi ? Fighter(fi, p + "/fighter") : null));
         var envEffects = new List<int>(); string? secLevel = null;
         if (Opt(e, "environment") is { } env)
         {
@@ -106,6 +106,9 @@ public static class RequestParser
         OptInt(x, "charge_type_id", p),
         Opt(x, "mutation") is { ValueKind: JsonValueKind.Object } m ? MutationOf(m, p + "/mutation") : null,
         Opt(x, "spool") is { ValueKind: JsonValueKind.Object } sp ? SpoolOf(sp, p + "/spool") : null);
+
+    private static FighterReq Fighter(JsonElement x, string p) => new(ReqInt(x, "type_id", p), OptInt(x, "quantity", p),
+        OptBool(x, "active", p) ?? true, Opt(x, "abilities") is { ValueKind: JsonValueKind.Array } ab ? ab.EnumerateArray().Select(a => Int(a, p)).ToArray() : null);
 
     private static DroneReq Drone(JsonElement x, string p) => new(ReqInt(x, "type_id", p), OptInt(x, "quantity", p) ?? 1,
         OptInt(x, "active", p), Opt(x, "mutation") is { ValueKind: JsonValueKind.Object } m ? MutationOf(m, p + "/mutation") : null);

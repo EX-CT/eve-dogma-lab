@@ -28,7 +28,7 @@ public sealed class RuleBook
 
     public static RuleBook Create() => new(
         gates: new IEffectGate[] { new StructureSkillGate(), new BoosterSideEffectGate(), new FighterAbilityGate(), new StateGate() },
-        rules: new IEffectRule[] { new PropulsionRule(), new MicroJumpDriveRule(), new SlotModifierRule(), new HardpointModifierRule(), new DataDrivenModifierRule() },
+        rules: new IEffectRule[] { new FighterSelfAbilityRule(), new PropulsionRule(), new MicroJumpDriveRule(), new SlotModifierRule(), new HardpointModifierRule(), new DataDrivenModifierRule() },
         projected: new IProjectedRule[]
         {
             new DataDrivenProjectedRule(), NamedProjectedRule.Webifier, NamedProjectedRule.TargetPainter,

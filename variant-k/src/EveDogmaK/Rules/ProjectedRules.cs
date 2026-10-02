@@ -47,7 +47,7 @@ public sealed class NamedProjectedRule : IProjectedRule
 }
 
 /// <summary>Registers effects projected onto this fit: range factor from the projector's optimal/falloff, resisted by the target attribute.</summary>
-public static class ProjectedRegistration
+public static partial class ProjectedRegistration
 {
     public static void Register(Fit fit, int i, IReadOnlyList<IProjectedRule> rules)
     {
@@ -56,12 +56,15 @@ public static class ProjectedRegistration
         foreach (var eref in it.Effects)
         {
             var e = fit.Ds.Effect(eref.Id);
-            if (e == null || e.Category is not (EffectCategory.Target or EffectCategory.Area)) continue;
+            if (e == null || (e.Category is not (EffectCategory.Target or EffectCategory.Area) && e.Name != "ECMBurstJammer")) continue;
+            bool isFighterAbility = e.Name.StartsWith("fighterAbility", StringComparison.Ordinal);
+            if (isFighterAbility && it.FighterAbilities is { } on && Array.IndexOf(on, eref.Id.Value) < 0) continue;
             if (it.State < ModuleState.Active) continue;
             double opt = e.RangeAttr is { } ra && fit.Has(i, ra) ? fit.Base(i, ra) : 0.0;
             double fo = e.FalloffAttr is { } fa && fit.Has(i, fa) ? fit.Base(i, fa) : 0.0;
             double factor = Formulas.RangeFactor(opt, fo, it.DistanceM, restricted: true);
-            AttrId resist = e.ResistanceAttr ?? (fit.Has(i, fit.K.RemoteResistanceId) ? new AttrId((int)fit.Base(i, fit.K.RemoteResistanceId)) : AttrId.None);
+            AttrId resist = e.ResistanceAttr ?? ResistanceOf(fit, i, e, isFighterAbility);
+            if (e.Modifiers.Length == 0 && FighterProjectedAbilities.TryApply(fit, i, e.Name, resist)) continue;
             var rule = rules.FirstOrDefault(r => r.Matches(e));
             if (rule == null)
             {
@@ -74,6 +77,60 @@ public static class ProjectedRegistration
                 bool mul = op is Op.PostMul or Op.PreMul;
                 fit.AddModifier(ship, target, op, ModSource.Projected(i, source, factor, ship, resist, mul), i, it.Category);
             }
+        }
+    }
+}
+
+public static partial class ProjectedRegistration
+{
+    /// <summary>Resistance attribute named by the projector: fighter abilities carry per-ability resistance ids.</summary>
+    private static AttrId ResistanceOf(Fit fit, int i, EffectInfo e, bool isFighterAbility)
+    {
+        AttrId Look(string name)
+        {
+            var a = fit.Ds.AttrIdOf(name);
+            return !a.IsNone && fit.Has(i, a) ? new AttrId((int)fit.Base(i, a)) : AttrId.None;
+        }
+        if (!isFighterAbility) return Look("remoteResistanceID");
+        var r = Look(e.Name + "ResistanceID");
+        return !r.IsNone ? r : Look(e.Name + "RemoteResistanceID");
+    }
+
+    internal static bool OffensiveAllowed(Fit fit)
+    {
+        var a = fit.Ds.AttrIdOf("disallowOffensiveModifiers");
+        return a.IsNone || !fit.Has(fit.Ship, a) || fit.Base(fit.Ship, a) == 0.0;
+    }
+}
+
+/// <summary>
+/// Projected fighter abilities without modifierInfo (Pyfa hand-written handlers, eos LGPL): their range attributes are
+/// ability-specific and the strength scales with the squadron size.
+/// </summary>
+public static class FighterProjectedAbilities
+{
+    public static bool TryApply(Fit fit, int i, string effectName, AttrId resist)
+    {
+        var it = fit[i];
+        int ship = fit.Ship;
+        double qty = Math.Max(it.Quantity, 1);
+        AttrId A(string n) => fit.Ds.AttrIdOf(n);
+        double Base(string n) { var a = A(n); return fit.Has(i, a) ? fit.Base(i, a) : 0.0; }
+        switch (effectName)
+        {
+            case "fighterAbilityStasisWebifier":
+                if (ProjectedRegistration.OffensiveAllowed(fit))
+                {
+                    double f = Formulas.RangeFactor(Base("fighterAbilityStasisWebifierOptimalRange"), Base("fighterAbilityStasisWebifierFalloffRange"), it.DistanceM, restricted: true) * qty;
+                    fit.AddModifier(ship, fit.K.MaxVelocity, Op.PostPercent, ModSource.Projected(i, A("fighterAbilityStasisWebifierSpeedPenalty"), f, ship, resist, false), i, it.Category);
+                }
+                return true;
+            case "fighterAbilityWarpDisruption":
+                if (ProjectedRegistration.OffensiveAllowed(fit) && Base("fighterAbilityWarpDisruptionRange") >= (it.DistanceM ?? 0.0))
+                    fit.AddModifier(ship, fit.K.WarpScrambleStatus, Op.ModAdd, ModSource.Projected(i, A("fighterAbilityWarpDisruptionPointStrength"), qty, ship, resist, false), i, it.Category);
+                return true;
+            default:
+                return false;
         }
     }
 }
@@ -106,6 +163,9 @@ public static class IncomingEffects
             noAssist ? new() : new() { new IncomingRepair(i, layer, A(amount), mult, factor) };
         List<IncomingEffect> Drain(string amount, string duration, double factor, double sign) =>
             new() { new IncomingCapacitor(i, A(amount), A(duration), factor, resist, sign) };
+        bool noOffense = !ProjectedRegistration.OffensiveAllowed(fit);
+        List<IncomingEffect> Ecm(bool fighter, double factor) => noOffense ? new() : new() { new IncomingEcm(i, fighter, factor, resist) };
+        double qty = Math.Max(it.Quantity, 1);
         bool paste = it.Charge >= 0 && fit[it.Charge].Type.Name == "Nanite Repair Paste";
         List<IncomingEffect>? r = name switch
         {
@@ -118,6 +178,12 @@ public static class IncomingEffects
             "npcEntityRemoteHullRepairer" => Rep(2, "structureDamageAmount", 1.0, Gate(Base("maxRange"))),
             "shipModuleRemoteCapacitorTransmitter" => noAssist ? new() : Drain("powerTransferAmount", "duration", Gate(Base("maxRange")), -1.0),
             "energyNeutralizerFalloff" => Drain("energyNeutralizerAmount", "duration", FalloffFactor(), 1.0),
+            "fighterAbilityEnergyNeutralizer" => Drain("fighterAbilityEnergyNeutralizerAmount", "fighterAbilityEnergyNeutralizerDuration",
+                Formulas.RangeFactor(Base("fighterAbilityEnergyNeutralizerOptimalRange"), Base("fighterAbilityEnergyNeutralizerFalloffRange"), it.DistanceM, restricted: true) * qty, 1.0),
+            "remoteECMFalloff" or "structureModuleEffectECM" => Ecm(false, FalloffFactor()),
+            "entityECMFalloff" => Ecm(false, Gate(Base("ECMRangeOptimal"))),
+            "ECMBurstJammer" => Ecm(false, Gate(Base("ecmBurstRange"))),
+            "fighterAbilityECM" => Ecm(true, Formulas.RangeFactor(Base("fighterAbilityECMRangeOptimal"), Base("fighterAbilityECMRangeFalloff"), it.DistanceM, restricted: true) * qty),
             "energyNosferatuFalloff" => Drain("powerTransferAmount", "duration", FalloffFactor(), 1.0),
             "structureEnergyNeutralizerFalloff" => Drain("energyNeutralizerAmount", "duration", 1.0, 1.0),
             "entityEnergyNeutralizerFalloff" => Drain("energyNeutralizerAmount", "energyNeutralizerDuration", Gate(Base("energyNeutralizerRangeOptimal")), 1.0),

@@ -23,7 +23,7 @@ public sealed record CargoReq(int TypeId, int Quantity);
 
 public sealed record Buff(int BuffId, double Value);
 
-public sealed record ProjectedReq(string Kind, ModuleReq? Module, DroneReq? Drone, FitRequest? Fit, int Amount, double? DistanceM);
+public sealed record ProjectedReq(string Kind, ModuleReq? Module, DroneReq? Drone, FitRequest? Fit, int Amount, double? DistanceM, FighterReq? Fighter = null);
 
 public readonly record struct DamageProfile(double Em, double Thermal, double Kinetic, double Explosive)
 {

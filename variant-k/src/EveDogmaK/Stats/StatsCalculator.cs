@@ -321,7 +321,9 @@ public sealed partial class StatsCalculator
             if (v.Total == 0.0 || cyc == 0.0) continue;
             var dps = v.Scale(1000.0 / cyc);
             dVol += v; dDps += dps;
-            droneOut.Add(new JObj { { "drone_index", JNode.Of(_f[i].RequestIndex) }, { "type_id", _f[i].TypeId }, { "name", TypeName(i) }, { "count", n }, { "volley", v.ToJson() }, { "dps", dps.ToJson() } });
+            droneOut.Add(new JObj { { "drone_index", JNode.Of(_f[i].RequestIndex) }, { "type_id", _f[i].TypeId }, { "name", TypeName(i) }, { "count", n }, { "volley", v.ToJson() }, { "dps", dps.ToJson() },
+                { "optimal_m", G(i, _k.MaxRange) }, { "falloff_m", G(i, _k.Falloff) }, { "tracking", G(i, _k.TrackingSpeed) },
+                { "max_velocity", G(i, _k.MaxVelocity) }, { "signature_radius", G(i, _k.SignatureRadius) } });
         }
         Damage fVol = Damage.Zero, fDps = Damage.Zero;
         var fighterOut = new JArr();
@@ -347,7 +349,8 @@ public sealed partial class StatsCalculator
             if (fv.Total > 0.0)
             {
                 fVol += fv; fDps += fd;
-                fighterOut.Add(new JObj { { "fighter_index", JNode.Of(_f[i].RequestIndex) }, { "type_id", _f[i].TypeId }, { "name", TypeName(i) }, { "squadron_size", n }, { "volley", fv.ToJson() }, { "dps", fd.ToJson() } });
+                fighterOut.Add(new JObj { { "fighter_index", JNode.Of(_f[i].RequestIndex) }, { "type_id", _f[i].TypeId }, { "name", TypeName(i) }, { "squadron_size", n }, { "volley", fv.ToJson() }, { "dps", fd.ToJson() },
+                    { "max_velocity", G(i, _k.MaxVelocity) }, { "signature_radius", G(i, _k.SignatureRadius) } });
             }
         }
         var tVol = wVol + dVol + fVol;
@@ -623,6 +626,33 @@ public sealed partial class StatsCalculator
         };
     }
 
+    /// <summary>ECM jam chance (Pyfa Fit.jamChance): each jammer's strength vs the strongest sensor type (a tie means none).</summary>
+    private double JamChancePercent()
+    {
+        int ship = _f.Ship;
+        double maxS = -1.0;
+        string? type = null;
+        foreach (var t in new[] { "Magnetometric", "Ladar", "Radar", "Gravimetric" })
+        {
+            double v = G(ship, _ds.AttrIdOf($"scan{t}Strength"));
+            if (v > maxS) { maxS = v; type = t; }
+            else if (v == maxS) type = null;
+        }
+        double retain = 1.0;
+        bool any = false;
+        foreach (var e in _f.Incoming)
+        {
+            if (e is not IncomingEcm ecm) continue;
+            any = true;
+            if (type == null) continue;
+            var attr = _ds.AttrIdOf(ecm.Fighter ? $"fighterAbilityECMStrength{type}" : $"scan{type}StrengthBonus");
+            double st = G(ecm.Item, attr) * ecm.Factor;
+            if (!ecm.Resist.IsNone) { double r = G(ship, ecm.Resist); if (r != 0.0) st *= r; }
+            if (maxS > 0.0) retain *= 1.0 - Math.Min(st / maxS, 1.0);
+        }
+        return any ? (1.0 - retain) * 100.0 : 0.0;
+    }
+
     private JObj Targeting()
     {
         int ship = _f.Ship;
@@ -638,7 +668,7 @@ public sealed partial class StatsCalculator
         {
             { "max_targets", Math.Min(shipTargets, Math.Max(charTargets, 0.0)) },
             { "max_range_m", G(ship, _k.MaxTargetRange) }, { "scan_resolution", scanRes },
-            { "sensor_strength", best.V }, { "sensor_type", best.Name },
+            { "sensor_strength", best.V }, { "sensor_type", best.Name }, { "jam_chance_percent", JamChancePercent() },
             { "probe_size", best.V > 0.0 ? Math.Max(sig / best.V, 1.08) : JNode.Null },
             { "lock_time_s", new JObj
                 {
