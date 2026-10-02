@@ -8,11 +8,12 @@ use serde_json::{json, Value};
 
 pub fn validate(fit: &Fit, c: &Calc, cpu: f64, pg: f64, calib: f64, bw: f64) -> Vec<Value> {
     let ds = fit.ds;
+    let v = fit.views();
     let a = &ds.a;
     let ship = fit.ship;
     let g = |attr: u32| c.get(ship, attr);
-    let mut v = Vec::new();
-    let mut push = |code: &str, msg: String, idx: Option<usize>| v.push(json!({"code": code, "message": msg, "module_index": idx}));
+    let mut out = Vec::new();
+    let mut push = |code: &str, msg: String, idx: Option<usize>| out.push(json!({"code": code, "message": msg, "module_index": idx}));
     if cpu > g(a.cpu_out) + 1e-9 {
         push("CPU_OVERLOAD", format!("CPU used {cpu:.2} > output {:.2}", g(a.cpu_out)), None);
     }
@@ -34,28 +35,28 @@ pub fn validate(fit: &Fit, c: &Calc, cpu: f64, pg: f64, calib: f64, bw: f64) -> 
         (Slot::Subsystem, a.max_subsystems),
         (Slot::Service, a.service_slots),
     ] {
-        let used = modules.iter().filter(|&&m| fit.fitted(m).slot == Some(slot)).count() as f64;
+        let used = modules.iter().filter(|&&m| v.fitted(m).slot == Some(slot)).count() as f64;
         if used > g(attr) {
             push("SLOTS_EXCEEDED", format!("{slot:?} slots used {used} > {}", g(attr)), None);
         }
     }
-    let t = modules.iter().filter(|&&m| fit.has_effect(m, ds.e.turret)).count() as f64;
+    let t = modules.iter().filter(|&&m| v.has_effect(m, ds.e.turret)).count() as f64;
     if t > g(a.turret_slots) {
         push("TURRET_HARDPOINTS", format!("turrets {t} > hardpoints {}", g(a.turret_slots)), None);
     }
-    let l = modules.iter().filter(|&&m| fit.has_effect(m, ds.e.launcher)).count() as f64;
+    let l = modules.iter().filter(|&&m| v.has_effect(m, ds.e.launcher)).count() as f64;
     if l > g(a.launcher_slots) {
         push("LAUNCHER_HARDPOINTS", format!("launchers {l} > hardpoints {}", g(a.launcher_slots)), None);
     }
-    let ship_t = &ds.types[&fit.item(ship).type_id];
+    let ship_t = &ds.types[&v.item(ship).type_id];
     let mut fitted_group: FxHashMap<u32, u32> = Default::default();
     let mut fitted_type: FxHashMap<u32, u32> = Default::default();
     let mut active_group: FxHashMap<u32, u32> = Default::default();
     let mut online_group: FxHashMap<u32, u32> = Default::default();
     for &m in modules {
-        let it = fit.item(m);
-        let f = fit.fitted(m);
-        let st = fit.state(m);
+        let it = v.item(m);
+        let f = v.fitted(m);
+        let st = v.state(m);
         let idx = Some(f.req_index);
         let mt = &ds.types[&it.type_id];
         let name = &mt.name;
@@ -100,7 +101,7 @@ pub fn validate(fit: &Fit, c: &Calc, cpu: f64, pg: f64, calib: f64, bw: f64) -> 
             push("MAX_GROUP_ACTIVE", format!("{name}: {n} active of group, max {lim}"), idx);
         }
         if let Some(ch) = f.charge {
-            let ct = &ds.types[&fit.item(ch).type_id];
+            let ct = &ds.types[&v.item(ch).type_id];
             let cg: Vec<u32> = a.charge_group.iter().filter_map(|x| mt.attr(*x)).map(|v| v as u32).filter(|v| *v != 0).collect();
             if !cg.contains(&ct.group) {
                 push("CHARGE_GROUP", format!("{} cannot be loaded into {name}", ct.name), idx);
@@ -119,7 +120,7 @@ pub fn validate(fit: &Fit, c: &Calc, cpu: f64, pg: f64, calib: f64, bw: f64) -> 
     let have: FxHashMap<u32, f64> = fit.skills.iter().map(|(_, s, l)| (*s, *l as f64)).collect();
     let mut missing: Vec<(u32, f64, u32)> = Vec::new();
     for &e in &fit.order {
-        let it = fit.item(e);
+        let it = v.item(e);
         if !matches!(it.kind, Kind::Ship | Kind::Module | Kind::Charge | Kind::Drone | Kind::Fighter | Kind::Implant | Kind::Booster) {
             continue;
         }
@@ -138,5 +139,5 @@ pub fn validate(fit: &Fit, c: &Calc, cpu: f64, pg: f64, calib: f64, bw: f64) -> 
     for (s, need, by) in missing {
         push("MISSING_SKILL", format!("{} {} required by {}", ds.types.get(&s).map(|t| t.name.as_str()).unwrap_or("?"), need, ds.types[&by].name), None);
     }
-    v
+    out
 }

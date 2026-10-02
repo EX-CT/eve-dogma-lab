@@ -11,6 +11,7 @@
 //! and a write phase that appends to the targets' `Attrs` component.
 use crate::calc::Calc;
 use crate::components::*;
+use crate::views::Views;
 use crate::data::{Dataset, Domain, Func, TypeInfo};
 use crate::request::{FitRequest, ModuleReq, Mutation, Resists, Slot, State};
 use hecs::{Entity, World};
@@ -106,35 +107,11 @@ impl<'a> Fit<'a> {
     pub fn state(&self, e: Entity) -> State {
         self.world.get::<&Power>(e).unwrap().0
     }
-    pub fn fitted(&self, e: Entity) -> Fitted {
-        *self.world.get::<&Fitted>(e).unwrap()
-    }
-    pub fn squad(&self, e: Entity) -> Squad {
-        *self.world.get::<&Squad>(e).unwrap()
-    }
-    pub fn effects(&self, e: Entity) -> Vec<(u32, bool)> {
-        if let Ok(m) = self.world.get::<&Mutated>(e) {
-            return m.effects.clone();
-        }
-        self.ds.types[&self.item(e).type_id].effects.clone()
-    }
-    pub fn has_effect(&self, e: Entity, eid: u32) -> bool {
-        if eid == 0 {
-            return false;
-        }
-        if let Ok(m) = self.world.get::<&Mutated>(e) {
-            return m.effects.iter().any(|x| x.0 == eid);
-        }
-        self.ds.types[&self.item(e).type_id].has_effect(eid)
-    }
-    fn req_skills(&self, e: Entity) -> Vec<u32> {
-        if let Ok(m) = self.world.get::<&Mutated>(e) {
-            return m.req_skills.clone();
-        }
-        self.ds.types[&self.item(e).type_id].req_skills.clone()
-    }
     pub fn calc(&self) -> Calc<'_> {
         Calc::new(self.ds, &self.world)
+    }
+    pub fn views(&self) -> Views<'_> {
+        Views::new(self.ds, &self.world)
     }
 
     // ------------------------------------------------------------------ system 1: spawn
@@ -405,12 +382,13 @@ impl<'a> Fit<'a> {
     /// Active modules (1 copy) and active drones (n copies) with all their evaluated attributes.
     pub fn frozen_projectors(&self) -> Vec<(u32, u32, Vec<(u32, f64)>)> {
         let c = self.calc();
+        let v = self.views();
         let mut out = Vec::new();
         for &e in &self.order {
-            let it = self.item(e);
+            let it = v.item(e);
             let copies = match it.kind {
-                Kind::Module if self.state(e) >= State::Active => 1,
-                Kind::Drone => self.squad(e).active,
+                Kind::Module if v.state(e) >= State::Active => 1,
+                Kind::Drone => v.squad(e).active,
                 _ => 0,
             };
             if copies == 0 {
@@ -425,8 +403,9 @@ impl<'a> Fit<'a> {
     // ------------------------------------------------------------------ system 2: index
     pub fn build_index(&mut self) {
         let mut ix = Index::default();
+        let v = self.views();
         for &e in &self.order {
-            let it = self.item(e);
+            let it = v.item(e);
             match it.loc {
                 Loc::Ship => {
                     ix.ship_loc.push(e);
@@ -438,14 +417,15 @@ impl<'a> Fit<'a> {
                 }
                 _ => {}
             }
-            for s in self.req_skills(e) {
+            for &s in v.req_skills(e) {
                 ix.by_skill.entry(s).or_default().push((e, it.loc, it.owned, it.kind == Kind::Skill));
             }
         }
+        drop(v);
         self.index = ix;
     }
 
-    fn targets(&self, src: Entity, func: Func, domain: Domain, extra: u32, out: &mut Vec<Entity>) {
+    fn targets(&self, v: &Views, src: Entity, func: Func, domain: Domain, extra: u32, out: &mut Vec<Entity>) {
         out.clear();
         let ix = &self.index;
         match domain {
@@ -455,14 +435,8 @@ impl<'a> Fit<'a> {
                 }
             }
             Domain::Other => {
-                if let Ok(f) = self.world.get::<&Fitted>(src) {
-                    if let Some(c) = f.charge {
-                        out.push(c);
-                        return;
-                    }
-                }
-                if let Ok(p) = self.world.get::<&LoadedIn>(src) {
-                    out.push(p.0)
+                if let Some(c) = v.charge(src).or_else(|| v.parent(src)) {
+                    out.push(c)
                 }
             }
             Domain::Ship | Domain::Structure => {
@@ -516,9 +490,9 @@ impl<'a> Fit<'a> {
     }
 
     /// write phase: append pending modifiers to the target entities' Attrs
-    fn apply(&mut self, pend: Vec<PendingMod>) {
+    fn apply(&self, pend: Vec<PendingMod>) {
         let ds = self.ds;
-        let mut view = self.world.view_mut::<&mut Attrs>();
+        let mut view = self.world.view::<&mut Attrs>();
         for p in pend {
             let a = view.get_mut(p.target).unwrap();
             let tid = a.type_id;
@@ -540,19 +514,21 @@ impl<'a> Fit<'a> {
         let mut pend: Vec<PendingMod> = Vec::with_capacity(4096);
         let mut tg: Vec<Entity> = Vec::with_capacity(64);
         let ship = self.ship;
+        let v = self.views();
         for &e in &self.order {
-            let it = self.item(e);
+            let it = v.item(e);
             if it.kind == Kind::Projected {
                 continue;
             }
             if self.is_structure && matches!(it.kind, Kind::Drone | Kind::Implant | Kind::Booster) {
                 continue; // structures ignore pilot implants/boosters and cannot use drones
             }
-            let state = self.state(e);
+            let state = v.state(e);
             let src_cat = it.category;
-            let side_effects = self.world.get::<&SideEffects>(e).ok().map(|s| s.0.clone()).unwrap_or_default();
-            let abilities = self.world.get::<&FighterAbilities>(e).ok().map(|s| s.0.clone());
-            for (eid, _) in self.effects(e) {
+            let side_effects =
+                if it.kind == Kind::Booster { self.world.get::<&SideEffects>(e).ok().map(|s| s.0.clone()).unwrap_or_default() } else { Vec::new() };
+            let abilities = if it.kind == Kind::Fighter { self.world.get::<&FighterAbilities>(e).ok().map(|s| s.0.clone()) } else { None };
+            for &(eid, _) in v.effects(e) {
                 if eid == ef.skill_effect {
                     continue;
                 }
@@ -607,7 +583,7 @@ impl<'a> Fit<'a> {
                     }
                     // EXCT convention: skill filter 0 = the type owning the effect (skill self-bonuses)
                     let extra = if m.extra == 0 && matches!(m.func, Func::LocationRequiredSkill | Func::OwnerRequiredSkill) { it.type_id } else { m.extra };
-                    self.targets(e, m.func, m.domain, extra, &mut tg);
+                    self.targets(&v, e, m.func, m.domain, extra, &mut tg);
                     // Bastion hull resists are not stacking penalised in game; SDE marks the attrs non-stackable
                     let cat = if eid == ef.bastion && HULL_RESONANCES.contains(&m.modified) { 6 } else { src_cat };
                     for &t in &tg {
@@ -625,13 +601,15 @@ impl<'a> Fit<'a> {
         let a = &ds.a;
         let ship = self.ship;
         let mut pend = Vec::new();
-        let sources: Vec<Entity> = self.order.iter().copied().filter(|&e| self.item(e).kind == Kind::Projected).collect();
+        let v = self.views();
+        let sources: Vec<Entity> = self.order.iter().copied().filter(|&e| v.item(e).kind == Kind::Projected).collect();
         let mut specials: Vec<(Entity, Special)> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
         for e in sources {
-            let it = self.item(e);
-            let state = self.state(e);
+            let it = v.item(e);
+            let state = v.state(e);
             let dist = self.world.get::<&Distance>(e).map(|d| d.0).unwrap_or(None);
-            for (eid, _) in self.effects(e) {
+            for &(eid, _) in v.effects(e) {
                 let Some(eff) = ds.effects.get(&eid) else { continue };
                 if (eff.category != 2 && eff.category != 3) || state < State::Active {
                     continue;
@@ -672,11 +650,13 @@ impl<'a> Fit<'a> {
                 } else if let Some(sp) = self.incoming_special(e, name, resist, dist) {
                     specials.extend(sp);
                 } else if !DAMAGE_EFFECTS.contains(&name) {
-                    self.warnings.push(format!("projected effect '{name}' not modelled yet"));
+                    warnings.push(format!("projected effect '{name}' not modelled yet"));
                 }
             }
         }
         self.apply(pend);
+        drop(v);
+        self.warnings.extend(warnings);
         for (e, sp) in specials {
             match sp {
                 Special::Rep(r) => self.world.insert_one(e, r).unwrap(),
@@ -690,6 +670,7 @@ impl<'a> Fit<'a> {
         let ds = self.ds;
         let a = &ds.a;
         let c = self.calc();
+        let v = self.views();
         let base = |attr: u32| if c.has(e, attr) { c.base(e, attr) } else { 0.0 };
         let falloff_factor = || crate::stats::range_factor(base(a.max_range), base(a.falloff_effectiveness), dist, true);
         let gate = |opt: f64| if opt < dist.unwrap_or(0.0) { 0.0 } else { 1.0 };
@@ -705,7 +686,7 @@ impl<'a> Fit<'a> {
             .get::<&Fitted>(e)
             .ok()
             .and_then(|f| f.charge)
-            .map(|ch| ds.types[&self.item(ch).type_id].name == "Nanite Repair Paste")
+            .map(|ch| ds.types[&v.item(ch).type_id].name == "Nanite Repair Paste")
             .unwrap_or(false);
         Some(match name {
             "shipModuleRemoteShieldBooster" | "shipModuleAncillaryRemoteShieldBooster" => rep(0, a.shield_bonus, 1.0, falloff_factor()),
@@ -727,7 +708,7 @@ impl<'a> Fit<'a> {
     }
 
     // ------------------------------------------------------------------ system 5: fleet buffs
-    fn buff_mods(&self, id: u32, src: Src, pend: &mut Vec<PendingMod>, tg: &mut Vec<Entity>) {
+    fn buff_mods(&self, v: &Views, id: u32, src: Src, pend: &mut Vec<PendingMod>, tg: &mut Vec<Entity>) {
         let Some(info) = self.ds.dbuffs.get(&id) else { return };
         let op = info.op;
         let ship = self.ship;
@@ -735,19 +716,19 @@ impl<'a> Fit<'a> {
             self.pending(ship, at, op, src, 0, pend);
         }
         for &at in &info.location {
-            self.targets(ship, Func::Location, Domain::Ship, 0, tg);
+            self.targets(v, ship, Func::Location, Domain::Ship, 0, tg);
             for &t in tg.iter() {
                 self.pending(t, at, op, src, 0, pend);
             }
         }
         for &(at, g) in &info.location_group {
-            self.targets(ship, Func::LocationGroup, Domain::Ship, g, tg);
+            self.targets(v, ship, Func::LocationGroup, Domain::Ship, g, tg);
             for &t in tg.iter() {
                 self.pending(t, at, op, src, 0, pend);
             }
         }
         for &(at, s) in &info.location_skill {
-            self.targets(ship, Func::LocationRequiredSkill, Domain::Ship, s, tg);
+            self.targets(v, ship, Func::LocationRequiredSkill, Domain::Ship, s, tg);
             for &t in tg.iter() {
                 self.pending(t, at, op, src, 0, pend);
             }
@@ -758,9 +739,10 @@ impl<'a> Fit<'a> {
     pub fn burst_buffs(&self) -> Vec<(u32, f64)> {
         let ds = self.ds;
         let c = self.calc();
+        let v = self.views();
         let mut out = Vec::new();
         for &m in &self.modules {
-            if self.state(m) < State::Active {
+            if v.state(m) < State::Active {
                 continue;
             }
             for k in 0..4 {
@@ -822,9 +804,11 @@ impl<'a> Fit<'a> {
         agg.sort_by_key(|x| x.0);
         let mut pend = Vec::new();
         let mut tg = Vec::new();
-        for (id, v) in agg {
-            self.buff_mods(id, Src::Const(v), &mut pend, &mut tg);
+        let views = self.views();
+        for (id, val) in agg {
+            self.buff_mods(&views, id, Src::Const(val), &mut pend, &mut tg);
         }
+        drop(views);
         self.apply(pend);
     }
 
@@ -838,7 +822,8 @@ impl<'a> Fit<'a> {
             return;
         }
         let attrs = ds.a.res_armor;
-        let rahs: Vec<Entity> = self.modules.iter().copied().filter(|&m| self.state(m) >= State::Active && self.has_effect(m, eid)).collect();
+        let v = self.views();
+        let rahs: Vec<Entity> = self.modules.iter().copied().filter(|&m| v.state(m) >= State::Active && v.has_effect(m, eid)).collect();
         let disable = req.options.rah.as_deref() == Some("disable");
         let dp = req.damage_pattern.unwrap_or(Resists { em: 25.0, thermal: 25.0, kinetic: 25.0, explosive: 25.0 });
         let pattern = [dp.em, dp.thermal, dp.kinetic, dp.explosive];
@@ -854,7 +839,7 @@ impl<'a> Fit<'a> {
                 }
                 res
             };
-            let cat = self.item(m).category;
+            let cat = v.item(m).category;
             let mut pend = Vec::new();
             for k in 0..4 {
                 if !disable {

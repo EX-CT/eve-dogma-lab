@@ -3,6 +3,7 @@ use crate::calc::Calc;
 use crate::capsim::{self, Drain};
 use crate::components::*;
 use crate::fit::Fit;
+use crate::views::Views;
 use crate::request::{FitRequest, Resists, Slot, Spool, SpoolType, State};
 use hecs::Entity;
 use serde_json::{json, Map, Value};
@@ -92,6 +93,7 @@ fn tidy(v: Value) -> Value {
 struct Ctx<'f, 'a> {
     fit: &'f Fit<'a>,
     c: Calc<'f>,
+    v: Views<'f>,
 }
 
 impl<'f, 'a> Ctx<'f, 'a> {
@@ -100,7 +102,7 @@ impl<'f, 'a> Ctx<'f, 'a> {
         self.c.get(e, attr)
     }
     fn type_name(&self, e: Entity) -> &str {
-        &self.fit.ds.types[&self.fit.item(e).type_id].name
+        self.v.type_name(e)
     }
     fn raw_cycle_ms(&self, e: Entity) -> f64 {
         let a = &self.fit.ds.a;
@@ -113,7 +115,7 @@ impl<'f, 'a> Ctx<'f, 'a> {
         v
     }
     fn charge(&self, e: Entity) -> Option<Entity> {
-        self.fit.world.get::<&Fitted>(e).ok().and_then(|f| f.charge)
+        self.v.charge(e)
     }
     fn num_charges(&self, e: Entity) -> u32 {
         let Some(c) = self.charge(e) else { return 0 };
@@ -159,13 +161,13 @@ impl<'f, 'a> Ctx<'f, 'a> {
     }
     fn weapon_kind(&self, e: Entity) -> &'static str {
         let ef = &self.fit.ds.e;
-        if self.fit.has_effect(e, ef.turret) {
+        if self.v.has_effect(e, ef.turret) {
             "turret"
-        } else if self.fit.has_effect(e, ef.launcher) {
+        } else if self.v.has_effect(e, ef.launcher) {
             "missile"
-        } else if self.fit.has_effect(e, ef.emp_wave) {
+        } else if self.v.has_effect(e, ef.emp_wave) {
             "smartbomb"
-        } else if self.fit.has_effect(e, ef.vorton) {
+        } else if self.v.has_effect(e, ef.vorton) {
             "vorton"
         } else {
             "other"
@@ -200,7 +202,7 @@ fn missile_range(x: &Ctx, ship: Entity, c: Entity) -> Option<f64> {
     };
     let (lt, ht) = (ft.floor(), ft.ceil());
     let (mut lr, mut hr) = (range_at(lt), range_at(ht));
-    if x.fit.has_effect(c, x.fit.ds.e.fof_missile) {
+    if x.v.has_effect(c, x.fit.ds.e.fof_missile) {
         let lim = x.g(c, a.max_fof_range);
         if lim > 0.0 {
             lr = lr.min(lim);
@@ -214,7 +216,8 @@ fn missile_range(x: &Ctx, ship: Entity, c: Entity) -> Option<f64> {
 }
 
 pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
-    let x = Ctx { fit, c: fit.calc() };
+    let x = Ctx { fit, c: fit.calc(), v: fit.views() };
+    let v = &x.v;
     let ds = fit.ds;
     let (a, ef) = (&ds.a, &ds.e);
     let ship = fit.ship;
@@ -222,20 +225,20 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     let g = |e: Entity, attr: u32| x.g(e, attr);
     let factor_reload = req.options.factor_reload;
     let modules = &fit.modules;
-    let state = |e: Entity| fit.state(e);
-    let slot = |e: Entity| fit.fitted(e).slot;
+    let state = |e: Entity| v.state(e);
+    let slot = |e: Entity| v.fitted(e).slot;
 
     // ---------------- resources
     let cpu_used: f64 = modules.iter().filter(|&&m| state(m) >= State::Online).map(|&m| g(m, a.cpu)).sum();
     let pg_used: f64 = modules.iter().filter(|&&m| state(m) >= State::Online).map(|&m| g(m, a.power)).sum();
     let calib_used: f64 = modules.iter().filter(|&&m| slot(m) == Some(Slot::Rig)).map(|&m| g(m, a.upgrade_cost)).sum();
-    let bw_used: f64 = fit.drones.iter().map(|&d| g(d, a.drone_bw_used) * fit.squad(d).active as f64).sum();
-    let bay_used: f64 = fit.drones.iter().map(|&d| g(d, a.volume) * fit.squad(d).quantity as f64).sum();
-    let fbay_used: f64 = fit.fighters.iter().map(|&f| g(f, a.volume) * fit.squad(f).quantity as f64).sum();
+    let bw_used: f64 = fit.drones.iter().map(|&d| g(d, a.drone_bw_used) * v.squad(d).active as f64).sum();
+    let bay_used: f64 = fit.drones.iter().map(|&d| g(d, a.volume) * v.squad(d).quantity as f64).sum();
+    let fbay_used: f64 = fit.fighters.iter().map(|&f| g(f, a.volume) * v.squad(f).quantity as f64).sum();
     let cargo_used: f64 = req.cargo.iter().map(|c| ds.types.get(&c.type_id).map(|t| t.volume).unwrap_or(0.0) * c.quantity as f64).sum();
     let count_slot = |s: Slot| modules.iter().filter(|&&m| slot(m) == Some(s)).count() as f64;
-    let turrets_used = modules.iter().filter(|&&m| fit.has_effect(m, ef.turret)).count() as f64;
-    let launchers_used = modules.iter().filter(|&&m| fit.has_effect(m, ef.launcher)).count() as f64;
+    let turrets_used = modules.iter().filter(|&&m| v.has_effect(m, ef.turret)).count() as f64;
+    let launchers_used = modules.iter().filter(|&&m| v.has_effect(m, ef.launcher)).count() as f64;
     let usage = |u: f64, t: f64| json!({"used": u, "total": t});
     let fighter_class = |f: Entity| -> &'static str {
         if g(f, a.fighter_heavy) > 0.0 {
@@ -246,7 +249,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
             "light"
         }
     };
-    let launched: Vec<Entity> = fit.fighters.iter().copied().filter(|&f| fit.squad(f).active > 0).collect();
+    let launched: Vec<Entity> = fit.fighters.iter().copied().filter(|&f| v.squad(f).active > 0).collect();
     let class_used = |c: &str| launched.iter().filter(|&&f| fighter_class(f) == c).count() as f64;
     let resources = json!({
         "cpu": usage(cpu_used, g(ship, a.cpu_out)),
@@ -293,15 +296,15 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         }
         let cyc = x.avg_cycle_ms(m, factor_reload);
         let raw = x.raw_cycle_ms(m);
-        let f = fit.fitted(m);
+        let f = v.fitted(m);
         let sp = spoolup(g(m, a.spool_max), g(m, a.spool_step), raw / 1000.0, f.spool.unwrap_or(default_spool));
         let vol = base.scale(1.0 + sp);
         let dps = if cyc > 0.0 { vol.scale(1000.0 / cyc) } else { Dmg::default() };
         w_vol.add(&vol);
         w_dps.add(&dps);
         let mut w = json!({
-            "module_index": f.req_index, "type_id": fit.item(m).type_id, "name": x.type_name(m), "kind": kind,
-            "charge_type_id": f.charge.map(|c| fit.item(c).type_id),
+            "module_index": f.req_index, "type_id": v.item(m).type_id, "name": x.type_name(m), "kind": kind,
+            "charge_type_id": f.charge.map(|c| v.item(c).type_id),
             "volley": vol.json(), "dps": dps.json(), "cycle_time_ms": cyc,
         });
         match kind {
@@ -331,7 +334,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     let (mut d_vol, mut d_dps) = (Dmg::default(), Dmg::default());
     let mut drone_out = Vec::new();
     for &d in &fit.drones {
-        let sq = fit.squad(d);
+        let sq = v.squad(d);
         let n = sq.active as f64;
         if n == 0.0 {
             continue;
@@ -345,12 +348,12 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         let dps = v.scale(1000.0 / cyc);
         d_vol.add(&v);
         d_dps.add(&dps);
-        drone_out.push(json!({"drone_index": sq.req_index, "type_id": fit.item(d).type_id, "name": x.type_name(d), "count": n, "volley": v.json(), "dps": dps.json()}));
+        drone_out.push(json!({"drone_index": sq.req_index, "type_id": x.v.item(d).type_id, "name": x.type_name(d), "count": n, "volley": v.json(), "dps": dps.json()}));
     }
     let (mut f_vol, mut f_dps) = (Dmg::default(), Dmg::default());
     let mut fighter_out = Vec::new();
     for &f in &fit.fighters {
-        let sq = fit.squad(f);
+        let sq = v.squad(f);
         let n = sq.active as f64;
         if n == 0.0 {
             continue;
@@ -358,7 +361,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         let abilities = fit.world.get::<&FighterAbilities>(f).map(|x| x.0.clone()).unwrap_or_default();
         let (mut fv, mut fd) = (Dmg::default(), Dmg::default());
         for (eid, at) in [(ef.f_attack, &a.fam), (ef.f_missiles, &a.fmi)] {
-            if !fit.has_effect(f, eid) || !abilities.contains(&eid) {
+            if !v.has_effect(f, eid) || !abilities.contains(&eid) {
                 continue;
             }
             let m = g(f, at[0]);
@@ -373,7 +376,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         if fv.total() > 0.0 {
             f_vol.add(&fv);
             f_dps.add(&fd);
-            fighter_out.push(json!({"fighter_index": sq.req_index, "type_id": fit.item(f).type_id, "name": x.type_name(f), "squadron_size": n, "volley": fv.json(), "dps": fd.json()}));
+            fighter_out.push(json!({"fighter_index": sq.req_index, "type_id": v.item(f).type_id, "name": x.type_name(f), "squadron_size": n, "volley": fv.json(), "dps": fd.json()}));
         }
     }
     let mut t_vol = w_vol;
@@ -412,17 +415,17 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         if dur <= 0.0 {
             continue;
         }
-        if fit.has_effect(m, ef.shield_boost) || fit.has_effect(m, ef.fueled_shield_boost) {
+        if v.has_effect(m, ef.shield_boost) || v.has_effect(m, ef.fueled_shield_boost) {
             shield_rep += g(m, a.shield_bonus) / dur;
         }
-        if fit.has_effect(m, ef.armor_repair) {
+        if v.has_effect(m, ef.armor_repair) {
             armor_rep += g(m, a.armor_dmg_amount) / dur;
         }
-        if fit.has_effect(m, ef.fueled_armor_repair) {
+        if v.has_effect(m, ef.fueled_armor_repair) {
             let paste = x.charge(m).map(|c| x.type_name(c) == "Nanite Repair Paste").unwrap_or(false);
             armor_rep += g(m, a.armor_dmg_amount) * if paste { 3.0 } else { 1.0 } / dur;
         }
-        if fit.has_effect(m, ef.structure_repair) {
+        if v.has_effect(m, ef.structure_repair) {
             hull_rep += g(m, a.structure_dmg_amount) / dur;
         }
     }
@@ -473,18 +476,18 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     let (mut cap_used, mut cap_added) = (0.0, 0.0);
     let mut module_rows = Vec::new();
     for &m in modules {
-        let f = fit.fitted(m);
+        let f = v.fitted(m);
         let mut cap_need = g(m, a.cap_need);
-        let is_inj = ds.group_names.get(&fit.item(m).group).map(|n| n == "Capacitor Booster").unwrap_or(false);
+        let is_inj = ds.group_names.get(&v.item(m).group).map(|n| n == "Capacitor Booster").unwrap_or(false);
         if is_inj {
             cap_need = -f.charge.map(|c| g(c, a.capacitor_bonus)).unwrap_or(0.0);
         }
-        if fit.has_effect(m, ef.nos) && !req.options.nos_no_target_cap {
+        if v.has_effect(m, ef.nos) && !req.options.nos_no_target_cap {
             cap_need = -g(m, a.power_transfer);
         }
         let cyc_raw = x.raw_cycle_ms(m);
         let full = cyc_raw + g(m, a.reactivation);
-        let mut row = json!({"module_index": f.req_index, "type_id": fit.item(m).type_id, "name": x.type_name(m),
+        let mut row = json!({"module_index": f.req_index, "type_id": v.item(m).type_id, "name": x.type_name(m),
             "slot": f.slot, "state": state(m), "cpu": g(m, a.cpu), "power": g(m, a.power)});
         if cyc_raw > 0.0 {
             row["cycle_time_ms"] = json!(cyc_raw);
@@ -504,7 +507,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
                 clip_size: x.num_shots(m),
                 reload_ms: g(m, a.reload),
                 is_injector: is_inj,
-                disable_stagger: fit.has_effect(m, ef.turret),
+                disable_stagger: v.has_effect(m, ef.turret),
             });
         }
         module_rows.push(row);
@@ -581,7 +584,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
         "lock_time_s": {"sig_25m": lt(25.0), "sig_40m": lt(40.0), "sig_125m": lt(125.0), "sig_400m": lt(400.0), "sig_target_profile": tp.signature_radius.and_then(lt)},
     });
     let drones_j = json!({
-        "active": fit.drones.iter().map(|&d| fit.squad(d).active).sum::<u32>(),
+        "active": fit.drones.iter().map(|&d| v.squad(d).active).sum::<u32>(),
         "max_active": g(ch, a.max_active_drones),
         "control_range_m": g(ch, a.drone_control),
     });
@@ -589,7 +592,7 @@ pub fn compute(fit: &Fit, req: &FitRequest) -> Value {
     let mut out = Map::new();
     out.insert("meta".into(), json!({"schema_version": 1, "engine": concat!("eve-dogma-h ", env!("CARGO_PKG_VERSION"), " (Rust ECS/hecs)"),
         "sde_build": ds.build, "dataset_sha256": ds.sha256}));
-    let st = &ds.types[&fit.item(ship).type_id];
+    let st = &ds.types[&v.item(ship).type_id];
     out.insert("ship".into(), json!({"type_id": st.id, "name": st.name, "group": ds.group_names.get(&st.group)}));
     out.insert("resources".into(), resources);
     out.insert("offense".into(), offense);
@@ -631,6 +634,7 @@ fn dump_attributes(fit: &Fit, c: &Calc, sel: &str) -> Value {
         "all" | "ship" => None,
         s => Some(s.split(',').map(|x| x.trim()).filter(|x| !x.is_empty()).collect()),
     };
+    let v = fit.views();
     let mut m = Map::new();
     m.insert("ship".into(), dump(fit, c, fit.ship, &filter));
     if sel == "ship" {
@@ -641,13 +645,13 @@ fn dump_attributes(fit: &Fit, c: &Calc, sel: &str) -> Value {
         .modules
         .iter()
         .map(|&e| {
-            let f = fit.fitted(e);
-            json!({"module_index": f.req_index, "type_id": fit.item(e).type_id, "attributes": dump(fit, c, e, &filter),
+            let f = v.fitted(e);
+            json!({"module_index": f.req_index, "type_id": v.item(e).type_id, "attributes": dump(fit, c, e, &filter),
                    "charge": f.charge.map(|ch| dump(fit, c, ch, &filter))})
         })
         .collect();
     m.insert("modules".into(), Value::Array(mods));
-    let dr: Vec<Value> = fit.drones.iter().map(|&e| json!({"drone_index": fit.squad(e).req_index, "attributes": dump(fit, c, e, &filter)})).collect();
+    let dr: Vec<Value> = fit.drones.iter().map(|&e| json!({"drone_index": v.squad(e).req_index, "attributes": dump(fit, c, e, &filter)})).collect();
     m.insert("drones".into(), Value::Array(dr));
     Value::Object(m)
 }

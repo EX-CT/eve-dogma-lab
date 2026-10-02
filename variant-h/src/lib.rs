@@ -12,6 +12,7 @@ pub mod request;
 pub mod sha256;
 pub mod stats;
 pub mod validate;
+pub mod views;
 
 use serde_json::{json, Value};
 
