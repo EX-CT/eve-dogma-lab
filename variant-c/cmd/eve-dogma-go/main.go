@@ -382,15 +382,16 @@ func main() {
 		t0 := time.Now()
 		ds := load(dsPath)
 		loadMs := float64(time.Since(t0).Microseconds()) / 1000
+		raw := readInput(args[1:])
 		var req dogma.FitRequest
-		if err := dogma.DecodeRequest(readInput(args[1:]), &req); err != nil {
+		if err := dogma.DecodeRequest(raw, &req); err != nil {
 			fmt.Fprintln(os.Stderr, "bad request:", err)
 			os.Exit(2)
 		}
-		_ = dogma.Calc(ds, &req)
+		_ = dogma.CalcJSON(ds, raw)
 		t1 := time.Now()
 		for k := 0; k < n; k++ {
-			_ = dogma.Calc(ds, &req)
+			_ = dogma.CalcJSON(ds, raw) // production path: decode + calc + encode
 		}
 		el := time.Since(t1).Seconds()
 		out.Write(dogma.Marshal(map[string]any{"dataset_load_ms": loadMs, "iterations": n, "total_s": el, "per_calc_us": el / float64(n) * 1e6}))

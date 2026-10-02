@@ -48,12 +48,10 @@ func benchOne(b *testing.B, name string) {
 	if err != nil {
 		b.Skip(err)
 	}
-	var r FitRequest
-	_ = json.Unmarshal(raw, &r)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		Calc(ds, &r)
+		CalcJSON(ds, raw) // the production path: JSON in, JSON out
 	}
 }
 
