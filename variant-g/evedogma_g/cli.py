@@ -51,20 +51,43 @@ def _type_info(ds, key):
             "effects": [{"id": e, "name": ds.effect_name.get(e), "default": d} for e, d in ds.t_effects[ti]]}
 
 
-def _search(ds, q, limit=20):
-    ql = q.lower()
+_SEARCH_KINDS = {6: "ship", 7: "module", 8: "charge", 18: "drone", 87: "fighter", 20: "implant", 32: "subsystem",
+                 16: "skill"}
+
+
+def _search(ds, q, limit=20, kinds=None):
+    """contract (interim): published ships/modules/charges/drones/fighters/implants/boosters/subsystems/skills,
+    case-insensitive on the English or Chinese name, exact > prefix > substring, ties by typeID; limit 20"""
+    ql = q.strip().lower()
     hits = []
     for ti, nm in enumerate(ds.t_name):
         if not ds.t_pub[ti]:
             continue
+        cat = int(ds.t_cat[ti])
+        k = _SEARCH_KINDS.get(cat)
+        if k is None:
+            continue
+        if cat == 20 and "Booster" in (ds.group_name.get(int(ds.t_group[ti])) or ""):
+            k = "booster"
+        if kinds is not None and k not in kinds:
+            continue
         tid = int(ds.t_id[ti])
-        zh = ds.names_zh.get(str(tid))
-        if ql in nm.lower() or (zh and q in zh):
-            hits.append((not nm.lower().startswith(ql), len(nm), nm, ti))
+        en = nm.lower()
+        zh = (ds.names_zh.get(str(tid)) or "").lower()
+        if en == ql or (zh and zh == ql):
+            r = 0
+        elif en.startswith(ql) or (zh and zh.startswith(ql)):
+            r = 1
+        elif ql in en or (zh and ql in zh):
+            r = 2
+        else:
+            continue
+        hits.append((r, tid, k, ti))
     hits.sort()
-    return [{"type_id": int(ds.t_id[ti]), "name": nm, "name_zh": ds.names_zh.get(str(int(ds.t_id[ti]))),
-             "group": ds.group_name.get(int(ds.t_group[ti])), "category_id": int(ds.t_cat[ti]), "slot": ds.t_slot[ti]}
-            for _, _, nm, ti in hits[:limit]]
+    return [{"type_id": tid, "name": ds.t_name[ti], "name_zh": ds.names_zh.get(str(tid)), "kind": k,
+             "match": ("exact", "prefix", "substring")[r], "group": ds.group_name.get(int(ds.t_group[ti])),
+             "category_id": int(ds.t_cat[ti]), "meta_level": ds.t_meta.get(ti), "slot": ds.t_slot[ti]}
+            for r, tid, k, ti in hits[:limit]]
 
 
 def main(argv=None):
@@ -89,6 +112,9 @@ def main(argv=None):
         else:
             out = calc(ds, req)
         sys.stdout.write(dumps(out) + "\n")
+        if isinstance(out, dict) and "error" in out and len(out) == 1:
+            sys.stdout.flush()
+            sys.exit(2)  # contract 1.4.1: a calc error still prints the error JSON on stdout, exit code 2
     elif cmd == "batch":
         chunk = 256
         if "--chunk" in rest:
@@ -131,7 +157,12 @@ def main(argv=None):
             elif meth == "type":
                 res = _type_info(ds, (params or {}).get("id"))
             elif meth == "search":
-                res = _search(ds, (params or {}).get("query") or "", int((params or {}).get("limit") or 20))
+                pp = params or {}
+                lim = pp.get("limit")
+                kinds = pp.get("kinds")
+                res = _search(ds, pp.get("query") if isinstance(pp.get("query"), str) else "",
+                              lim if isinstance(lim, int) and not isinstance(lim, bool) and lim >= 0 else 20,
+                              [x for x in kinds if isinstance(x, str)] if isinstance(kinds, list) else None)
             else:
                 res = {"error": {"code": "UNKNOWN_METHOD", "message": str(meth)}}
             sys.stdout.write(dumps({"id": mid, "result": res}) + "\n")
@@ -165,7 +196,7 @@ def main(argv=None):
     elif cmd == "type":
         print(json.dumps(_type_info(_load(dpath), " ".join(rest)), indent=1, ensure_ascii=False))
     elif cmd == "search":
-        print(json.dumps(_search(_load(dpath), " ".join(rest)), indent=1, ensure_ascii=False))
+        print(json.dumps(_search(_load(dpath), " ".join(rest)), indent=2, ensure_ascii=False, sort_keys=True))
     elif cmd == "bench":
         n = int(rest[rest.index("-n") + 1]) if "-n" in rest else 200
         ds = _load(dpath)

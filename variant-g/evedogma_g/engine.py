@@ -798,6 +798,29 @@ class Batch:
             elif nm.startswith("remoteSensorDamp") or nm == "structureModuleEffectRemoteSensorDampener":
                 push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
                 push(a("scanResolution"), a("scanResolutionBonus"), 6)
+            elif nm == "shipModuleTrackingDisruptor" or nm == "shipModuleGuidanceDisruptor":
+                # Pyfa Effect6424 / Effect6423: the target's gunnery modules / missile charges, postPercent
+                if target_offense_ok:
+                    if nm == "shipModuleTrackingDisruptor":
+                        skill, want_kind, pairs = "Gunnery", MODULE, (("trackingSpeedBonus", "trackingSpeed"),
+                                                                      ("maxRangeBonus", "maxRange"),
+                                                                      ("falloffBonus", "falloff"))
+                    else:
+                        skill, want_kind, pairs = "Missile Launcher Operation", CHARGE, (
+                            ("aoeCloudSizeBonus", "aoeCloudSize"), ("aoeVelocityBonus", "aoeVelocity"),
+                            ("missileVelocityBonus", "maxVelocity"), ("explosionDelayBonus", "explosionDelay"))
+                    sk = ds.type_by_name.get(skill.lower()) or 0
+                    tf = range_factor(pb("maxRange"), pb("falloffEffectiveness"), it["distance"], True)
+                    for t in fit.items:
+                        mt = self.meta[t]
+                        if mt is None or mt["kind"] != want_kind or self.it_loc[t] != L_SHIP or not self.it_owned[t]:
+                            continue
+                        req = self.custom_reqskills.get(t) or ds.t_reqskills[mt["ti"]]
+                        if sk not in req:
+                            continue
+                        for sa, ta in pairs:
+                            self.push(t, a(ta), 6, SRC_PROJ, K(i, a(sa)), -1, K(ship, resist) if resist else -1,
+                                      factor=tf, mul=False, src_item=i, src_cat=it["category"], order=(i, en))
             elif nm.startswith("remoteSensorBoost"):
                 push(a("maxTargetRange"), a("maxTargetRangeBonus"), 6)
                 push(a("scanResolution"), a("scanResolutionBonus"), 6)
