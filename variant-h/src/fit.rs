@@ -848,7 +848,7 @@ impl<'a> Fit<'a> {
                 let name = eff.name.as_str();
                 // category-1 effects that Pyfa still applies when projected (ECM bursts, lockbreaker bombs)
                 let launcher_group = if name == "useMissiles" { ds.group_names.get(&it.group).map(|g| g.as_str()) } else { None };
-                let projected_active = matches!(name, "ECMBurstJammer") || name.starts_with("doomsdayAOE")
+                let projected_active = matches!(name, "ECMBurstJammer" | "warpDisruptSphere") || name.starts_with("doomsdayAOE")
                     || matches!(launcher_group, Some("Missile Launcher Bomb" | "Interdiction Sphere Launcher"));
                 if (eff.category != 2 && eff.category != 3 && !projected_active) || state < State::Active {
                     continue;
@@ -910,6 +910,23 @@ impl<'a> Fit<'a> {
                         "doomsdayAOEBubble" => continue,
                         _ => {}
                     }
+                }
+                if name == "warpDisruptSphere" {
+                    // Effect3380, projected side: only scripted bubbles (29003 / 45010) inside warpScrambleRange
+                    let Some(ch) = v.charge(e) else { continue };
+                    if !matches!(v.item(ch).type_id, 29003 | 45010) {
+                        continue;
+                    }
+                    let c = self.calc();
+                    let wr = ds.attr_id("warpScrambleRange");
+                    let range = if wr != 0 && c.has(e, wr) { c.get(e, wr) } else { 0.0 };
+                    if range < dist.unwrap_or(0.0) {
+                        continue;
+                    }
+                    drop(c);
+                    let ws = ds.attr_id("warpScrambleStrength");
+                    pend.push(PendingMod { target: ship, attr: a.warp_scramble, m: Mod { op: 2, penalized: false, src: Src::Projected { e, attr: ws, factor: 1.0, target: ship, resist, mul: false } } });
+                    continue;
                 }
                 if name == "structureModuleEffectWeaponDisruption" {
                     // Effect6686: range factor from the modified maxRange / falloffEffectiveness
