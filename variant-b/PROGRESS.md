@@ -46,3 +46,9 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   precomputed skills_foldable: cold calc ~8 ms -> ~6.5 ms.
 - bench.yaml: rpc_cmd (eft export column). Parity: 295/295 byte-identical vs A@e552cb9, eft_export 295/295,
   search outputs identical; oracle + eft_export_parity tests pass.
+
+## 2026-10-03 ~06:20 CST — in-place snapshot tables
+- LazyTable reads its header arrays in place from the mmap (no per-entry parsing/allocation at load), slots
+  zero-allocated; cache key from file identity instead of hashing the gz. Process cold calc ~6.5 ms -> ~5 ms
+  (median, loaded box). validate attr ids cached per dataset; rounding JSON formatter (no tidy pass).
+- Parity: 297/297 bench cases byte-identical vs A@e552cb9, eft_export 306/306, tests pass.

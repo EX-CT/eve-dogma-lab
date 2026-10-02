@@ -93,7 +93,7 @@ fn search(ds: &Dataset, q: &str, limit: usize, kinds: Option<Vec<String>>) -> Va
                     return None;
                 }
             }
-            Some((rank(id, t)?, *id, k, t))
+            Some((rank(&id, t)?, id, k, t))
         })
         .collect();
     hits.sort_by_key(|h| (h.0, h.1));

@@ -272,18 +272,20 @@ impl Dataset {
     /// directory keyed by the SHA-256 of the file bytes, so later processes skip gunzip + JSON parsing.
     /// `EVE_DOGMA_NO_CACHE=1` disables it; `EVE_DOGMA_CACHE=DIR` sets the directory.
     pub fn load_path(path: &str) -> Result<Dataset, String> {
-        let tg = std::time::Instant::now();
-        let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-        if std::env::var_os("VB_LOAD_TIMING").is_some() {
-            eprintln!("read gz {:?}", tg.elapsed());
-        }
+        let read = || std::fs::read(path).map_err(|e| format!("read {path}: {e}"));
         if std::env::var_os("EVE_DOGMA_NO_CACHE").is_some() {
-            return Self::load_bytes(&bytes);
+            return Self::load_bytes(&read()?);
         }
         let tk = std::time::Instant::now();
+        // cache key from file identity (absolute path, size, mtime, inode, device) instead of hashing the
+        // contents on every start: the pipeline always writes a new file (new mtime/inode) for a new dataset.
         let key = {
             use sha2::Digest;
-            let d = sha2::Sha256::digest(&bytes);
+            use std::os::unix::fs::MetadataExt;
+            let md = std::fs::metadata(path).map_err(|e| format!("read {path}: {e}"))?;
+            let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
+            let id = format!("{}|{}|{}.{}|{}|{}", abs.display(), md.len(), md.mtime(), md.mtime_nsec(), md.ino(), md.dev());
+            let d = sha2::Sha256::digest(id.as_bytes());
             d.iter().map(|b| format!("{b:02x}")).collect::<String>()
         };
         let dir = std::env::var_os("EVE_DOGMA_CACHE")
@@ -311,7 +313,7 @@ impl Dataset {
                 return Ok(ds);
             }
         }
-        let ds = Self::load_bytes(&bytes)?;
+        let ds = Self::load_bytes(&read()?)?;
         // best effort: never fail a calculation because the cache is not writable
         let _ = std::fs::create_dir_all(&dir).and_then(|_| {
             let tmp = dir.join(format!("{key}.{}.tmp", std::process::id()));
@@ -345,21 +347,38 @@ impl Dataset {
         if secs.len() != 8 {
             return None;
         }
+        let tm = std::time::Instant::now();
         let main: Snapshot = bincode::deserialize(&b[secs[0].0..secs[0].1]).ok()?;
+        if std::env::var_os("VB_LOAD_TIMING").is_some() {
+            eprintln!("  main section {:?}", tm.elapsed());
+        }
         let names_blob = b[secs[1].0..secs[1].1].to_vec();
+        let tt = std::time::Instant::now();
+        let lt = std::env::var_os("VB_LOAD_TIMING").is_some();
+        let lap = |n: &str| if lt { eprintln!("  {n} {:?}", tt.elapsed()); };
+        let types = LazyTable::decode(&blob, secs[2].0, secs[2].1)?;
+        lap("types");
+        let effects = LazyTable::decode(&blob, secs[3].0, secs[3].1)?;
+        lap("effects");
+        let dbuffs = LazyTable::decode(&blob, secs[4].0, secs[4].1)?;
+        let mutaplasmids = LazyTable::decode(&blob, secs[5].0, secs[5].1)?;
+        lap("dbuffs+muta");
+        let attr_by_name = NameIndex::decode(&blob, secs[6].0, secs[6].1)?;
+        let effect_by_name = NameIndex::decode(&blob, secs[7].0, secs[7].1)?;
+        lap("names");
         Some(Dataset {
             build: main.build,
             release_date: main.release_date,
             sha256: main.sha256,
-            types: LazyTable::decode(&blob, secs[2].0, secs[2].1)?,
+            types,
             groups: main.groups,
             categories: main.categories,
             attrs: main.attrs,
-            effects: LazyTable::decode(&blob, secs[3].0, secs[3].1)?,
-            dbuffs: LazyTable::decode(&blob, secs[4].0, secs[4].1)?,
-            mutaplasmids: LazyTable::decode(&blob, secs[5].0, secs[5].1)?,
-            attr_by_name: NameIndex::decode(&blob, secs[6].0, secs[6].1)?,
-            effect_by_name: NameIndex::decode(&blob, secs[7].0, secs[7].1)?,
+            effects,
+            dbuffs,
+            mutaplasmids,
+            attr_by_name,
+            effect_by_name,
             skills_foldable: main.skills_foldable,
             names: std::sync::OnceLock::new(),
             names_blob,
@@ -392,7 +411,9 @@ impl Dataset {
         ];
         let mut out = Vec::with_capacity(8 + secs.iter().map(|x| x.len() + 8).sum::<usize>());
         out.extend_from_slice(SNAP_MAGIC);
-        for x in secs {
+        for mut x in secs {
+            // pad every section to 8 bytes so in-place u32 arrays stay aligned (all decoders ignore the padding)
+            x.resize(x.len().div_ceil(8) * 8, 0);
             out.extend_from_slice(&(x.len() as u64).to_le_bytes());
             out.extend_from_slice(&x);
         }
@@ -672,132 +693,254 @@ impl<'de> Deserialize<'de> for IdKey {
     }
 }
 
-const SNAPSHOT_VERSION: u32 = 6;
+const SNAPSHOT_VERSION: u32 = 7;
 
 /// Snapshot bytes: memory-mapped cache file (pages faulted in on use) or an owned buffer.
 pub enum Blob {
-    Vec(Vec<u8>),
+    /// owned bytes, stored as u64 words so in-place u32 arrays are aligned; .1 = byte length
+    Words(Vec<u64>, usize),
     Map(memmap2::Mmap),
+}
+
+impl Blob {
+    fn owned(b: &[u8]) -> Blob {
+        let mut w = vec![0u64; b.len().div_ceil(8)];
+        // SAFETY: w has at least b.len() bytes
+        unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), w.as_mut_ptr() as *mut u8, b.len()) };
+        Blob::Words(w, b.len())
+    }
 }
 
 impl std::ops::Deref for Blob {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         match self {
-            Blob::Vec(v) => v,
+            // SAFETY: the Vec holds at least `len` initialised bytes
+            Blob::Words(w, len) => unsafe { std::slice::from_raw_parts(w.as_ptr() as *const u8, *len) },
             Blob::Map(m) => m,
         }
     }
 }
 
-/// Id-keyed table with the FxHashMap-like API the engine uses. Loaded from a snapshot, each entry stays
+/// Id-keyed table with the FxHashMap-like API the engine uses, read in place from the snapshot bytes: the header
+/// arrays (ids, aux, entry offsets, dense id index) are u32 slices of the mapped file and each entry stays
 /// bincode-encoded until first use (a calc touches a few hundred of ~10k types / ~3k effects).
+///
+/// Section layout (8-aligned, u32 LE): n, dense_len, ids[n] (sorted), aux[n], starts[n+1] (relative to the
+/// section), dense[dense_len] (id -> position + 1, 0 = absent; dense_len 0 = binary search), entry bytes.
 pub struct LazyTable<T> {
-    /// sorted ids
-    ids: Vec<u32>,
-    /// per-entry auxiliary key (types: group id), usable without decoding
-    aux: Vec<u32>,
-    /// id -> position + 1 (0 = absent); empty when ids are too sparse (binary search instead)
-    dense: Vec<u32>,
-    slots: Vec<std::sync::OnceLock<T>>,
     blob: std::sync::Arc<Blob>,
-    /// absolute (start, end) of each encoded entry in `blob`
-    spans: Vec<(u32, u32)>,
+    ids: *const u32,
+    aux: *const u32,
+    starts: *const u32,
+    dense: *const u32,
+    n: usize,
+    dense_len: usize,
+    at: usize,
+    /// decoded entries (null = not yet); zero-initialised, published with a CAS
+    slots: Box<[std::sync::atomic::AtomicPtr<T>]>,
 }
+
+// SAFETY: the raw pointers point into `blob`, which is immutable and owned (Arc) by the table.
+unsafe impl<T: Send + Sync> Send for LazyTable<T> {}
+unsafe impl<T: Send + Sync> Sync for LazyTable<T> {}
 
 pub type TypeTable = LazyTable<TypeInfo>;
 
-impl<T: serde::Serialize + serde::de::DeserializeOwned> LazyTable<T> {
-    fn build_index(ids: &[u32]) -> Vec<u32> {
-        let max = ids.last().copied().unwrap_or(0) as usize;
-        if max >= 1 << 24 {
-            return Vec::new();
-        }
-        let mut dense = vec![0u32; max + 1];
-        for (p, &id) in ids.iter().enumerate() {
-            dense[id as usize] = p as u32 + 1;
-        }
-        dense
-    }
+#[cfg(not(target_endian = "little"))]
+compile_error!("the snapshot format reads little-endian u32 arrays in place");
 
-    fn from_map(m: FxHashMap<u32, T>, aux: impl Fn(&T) -> u32) -> LazyTable<T> {
-        let mut v: Vec<(u32, T)> = m.into_iter().collect();
-        v.sort_unstable_by_key(|x| x.0);
-        let ids: Vec<u32> = v.iter().map(|x| x.0).collect();
-        let aux = v.iter().map(|x| aux(&x.1)).collect();
-        let dense = Self::build_index(&ids);
-        let slots = v.into_iter().map(|(_, t)| std::sync::OnceLock::from(t)).collect();
-        LazyTable { ids, aux, dense, slots, blob: std::sync::Arc::new(Blob::Vec(Vec::new())), spans: Vec::new() }
+fn zeroed_slots<T>(n: usize) -> Box<[std::sync::atomic::AtomicPtr<T>]> {
+    if n == 0 {
+        return Box::new([]);
     }
-
-    /// section: u32 n, n x (id, aux, start, end) u32 LE (offsets relative to the section), then encoded entries
-    fn encode(&self) -> Result<Vec<u8>, String> {
-        let n = self.ids.len();
-        let mut body = Vec::new();
-        let mut spans = Vec::with_capacity(n);
-        let head = 4 + n * 16;
-        for p in 0..n {
-            let start = head + body.len();
-            bincode::serialize_into(&mut body, self.at(p)).map_err(|e| e.to_string())?;
-            spans.push((start as u32, (head + body.len()) as u32));
+    let layout = std::alloc::Layout::array::<std::sync::atomic::AtomicPtr<T>>(n).expect("layout");
+    // SAFETY: AtomicPtr<T> has the representation of *mut T, for which all-zero bytes is a valid (null) value;
+    // the allocation has exactly the layout of a [AtomicPtr<T>; n] and is handed to Box with that layout.
+    unsafe {
+        let p = std::alloc::alloc_zeroed(layout) as *mut std::sync::atomic::AtomicPtr<T>;
+        if p.is_null() {
+            std::alloc::handle_alloc_error(layout);
         }
-        let mut out = Vec::with_capacity(head + body.len());
-        out.extend_from_slice(&(n as u32).to_le_bytes());
-        for p in 0..n {
-            for x in [self.ids[p], self.aux[p], spans[p].0, spans[p].1] {
-                out.extend_from_slice(&x.to_le_bytes());
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(p, n))
+    }
+}
+
+impl<T> Drop for LazyTable<T> {
+    fn drop(&mut self) {
+        for s in self.slots.iter() {
+            let p = s.load(std::sync::atomic::Ordering::Acquire);
+            if !p.is_null() {
+                // SAFETY: every non-null slot holds a pointer from Box::into_raw, published once.
+                drop(unsafe { Box::from_raw(p) });
             }
         }
+    }
+}
+
+impl<T: serde::Serialize + serde::de::DeserializeOwned> LazyTable<T> {
+    /// encode a section from (id, aux, entry) triples
+    fn encode_entries<'x>(mut v: Vec<(u32, u32, &'x T)>) -> Result<Vec<u8>, String>
+    where
+        T: 'x,
+    {
+        v.sort_unstable_by_key(|x| x.0);
+        let n = v.len();
+        let max = v.last().map(|x| x.0 as usize).unwrap_or(0);
+        let dense_len = if n == 0 || max >= 1 << 24 { 0 } else { max + 1 };
+        let mut body = Vec::new();
+        let mut starts = Vec::with_capacity(n + 1);
+        let head = 4 * (2 + n + n + (n + 1) + dense_len);
+        for (_, _, t) in &v {
+            starts.push((head + body.len()) as u32);
+            bincode::serialize_into(&mut body, t).map_err(|e| e.to_string())?;
+        }
+        starts.push((head + body.len()) as u32);
+        let mut dense = vec![0u32; dense_len];
+        if dense_len > 0 {
+            for (p, x) in v.iter().enumerate() {
+                dense[x.0 as usize] = p as u32 + 1;
+            }
+        }
+        let mut out = Vec::with_capacity(head + body.len());
+        let mut w = |x: u32| out.extend_from_slice(&x.to_le_bytes());
+        w(n as u32);
+        w(dense_len as u32);
+        v.iter().for_each(|x| w(x.0));
+        v.iter().for_each(|x| w(x.1));
+        starts.iter().for_each(|&x| w(x));
+        dense.iter().for_each(|&x| w(x));
         out.extend_from_slice(&body);
         Ok(out)
     }
 
+    fn from_map(m: FxHashMap<u32, T>, aux: impl Fn(&T) -> u32) -> LazyTable<T> {
+        let v: Vec<(u32, u32, &T)> = m.iter().map(|(k, t)| (*k, aux(t), t)).collect();
+        let bytes = Self::encode_entries(v).expect("encode table");
+        let end = bytes.len();
+        let blob = std::sync::Arc::new(Blob::owned(&bytes));
+        let t = Self::decode(&blob, 0, end).expect("table");
+        // keep the already-built values instead of re-decoding them
+        let mut m = m;
+        for p in 0..t.n {
+            let id = t.id_at(p);
+            if let Some(x) = m.remove(&id) {
+                t.slots[p].store(Box::into_raw(Box::new(x)), std::sync::atomic::Ordering::Release);
+            }
+        }
+        t
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, String> {
+        Self::encode_entries((0..self.n).map(|p| (self.id_at(p), self.aux_at(p), self.at(p))).collect())
+    }
+
     fn decode(blob: &std::sync::Arc<Blob>, at: usize, end: usize) -> Option<LazyTable<T>> {
         let b: &[u8] = blob;
-        let u = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?)) };
-        let n = u(at)? as usize;
-        if at + 4 + n.checked_mul(16)? > end {
+        if at % 4 != 0 || (b.as_ptr() as usize) % 4 != 0 || end > b.len() {
             return None;
         }
-        let mut ids = Vec::with_capacity(n);
-        let mut aux = Vec::with_capacity(n);
-        let mut spans = Vec::with_capacity(n);
+        let u = |o: usize| -> Option<usize> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize) };
+        let n = u(at)?;
+        let dense_len = u(at + 4)?;
+        let words = 2usize.checked_add(n.checked_mul(3)?)?.checked_add(1)?.checked_add(dense_len)?;
+        if at.checked_add(words.checked_mul(4)?)? > end {
+            return None;
+        }
+        let base = b.as_ptr();
+        // SAFETY: in bounds (checked above) and 4-aligned (blob base and `at` are 4-aligned)
+        let ptr = |w: usize| unsafe { base.add(at + 4 * w) as *const u32 };
+        let t = LazyTable {
+            blob: blob.clone(),
+            ids: ptr(2),
+            aux: ptr(2 + n),
+            starts: ptr(2 + 2 * n),
+            dense: ptr(3 + 3 * n),
+            n,
+            dense_len,
+            at,
+            slots: zeroed_slots(n),
+        };
+        // structural checks: sorted ids, monotonic in-bounds offsets
+        let sec = end - at;
         for p in 0..n {
-            let o = at + 4 + p * 16;
-            ids.push(u(o)?);
-            aux.push(u(o + 4)?);
-            let (s, e) = (u(o + 8)? as usize + at, u(o + 12)? as usize + at);
-            if s > e || e > end || e > u32::MAX as usize {
+            if p + 1 < n && t.id_at(p) >= t.id_at(p + 1) {
                 return None;
             }
-            spans.push((s as u32, e as u32));
+            if t.start(p) > t.start(p + 1) {
+                return None;
+            }
         }
-        if ids.windows(2).any(|w| w[0] >= w[1]) {
+        if n > 0 && (t.start(0) < 4 * words || t.start(n) > sec) {
             return None;
         }
-        let dense = Self::build_index(&ids);
-        let slots = (0..n).map(|_| std::sync::OnceLock::new()).collect();
-        Some(LazyTable { ids, aux, dense, slots, blob: blob.clone(), spans })
+        Some(t)
+    }
+
+    #[inline]
+    fn id_at(&self, p: usize) -> u32 {
+        debug_assert!(p < self.n);
+        // SAFETY: p < n, array validated at decode
+        unsafe { *self.ids.add(p) }
+    }
+    #[inline]
+    fn aux_at(&self, p: usize) -> u32 {
+        unsafe { *self.aux.add(p) }
+    }
+    #[inline]
+    fn start(&self, p: usize) -> usize {
+        unsafe { *self.starts.add(p) as usize }
     }
 
     #[inline]
     fn pos(&self, id: u32) -> Option<usize> {
-        if !self.dense.is_empty() || self.ids.is_empty() {
-            match self.dense.get(id as usize) {
-                Some(&p) if p != 0 => Some(p as usize - 1),
-                _ => None,
+        if self.dense_len > 0 {
+            if (id as usize) < self.dense_len {
+                // SAFETY: index < dense_len
+                let p = unsafe { *self.dense.add(id as usize) } as usize;
+                if p != 0 && p <= self.n && self.id_at(p - 1) == id {
+                    return Some(p - 1);
+                }
             }
+            None
         } else {
-            self.ids.binary_search(&id).ok()
+            let (mut lo, mut hi) = (0usize, self.n);
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                match self.id_at(mid).cmp(&id) {
+                    std::cmp::Ordering::Less => lo = mid + 1,
+                    std::cmp::Ordering::Greater => hi = mid,
+                    std::cmp::Ordering::Equal => return Some(mid),
+                }
+            }
+            None
         }
     }
 
     #[inline]
     fn at(&self, p: usize) -> &T {
-        self.slots[p].get_or_init(|| {
-            let (s, e) = self.spans[p];
-            bincode::deserialize(&self.blob[s as usize..e as usize]).expect("corrupt dataset snapshot")
-        })
+        use std::sync::atomic::Ordering;
+        let cur = self.slots[p].load(Ordering::Acquire);
+        if !cur.is_null() {
+            // SAFETY: published Box pointer, never freed while the table lives
+            return unsafe { &*cur };
+        }
+        self.decode_slot(p)
+    }
+
+    #[cold]
+    fn decode_slot(&self, p: usize) -> &T {
+        use std::sync::atomic::Ordering;
+        let (s, e) = (self.at + self.start(p), self.at + self.start(p + 1));
+        let v: T = bincode::deserialize(&self.blob[s..e]).expect("corrupt dataset snapshot");
+        let new = Box::into_raw(Box::new(v));
+        match self.slots[p].compare_exchange(std::ptr::null_mut(), new, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => unsafe { &*new },
+            Err(existing) => {
+                drop(unsafe { Box::from_raw(new) });
+                unsafe { &*existing }
+            }
+        }
     }
 
     #[inline]
@@ -808,24 +951,24 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned> LazyTable<T> {
         self.pos(*id).is_some()
     }
     pub fn len(&self) -> usize {
-        self.ids.len()
+        self.n
     }
     pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
+        self.n == 0
     }
     /// all entries in id order (decodes every entry)
-    pub fn iter(&self) -> impl Iterator<Item = (&u32, &T)> + '_ {
-        self.ids.iter().enumerate().map(move |(p, id)| (id, self.at(p)))
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &T)> + '_ {
+        (0..self.n).map(move |p| (self.id_at(p), self.at(p)))
     }
     pub fn values(&self) -> impl Iterator<Item = &T> + '_ {
-        (0..self.ids.len()).map(move |p| self.at(p))
+        (0..self.n).map(move |p| self.at(p))
     }
 }
 
 impl LazyTable<TypeInfo> {
     /// type ids of one group, without decoding other types
     pub fn ids_in_group(&self, group: u32) -> impl Iterator<Item = u32> + '_ {
-        self.ids.iter().zip(&self.aux).filter(move |(_, g)| **g == group).map(|(id, _)| *id)
+        (0..self.n).filter(move |&p| self.aux_at(p) == group).map(move |p| self.id_at(p))
     }
 }
 
@@ -953,7 +1096,7 @@ impl NameIndex {
     fn from_map(m: &FxHashMap<String, u32>) -> NameIndex {
         let bytes = NameIndex::encode(m);
         let end = bytes.len();
-        let blob = std::sync::Arc::new(Blob::Vec(bytes));
+        let blob = std::sync::Arc::new(Blob::owned(&bytes));
         NameIndex::decode(&blob, 0, end).expect("name index")
     }
 }

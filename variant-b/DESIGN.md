@@ -109,3 +109,11 @@ snapshot atomically (tmp + rename). Cache dir: `$EVE_DOGMA_CACHE`, else
 `$XDG_CACHE_HOME/eve-dogma-vb`, else `~/.cache/eve-dogma-vb`, else tmp.
 `EVE_DOGMA_NO_CACHE=1` disables it. Keyed by content hash, so a changed
 dataset can never serve stale data. `VB_LOAD_TIMING=1` prints load phases.
+
+### Snapshot format v7 (in-place tables)
+File = magic `EVEDVB04` + 8-aligned, length-prefixed sections: bincode(eager part: groups, categories, attrs,
+skills, skills_foldable), bincode(names: zh + type_by_name, decoded on first use), then lazily read tables for
+types / effects / dbuffs / mutaplasmids (u32 header arrays used in place from the mmap: sorted ids, aux = group,
+entry offsets, dense id -> pos index; each entry bincode-decoded on first `get`, published with a CAS into a
+zero-initialised slot array) and two name indexes (FNV-style hash, open addressing) for attr/effect name -> id.
+Cache key = SHA-256 of (absolute path, size, mtime, inode, device) of the dataset file — no content read on a hit.
