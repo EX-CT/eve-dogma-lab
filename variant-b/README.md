@@ -16,8 +16,8 @@ EVE_DOGMA_DATASET=$D cargo test --release                             # oracle +
 python3 tools/diff_vs_a.py A_BIN ./target/release/eve-dogma-vb $D ../eve-dogma-bench/cases   # full diff vs A
 ```
 
-Bench manifest: [bench.yaml](bench.yaml). Results: [results/](results/) (latest official: `results/official-0752`,
-bench 1.8.0+33db85a: 326/326 cases, 21051/21051 values, eft export 326/326, 0.054 ms/fit, 8084 fits/s, cold 10 ms;
+Bench manifest: [bench.yaml](bench.yaml). Results: [results/](results/) (latest official: `results/official-0756`,
+bench 1.8.0+33db85a: 326/326 cases, 21051/21051 values, eft export 326/326, 0.060 ms/fit, 11126 fits/s, cold 5 ms;
 perf numbers are from a shared box at load ≈ 7–8 on 8 cores and vary between runs).
 
 Tests: `tests/*.rs` (integration, see DESIGN.md#verification) and `src/tests/<module>.rs` (unit). Runtime

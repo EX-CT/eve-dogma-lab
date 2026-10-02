@@ -1,0 +1,46 @@
+$ (/workspace/exct-eve/eve-dogma-bench/work/B) git fetch -q --depth 1 origin variant-b && git reset -q --hard FETCH_HEAD
+$ (/workspace/exct-eve/eve-dogma-bench/work/B/variant-b) cargo build --release
+# Scorecard: B
+
+- command: `./target/release/eve-dogma-vb --dataset /workspace/exct-eve/data/dataset-3569502.json.gz calc`, batch: `./target/release/eve-dogma-vb --dataset /workspace/exct-eve/data/dataset-3569502.json.gz batch`
+- cases fully correct: **326/326**
+- values correct: **21051/21051** (100.00 %)
+- engine errors: 0
+
+| group | ok | total | % |
+|---|---|---|---|
+| application | 3943 | 3943 | 100.0 |
+| capacitor | 1147 | 1147 | 100.0 |
+| defense | 5866 | 5866 | 100.0 |
+| fitting | 2934 | 2934 | 100.0 |
+| navigation | 1945 | 1945 | 100.0 |
+| offense | 1304 | 1304 | 100.0 |
+| tank | 2282 | 2282 | 100.0 |
+| targeting | 1630 | 1630 | 100.0 |
+
+| perf | value |
+|---|---|
+| one process per case, median ms (cold start + calc) | 4.7 |
+| batch throughput (corpus x5) fits/s | 11126 |
+| latency one fit (exct_rifter) ms/calc | 0.060 |
+| startup + one calc ms | 7.4 |
+| deterministic | True |
+# Combined scorecard
+
+Generated 2026-10-03 07:57 CST — corpus: 326 cases, expected values from Pyfa (see README).
+
+Bench version 1.8.0+33db85a (see CHANGELOG.md). Rows may come from different runs: see measured_at/bench_version in combined.json; perf numbers are only comparable at similar load.
+
+| variant | status | cases ok | values ok | accuracy % | application | capacitor | defense | fitting | navigation | offense | tank | targeting | ms/fit | fits/s (batch) | cold ms | deterministic | eft export | bench | measured |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A eve-dogma-rs main (Rust, lazy memoised modifier graph) | ok | 331/331 | 22046/22046 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.276 | 2051 | 17 | True | 331/331 | 1.9.0+7db64fa | 2026-10-03 07:05 CST |
+| B data-oriented Rust | ok | 326/326 | 21051/21051 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.060 | 11126 | 5 | True | 326/326 | 1.8.0+33db85a | 2026-10-03 07:56 CST |
+| C Go | ok | 326/326 | 21051/21051 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.075 | 8024 | 28 | True | 326/326 | 1.8.0+0969967 | 2026-10-03 06:13 CST |
+| D TypeScript | ok | 326/326 | 21051/21051 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.943 | 862 | 121 | True | 326/326 | 1.8.0+33db85a | 2026-10-03 07:55 CST |
+| E Pyfa-faithful Rust port | ok | 306/306 | 19621/19621 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.216 | 2993 | 12 | True | 306/306 | 1.7.0+a5bb40e | 2026-10-03 06:04 CST |
+| F codegen Rust/WASM | ok | 326/326 | 21051/21051 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.083 | 10813 | 2 | True | 326/326 | 1.8.0+33db85a | 2026-10-03 07:30 CST |
+| G Python + NumPy batch | ok | 326/326 | 21051/21051 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 2.140 | 333 | 121 | True | 326/326 | 1.8.0+3da9671 | 2026-10-03 06:34 CST |
+| H Rust ECS | ok | 326/326 | 21051/21051 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.381 | 1934 | 7 | True | 326/326 | 1.8.0+33db85a | 2026-10-03 07:28 CST |
+| I Rust salsa incremental | ok | 326/326 | 21051/21051 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.181 | 1435 | 19 | True | 326/326 | 1.8.0+3da9671 | 2026-10-03 06:19 CST |
+| J C++20 | ok | 326/326 | 21051/21051 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0.043 | 8650 | 7 | True | 326/326 | 1.8.0+3da9671 | 2026-10-03 06:18 CST |
+| K Kotlin/JVM or C# | ok | 326/326 | 21051/21051 | 100.00 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 1.464 | 673 | 58 | True | 326/326 | 1.8.0+7db64fa | 2026-10-03 07:04 CST |
