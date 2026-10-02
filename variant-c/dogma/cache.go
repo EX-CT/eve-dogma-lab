@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"unsafe"
 	"sort"
 )
 
@@ -347,7 +348,9 @@ func decodeCache(b []byte, key [32]byte) (*Dataset, error) {
 	if sum := trailerSum(body); !bytes.Equal(sum[:], b[len(b)-32:]) {
 		return nil, errCache
 	}
-	r := &cr{b: body, s: string(body), off: hdr}
+	// zero-copy: names are substrings of the cache bytes themselves. decodeCache takes ownership of b,
+	// which must never be modified afterwards (LoadPathCached reads it fresh from disk).
+	r := &cr{b: body, s: unsafe.String(unsafe.SliceData(body), len(body)), off: hdr}
 	ds := &Dataset{}
 	ds.Build = uint64(r.u32())<<32 | uint64(r.u32())
 	if r.u8() == 1 {
