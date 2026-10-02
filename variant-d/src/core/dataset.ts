@@ -218,6 +218,18 @@ export class Dataset {
   typeAttr(typeId: number, attr: number): number | undefined { return this.typeAttrs(typeId).get(attr); }
 
   /** requiredSkill1..6 of a type (non-zero), memoised */
+  /** type + memoised attribute map + required skills in one lookup (item creation); undefined = unknown type */
+  proto(typeId: number): TypeProto | undefined {
+    let p = this.protoCache.get(typeId);
+    if (p !== undefined) return p;
+    const t = this.types.get(typeId);
+    if (!t) return undefined;
+    p = { t, tattrs: this.typeAttrs(typeId), reqSkills: this.requiredSkills(typeId) };
+    this.protoCache.set(typeId, p);
+    return p;
+  }
+  private protoCache = new Map<number, TypeProto>();
+
   requiredSkills(typeId: number): number[] {
     let r = this.reqSkillCache.get(typeId);
     if (r) return r;
@@ -228,6 +240,8 @@ export class Dataset {
     return r;
   }
 }
+
+export interface TypeProto { t: TypeInfo; tattrs: Map<number, number>; reqSkills: number[] }
 
 /** requiredSkill1..6 */
 export const REQ_SKILL_ATTRS = [182, 183, 184, 1285, 1289, 1290] as const;

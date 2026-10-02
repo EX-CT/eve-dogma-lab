@@ -77,15 +77,16 @@ export class Fit extends AttrGraph {
 
   // ---------------------------------------------------------------- items
   newItem(typeId: number, kind: Kind, loc: Loc, path: string): number {
-    const t = this.ds.types.get(typeId);
-    if (!t) throw new EngineError('UNKNOWN_TYPE', `unknown type_id ${typeId}`, path);
+    const p = this.ds.proto(typeId);
+    if (p === undefined) throw new EngineError('UNKNOWN_TYPE', `unknown type_id ${typeId}`, path);
+    const t = p.t;
     const it: Item = {
       idx: this.items.length, typeId, group: t.group, category: t.category, kind, state: State.Online, loc,
       owned: kind === Kind.Module || kind === Kind.Charge || kind === Kind.Drone || kind === Kind.Fighter || kind === Kind.Ship,
       parent: -1, charge: -1, slot: null, reqIndex: null, quantity: 1, activeCount: 0,
       base: null, ovA: -1, ovV: NaN, // NaN: double field representation from the start (avoids V8 map migrations)
-      tattrs: this.ds.typeAttrs(typeId), cells: null,
-      reqSkills: this.ds.requiredSkills(typeId), effects: t.effects,
+      tattrs: p.tattrs, cells: null,
+      reqSkills: p.reqSkills, effects: t.effects,
       fighterAbilities: null, boosterSideEffects: NO_IDS, spool: null, distance: null,
     };
     this.items.push(it);
