@@ -57,25 +57,27 @@ func evLess(a, b *capEv) bool {
 // evHeap is a typed binary min-heap (no interface boxing: zero allocations per push/pop).
 type evHeap []capEv
 
+// push/pop move a "hole" instead of swapping (half the 64-byte copies of a swap-based heap).
 func (h *evHeap) push(e capEv) {
 	*h = append(*h, e)
 	a := *h
 	i := len(a) - 1
 	for i > 0 {
 		p := (i - 1) / 2
-		if !evLess(&a[i], &a[p]) {
+		if !evLess(&e, &a[p]) {
 			break
 		}
-		a[i], a[p] = a[p], a[i]
+		a[i] = a[p]
 		i = p
 	}
+	a[i] = e
 }
 
 func (h *evHeap) pop() capEv {
 	a := *h
 	n := len(a) - 1
 	top := a[0]
-	a[0] = a[n]
+	last := a[n]
 	a = a[:n]
 	i := 0
 	for {
@@ -87,11 +89,14 @@ func (h *evHeap) pop() capEv {
 		if r := l + 1; r < n && evLess(&a[r], &a[l]) {
 			m = r
 		}
-		if !evLess(&a[m], &a[i]) {
+		if !evLess(&a[m], &last) {
 			break
 		}
-		a[i], a[m] = a[m], a[i]
+		a[i] = a[m]
 		i = m
+	}
+	if n > 0 {
+		a[i] = last
 	}
 	*h = a
 	return top

@@ -3,7 +3,6 @@ package dogma
 import (
 	"encoding/json"
 	"math"
-	"slices"
 	"strconv"
 	"unicode/utf8"
 )
@@ -16,7 +15,7 @@ import (
 type jsonEnc struct {
 	b     []byte
 	round bool
-	keys  [][]string // per-depth key scratch (reused)
+	keys  [][]kvPair // per-depth entry scratch (reused)
 	depth int
 }
 
@@ -105,27 +104,38 @@ func (e *jsonEnc) value(v any, inTree bool) {
 	}
 }
 
+type kvPair struct {
+	k string
+	v any
+}
+
 func (e *jsonEnc) obj(m obj) {
 	if e.depth >= len(e.keys) {
 		e.keys = append(e.keys, nil)
 	}
 	ks := e.keys[e.depth][:0]
-	for k := range m {
-		ks = append(ks, k)
+	for k, v := range m {
+		ks = append(ks, kvPair{k, v})
 	}
-	slices.Sort(ks)
+	// insertion sort: objects are small (typically < 20 keys) and this avoids sort's indirections
+	for i := 1; i < len(ks); i++ {
+		for j := i; j > 0 && ks[j].k < ks[j-1].k; j-- {
+			ks[j], ks[j-1] = ks[j-1], ks[j]
+		}
+	}
 	e.keys[e.depth] = ks
 	e.depth++
 	e.b = append(e.b, '{')
-	for i, k := range ks {
+	for i := range ks {
 		if i > 0 {
 			e.b = append(e.b, ',')
 		}
-		e.b = appendJSONString(e.b, k)
+		e.b = appendJSONString(e.b, ks[i].k)
 		e.b = append(e.b, ':')
-		e.value(m[k], true)
+		e.value(ks[i].v, true)
 	}
 	e.b = append(e.b, '}')
+	clear(ks) // drop references for the GC
 	e.depth--
 }
 
