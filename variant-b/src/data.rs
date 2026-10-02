@@ -150,16 +150,16 @@ struct RawDs {
     format: String,
     format_version: u32,
     sde: RawSde,
-    groups: HashMap<String, RawGroup>,
-    attributes: HashMap<String, RawAttr>,
-    effects: HashMap<String, RawEffect>,
-    types: HashMap<String, RawType>,
+    groups: IdVec<RawGroup>,
+    attributes: IdVec<RawAttr>,
+    effects: IdVec<RawEffect>,
+    types: IdVec<RawType>,
     #[serde(default)]
-    dbuffs: HashMap<String, DbuffInfo>,
+    dbuffs: IdVec<DbuffInfo>,
     #[serde(default)]
-    mutaplasmids: HashMap<String, MutaInfo>,
+    mutaplasmids: IdVec<MutaInfo>,
     #[serde(default)]
-    names: HashMap<String, HashMap<String, String>>,
+    names: HashMap<String, IdVec<String>>,
 }
 #[derive(Deserialize)]
 struct RawSde {
@@ -227,7 +227,7 @@ struct RawType {
     meta_level: Option<i32>,
     variation_parent: Option<u32>,
     #[serde(default)]
-    attrs: HashMap<String, f64>,
+    attrs: IdVec<f64>,
     #[serde(default)]
     effects: Vec<(u32, u8)>,
 }
@@ -270,15 +270,27 @@ impl Dataset {
         } else {
             bytes.to_vec()
         };
-        let sha256 = sha256_hex(&json);
-        let raw: RawDs = serde_json::from_slice(&json).map_err(|e| format!("dataset json: {e}"))?;
+        // hash on a second thread while parsing (the hash is only reported in `meta`)
+        let t0 = std::time::Instant::now();
+        let (sha256, raw) = std::thread::scope(|sc| {
+            let h = sc.spawn(|| {
+                use sha2::Digest;
+                let d = sha2::Sha256::digest(&json);
+                d.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            });
+            let raw: Result<RawDs, String> = serde_json::from_slice(&json).map_err(|e| format!("dataset json: {e}"));
+            (h.join().expect("sha thread"), raw)
+        });
+        let raw = raw?;
+        if std::env::var("VB_LOAD_TIMING").is_ok() {
+            eprintln!("sha+parse {:?}", t0.elapsed());
+        }
         if raw.format != "exct-eve-dataset" || raw.format_version != 1 {
             return Err(format!("unsupported dataset format {} v{}", raw.format, raw.format_version));
         }
         let mut attrs = FxHashMap::default();
         let mut attr_by_name = FxHashMap::default();
-        for (k, a) in raw.attributes {
-            let id: u32 = k.parse().unwrap_or(0);
+        for (id, a) in raw.attributes.0 {
             attr_by_name.insert(a.name.clone(), id);
             attrs.insert(
                 id,
@@ -297,8 +309,7 @@ impl Dataset {
         }
         let mut effects = FxHashMap::default();
         let mut effect_by_name = FxHashMap::default();
-        for (k, e) in raw.effects {
-            let id: u32 = k.parse().unwrap_or(0);
+        for (id, e) in raw.effects.0 {
             effect_by_name.insert(e.name.clone(), id);
             let mods = e
                 .mods
@@ -332,14 +343,13 @@ impl Dataset {
             );
         }
         let mut groups = FxHashMap::default();
-        for (k, g) in raw.groups {
-            groups.insert(k.parse().unwrap_or(0), GroupInfo { name: g.name.unwrap_or_default(), category: g.category });
+        for (k, g) in raw.groups.0 {
+            groups.insert(k, GroupInfo { name: g.name.unwrap_or_default(), category: g.category });
         }
         let mut types = FxHashMap::default();
         let mut type_by_name = FxHashMap::default();
         let mut skills = Vec::new();
-        for (k, t) in raw.types {
-            let id: u32 = k.parse().unwrap_or(0);
+        for (id, t) in raw.types.0 {
             let name = t.name.unwrap_or_default();
             if t.published || !type_by_name.contains_key(&name.to_lowercase()) {
                 type_by_name.insert(name.to_lowercase(), id);
@@ -347,7 +357,7 @@ impl Dataset {
             if t.category == 16 {
                 skills.push(id);
             }
-            let mut a: Vec<(u32, f64)> = t.attrs.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect();
+            let mut a: Vec<(u32, f64)> = t.attrs.0;
             a.sort_by_key(|x| x.0);
             types.insert(
                 id,
@@ -371,12 +381,12 @@ impl Dataset {
             );
         }
         skills.sort();
-        let dbuffs = raw.dbuffs.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect();
-        let mutaplasmids = raw.mutaplasmids.into_iter().map(|(k, v)| (k.parse().unwrap_or(0), v)).collect();
+        let dbuffs = raw.dbuffs.0.into_iter().collect();
+        let mutaplasmids = raw.mutaplasmids.0.into_iter().collect();
         let names_zh = raw
             .names
             .get("zh")
-            .map(|m| m.iter().map(|(k, v)| (k.parse().unwrap_or(0), v.clone())).collect())
+            .map(|m| m.0.iter().map(|(k, v)| (*k, v.clone())).collect())
             .unwrap_or_default();
         Ok(Dataset {
             build: raw.sde.build,
@@ -457,4 +467,50 @@ pub fn sha256_hex(data: &[u8]) -> String {
         }
     }
     h.iter().map(|x| format!("{x:08x}")).collect()
+}
+
+/// JSON object with integer-string keys, deserialised straight into a Vec without allocating key Strings.
+struct IdVec<T>(Vec<(u32, T)>);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for IdVec<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for V<T> {
+            type Value = IdVec<T>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("map with integer keys")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(self, mut m: M) -> Result<IdVec<T>, M::Error> {
+                let mut v = Vec::with_capacity(m.size_hint().unwrap_or(16));
+                while let Some(IdKey(k)) = m.next_key()? {
+                    v.push((k, m.next_value()?));
+                }
+                Ok(IdVec(v))
+            }
+        }
+        d.deserialize_map(V(std::marker::PhantomData))
+    }
+}
+
+impl<T> Default for IdVec<T> {
+    fn default() -> Self {
+        IdVec(Vec::new())
+    }
+}
+
+struct IdKey(u32);
+impl<'de> Deserialize<'de> for IdKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct K;
+        impl serde::de::Visitor<'_> for K {
+            type Value = IdKey;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("integer string key")
+            }
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<IdKey, E> {
+                Ok(IdKey(s.parse().unwrap_or(0)))
+            }
+        }
+        d.deserialize_str(K)
+    }
 }
