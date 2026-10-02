@@ -116,6 +116,18 @@ impl<'a> Fit<'a> {
 
     // ------------------------------------------------------------------ system 1: spawn
     fn spawn_item(&mut self, type_id: u32, kind: Kind, loc: Loc, state: State, path: &str) -> Result<Entity, EngineError> {
+        self.spawn_item_slots(type_id, kind, loc, state, path, FxHashMap::default())
+    }
+
+    fn spawn_item_slots(
+        &mut self,
+        type_id: u32,
+        kind: Kind,
+        loc: Loc,
+        state: State,
+        path: &str,
+        slots: FxHashMap<u32, AttrSlot>,
+    ) -> Result<Entity, EngineError> {
         let t = self.ds.types.get(&type_id).ok_or_else(|| EngineError {
             code: "UNKNOWN_TYPE",
             message: format!("unknown type_id {type_id}"),
@@ -125,7 +137,7 @@ impl<'a> Fit<'a> {
         let e = self.world.spawn((
             Item { type_id, group: t.group, category: t.category, kind, loc, owned },
             Power(state),
-            Attrs { type_id, slots: FxHashMap::default() },
+            Attrs { type_id, slots },
         ));
         self.order.push(e);
         Ok(e)
@@ -241,8 +253,9 @@ impl<'a> Fit<'a> {
         lv.sort();
         for (s, l) in lv {
             let l = l.min(5);
-            let e = fit.spawn_item(s, Kind::Skill, Loc::Char, State::Online, "/character/skills")?;
-            fit.set_base(e, ds.a.skill_level, l as f64);
+            let mut slots = FxHashMap::with_capacity_and_hasher(2, Default::default());
+            slots.insert(ds.a.skill_level, AttrSlot::new(l as f64));
+            let e = fit.spawn_item_slots(s, Kind::Skill, Loc::Char, State::Online, "/character/skills", slots)?;
             fit.skills.push((e, s, l));
         }
         // tactical destroyers: default to the first mode like the client / Pyfa
@@ -360,13 +373,10 @@ impl<'a> Fit<'a> {
             }
         };
         let order = fit.order.clone();
-        for &e in &order {
-            let v = {
-                let c = fit.calc();
-                if c.has(e, src) { Some(c.base(e, src)) } else { None }
-            };
+        for (_, a) in fit.world.query_mut::<&mut Attrs>() {
+            let v = a.slots.get(&src).map(|s| s.base).or_else(|| ds.types.get(&a.type_id).and_then(|t| t.attr(src)));
             if let Some(v) = v {
-                fit.set_base(e, ds.a.sec_mod, v);
+                a.slots.insert(ds.a.sec_mod, AttrSlot::new(v));
             }
         }
         for o in &req.overrides {
