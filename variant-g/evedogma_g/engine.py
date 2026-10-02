@@ -1039,7 +1039,9 @@ def evaluate(batch, fit_mask=None):
     sk_vals = np.concatenate(sk_vals) if sk_vals else np.zeros(0)
     refs = [M["a"], M["b"], M["c"]]
     refs = [r[r >= 0] for r in refs]
-    keys = _sorted_unique(np.concatenate([base_keys, ov_keys, sk_keys, tgt_key] + refs))
+    # skill-level nodes only where a modifier reads or writes them (refs / tgt_key); the others are never read
+    # (their base value is still resolved from sk_keys for the nodes that exist)
+    keys = _sorted_unique(np.concatenate([base_keys, ov_keys, tgt_key] + refs))
     n = len(keys)
     node_item = keys >> B
     node_attr = keys & ((1 << B) - 1)
