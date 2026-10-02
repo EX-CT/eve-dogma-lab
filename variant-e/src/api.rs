@@ -40,6 +40,19 @@ pub fn calc_value(ds: &Dataset, v: serde_json::Value) -> Value {
 }
 
 pub fn calc(ds: &Dataset, req: &FitRequest) -> Result<Value, BuildError> {
+    let t0 = std::time::Instant::now();
+    let fit = build_calc(ds, req)?;
+    let t2 = std::time::Instant::now();
+    let out = fit.stats(req);
+    if std::env::var_os("EVE_E_PROF").is_some() {
+        let t3 = std::time::Instant::now();
+        eprintln!("prof build+calc={:?} stats={:?}", t2 - t0, t3 - t2);
+    }
+    Ok(out)
+}
+
+/// Build and fully calculate a fit (command fits, explicit buffs, projected fits): the state `calc` reports on.
+pub fn build_calc<'a>(ds: &'a Dataset, req: &FitRequest) -> Result<Fit<'a>, BuildError> {
     // command fits first (Pyfa: commandFits are calculated before the local fit)
     let mut bonuses: Vec<CommandBonus> = Vec::new();
     for (i, b) in req.fleet.booster_fits.iter().enumerate() {
@@ -59,9 +72,7 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Result<Value, BuildError> {
             }
         }
     }
-    let t0 = std::time::Instant::now();
     let mut fit = Fit::build(ds, req)?;
-    let t1 = std::time::Instant::now();
     fit.command_bonuses = bonuses;
     let explicit: Vec<(u32, f64)> = req.fleet.buffs.iter().map(|b| (b.buff_id, b.value)).collect();
     fit.calculate(&explicit);
@@ -85,13 +96,7 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Result<Value, BuildError> {
             fit.project_from(&sf, rt, p.amount.max(1), p.distance_m, &mut mirror);
         }
     }
-    let t2 = std::time::Instant::now();
-    let out = fit.stats(req);
-    if std::env::var_os("EVE_E_PROF").is_some() {
-        let t3 = std::time::Instant::now();
-        eprintln!("prof build={:?} calc={:?} stats={:?}", t1 - t0, t2 - t1, t3 - t2);
-    }
-    Ok(out)
+    Ok(fit)
 }
 
 /// `eft_export` RPC: params {fit: FitRequest, name?} -> {text}

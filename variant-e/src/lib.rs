@@ -13,5 +13,6 @@ pub mod generated {
     pub mod effects;
 }
 pub mod api;
+pub mod graphs;
 pub mod jv;
 pub mod eft;

@@ -138,6 +138,14 @@ pub struct SimResult {
 }
 
 pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max: f64, reload: bool, stagger: bool) -> SimResult {
+    run_ex(modules, capacity, recharge, starting, t_max, reload, stagger, true, None)
+}
+
+/// Full simulator. `optimize_repeats` = Pyfa `optimize_repeats`; `saved` (when given) receives Pyfa's
+/// `saved_changes`: (t seconds, max(0, cap)) at every time the capacitor changed by an activation, sorted by t.
+#[allow(clippy::too_many_arguments)]
+pub fn run_ex(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max: f64, reload: bool, stagger: bool,
+              optimize_repeats: bool, mut saved: Option<&mut Vec<(f64, f64)>>) -> SimResult {
     // reset()
     let mut state = Heap { a: Vec::with_capacity(16), h: Vec::with_capacity(16) };
     let mut mods: Vec<([f64; 6], u32)> = Vec::new();
@@ -239,7 +247,7 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
                 cap_lowest_pre = cap;
             }
             if t_now == t_wrap {
-                if cap >= cap_wrap && counter_eq(&awaiting, &awaiting_wrap) {
+                if optimize_repeats && cap >= cap_wrap && counter_eq(&awaiting, &awaiting_wrap) {
                     break;
                 }
                 cap_wrap = py_round1(cap);
@@ -277,11 +285,17 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
                     };
                     let inj = awaiting.remove(best);
                     inject(&mut cap, &mut state, t_now, inj);
+                    if let Some(sv) = saved.as_deref_mut() {
+                        record(sv, t_now, cap);
+                    }
                 }
             }
             cap -= cap_need;
             if cap > cap_cap {
                 cap = cap_cap;
+            }
+            if let Some(sv) = saved.as_deref_mut() {
+                record(sv, t_now, cap);
             }
             if cap < cap_lowest {
                 if cap < 0.0 {
@@ -303,6 +317,9 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
                 }
                 let inj = awaiting.remove(b);
                 inject(&mut cap, &mut state, t_now, inj);
+                if let Some(sv) = saved.as_deref_mut() {
+                    record(sv, t_now, cap);
+                }
             }
             t_now += duration;
             shot += 1.0;
@@ -324,5 +341,21 @@ pub fn run(modules: &[Drain], capacity: f64, recharge: f64, starting: f64, t_max
     let inner = -(2.0 * avg * tau - cap_cap) / cap_cap;
     let eve = if inner < 0.0 { 0.0 } else { 0.25 * (1.0 + inner.sqrt()).powi(2) };
     let (lo, hi) = if cap > 0.0 { (cap_lowest, cap_lowest_pre) } else { (0.0, 0.0) };
+    if let Some(sv) = saved {
+        // dict keyed by time (ms), last write wins; sorted; values clamped at 0, times in s
+        sv.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        for x in sv.iter_mut() {
+            *x = (x.0 / 1000.0, x.1.max(0.0));
+        }
+    }
     SimResult { t: t_last, iterations, cap_stable_low: lo, cap_stable_high: hi, cap_stable_eve: eve }
+}
+
+fn record(sv: &mut Vec<(f64, f64)>, t: f64, cap: f64) {
+    // activations pop in time order, so an equal key can only be the last one
+    if let Some(l) = sv.last_mut().filter(|l| l.0 == t) {
+        l.1 = cap;
+    } else {
+        sv.push((t, cap));
+    }
 }

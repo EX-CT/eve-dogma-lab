@@ -18,22 +18,22 @@ pub struct Dmg {
     pub ex: f64,
 }
 impl Dmg {
-    fn total(&self) -> f64 {
+    pub(crate) fn total(&self) -> f64 {
         self.em + self.th + self.ki + self.ex
     }
-    fn add(&mut self, o: &Dmg) {
+    pub(crate) fn add(&mut self, o: &Dmg) {
         self.em += o.em;
         self.th += o.th;
         self.ki += o.ki;
         self.ex += o.ex;
     }
-    fn mul(&self, f: f64) -> Dmg {
+    pub(crate) fn mul(&self, f: f64) -> Dmg {
         Dmg { em: self.em * f, th: self.th * f, ki: self.ki * f, ex: self.ex * f }
     }
-    fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         obj(vec![("em", Value::from(self.em)), ("thermal", Value::from(self.th)), ("kinetic", Value::from(self.ki)), ("explosive", Value::from(self.ex)), ("total", Value::from(self.total()))])
     }
-    fn vs(&self, r: [f64; 4]) -> Value {
+    pub(crate) fn vs(&self, r: [f64; 4]) -> Value {
         let d = Dmg { em: self.em * (1.0 - r[0]), th: self.th * (1.0 - r[1]), ki: self.ki * (1.0 - r[2]), ex: self.ex * (1.0 - r[3]) };
         d.json()
     }
@@ -127,12 +127,12 @@ impl<'a> Fit<'a> {
         }
         self.attr_opt(it, id).unwrap_or(d)
     }
-    fn has_effect_name(&self, it: It, name: &str) -> bool {
+    pub(crate) fn has_effect_name(&self, it: It, name: &str) -> bool {
         let id = self.ds.effect_id(name);
         id != 0 && self.items[it].effects.contains(&id)
     }
 
-    fn raw_cycle_time(&self, m: It) -> f64 {
+    pub(crate) fn raw_cycle_time(&self, m: It) -> f64 {
         static IDS: std::sync::OnceLock<[u32; 7]> = std::sync::OnceLock::new();
         let ds = self.ds;
         let ids = IDS.get_or_init(|| {
@@ -150,7 +150,7 @@ impl<'a> Fit<'a> {
         ids.iter().map(|&a| if a == 0 { 0.0 } else { self.attr_opt(m, a).unwrap_or(0.0) }).fold(0.0, f64::max)
     }
 
-    fn num_charges(&self, m: It) -> f64 {
+    pub(crate) fn num_charges(&self, m: It) -> f64 {
         let c = self.items[m].charge;
         if c == NONE {
             return 0.0;
@@ -187,7 +187,7 @@ impl<'a> Fit<'a> {
         }
     }
 
-    fn reload_time(&self, m: It) -> f64 {
+    pub(crate) fn reload_time(&self, m: It) -> f64 {
         let id = self.a("reloadTime");
         let v = if id == 0 { None } else { self.attr_opt(m, id) };
         let v = v.or(self.items[m].reload_time);
@@ -218,17 +218,17 @@ impl<'a> Fit<'a> {
         Some(((active + inactive) * early + (active + reload)) / (early + 1.0))
     }
 
-    fn is_breacher(&self, m: It) -> bool {
+    pub(crate) fn is_breacher(&self, m: It) -> bool {
         let c = self.items[m].charge;
         c != NONE && self.has_effect_name(c, "dotMissileLaunching")
     }
 
-    fn spool_opts(&self, m: It, default: Option<Spool>) -> Option<Spool> {
+    pub(crate) fn spool_opts(&self, m: It, default: Option<Spool>) -> Option<Spool> {
         self.items[m].spool.or(default)
     }
 
     /// getVolleyParameters -> list of (time, volley)
-    fn volley_params(&self, m: It, default_spool: Option<Spool>) -> Vec<(f64, Dmg)> {
+    pub(crate) fn volley_params(&self, m: It, default_spool: Option<Spool>) -> Vec<(f64, Dmg)> {
         if self.items[m].state < ACTIVE {
             return vec![(0.0, Dmg::default())];
         }
@@ -300,7 +300,7 @@ impl<'a> Fit<'a> {
     }
 
     /// (module_volley, module_dps, cycle_avg) with one getVolleyParameters / getCycleParameters evaluation
-    fn volley_dps_cycle(&self, m: It, sp: Option<Spool>) -> (Dmg, Dmg, Option<f64>) {
+    pub(crate) fn volley_dps_cycle(&self, m: It, sp: Option<Spool>) -> (Dmg, Dmg, Option<f64>) {
         let p = self.volley_params(m, sp);
         let vol = p.iter().min_by(|a, b| a.0.partial_cmp(&b.0).unwrap()).map(|x| x.1).unwrap_or_default();
         let avg = self.cycle_avg(m, None);
@@ -331,7 +331,7 @@ impl<'a> Fit<'a> {
         }
     }
 
-    fn drone_deals_damage(&self, d: It) -> bool {
+    pub(crate) fn drone_deals_damage(&self, d: It) -> bool {
         let c = self.items[d].charge;
         ["emDamage", "kineticDamage", "explosiveDamage", "thermalDamage"].iter().any(|n| {
             let id = self.a(n);
@@ -339,7 +339,7 @@ impl<'a> Fit<'a> {
         })
     }
 
-    fn drone_cycle(&self, d: It) -> f64 {
+    pub(crate) fn drone_cycle(&self, d: It) -> f64 {
         let ct = if self.items[d].charge != NONE {
             self.g(d, "missileLaunchDuration")
         } else {
@@ -383,11 +383,11 @@ impl<'a> Fit<'a> {
         v.mul(1.0 / (ct / 1000.0))
     }
 
-    fn ability_prefix(&self, e: u32) -> &'static str {
+    pub(crate) fn ability_prefix(&self, e: u32) -> &'static str {
         meta().get(&e).map(|m| m.prefix).unwrap_or("")
     }
 
-    fn ability_volley(&self, f: It, e: u32, active: bool) -> Dmg {
+    pub(crate) fn ability_volley(&self, f: It, e: u32, active: bool) -> Dmg {
         let p = self.ability_prefix(e);
         let deals = self.items[f].mad.contains(self.a(&format!("{p}DamageMultiplier"))) || self.items[f].charge != NONE;
         if !deals || !active {
@@ -408,13 +408,13 @@ impl<'a> Fit<'a> {
         Dmg { em: em * mult, th: th * mult, ki: ki * mult, ex: ex * mult }
     }
 
-    fn ability_cycle(&self, f: It, e: u32) -> f64 {
+    pub(crate) fn ability_cycle(&self, f: It, e: u32) -> f64 {
         self.g(f, &format!("{}Duration", self.ability_prefix(e)))
     }
-    fn ability_has_charges(e: u32) -> bool {
+    pub(crate) fn ability_has_charges(e: u32) -> bool {
         meta().get(&e).map(|m| m.has_charges).unwrap_or(false)
     }
-    fn ability_num_shots(&self, f: It, e: u32) -> f64 {
+    pub(crate) fn ability_num_shots(&self, f: It, e: u32) -> f64 {
         if !Self::ability_has_charges(e) {
             return 0.0;
         }
@@ -425,7 +425,7 @@ impl<'a> Fit<'a> {
             _ => 0.0,
         }
     }
-    fn ability_reload(&self, f: It, e: u32, spent: Option<f64>) -> f64 {
+    pub(crate) fn ability_reload(&self, f: It, e: u32, spent: Option<f64>) -> f64 {
         let ns = self.ability_num_shots(f, e);
         let spent = spent.map(|s| s.max(ns)).unwrap_or(ns);
         let rearm = if Self::ability_has_charges(e) {
@@ -442,7 +442,7 @@ impl<'a> Fit<'a> {
     }
 
     /// fighter.getCycleParametersPerEffect -> (effect, averageTime)
-    fn fighter_cycles(&self, f: It, factor: bool) -> Vec<(u32, f64)> {
+    pub(crate) fn fighter_cycles(&self, f: It, factor: bool) -> Vec<(u32, f64)> {
         let ab = &self.items[f].abilities;
         let all: Vec<(u32, f64)> = ab.iter().map(|a| (a.0, self.ability_cycle(f, a.0))).filter(|x| x.1 > 0.0).collect();
         if !factor {
@@ -542,10 +542,10 @@ impl<'a> Fit<'a> {
         d
     }
 
-    fn slot_of(&self, m: It) -> Option<SlotReq> {
+    pub(crate) fn slot_of(&self, m: It) -> Option<SlotReq> {
         self.items[m].slot
     }
-    fn hardpoint(&self, m: It) -> u8 {
+    pub(crate) fn hardpoint(&self, m: It) -> u8 {
         let t = self.items[m].t;
         if t.has_effect(42) {
             1
@@ -557,7 +557,7 @@ impl<'a> Fit<'a> {
     }
 
     /// Drone.maxRange
-    fn drone_max_range(&self, d: It) -> Option<f64> {
+    pub(crate) fn drone_max_range(&self, d: It) -> Option<f64> {
         for a in ["shieldTransferRange", "powerTransferRange", "energyDestabilizationRange", "empFieldRange", "ecmBurstRange", "maxRange", "ECMRangeOptimal"] {
             let v = self.g(d, a);
             if v != 0.0 {
@@ -570,7 +570,7 @@ impl<'a> Fit<'a> {
         }
         None
     }
-    fn drone_falloff(&self, d: It) -> Option<f64> {
+    pub(crate) fn drone_falloff(&self, d: It) -> Option<f64> {
         for a in ["falloff", "falloffEffectiveness"] {
             let v = self.g(d, a);
             if v != 0.0 {
@@ -581,7 +581,7 @@ impl<'a> Fit<'a> {
     }
 
     /// Fit.calculateSustainableTank: local repairers limited by capacitor (shield, armor, hull)
-    fn sustainable_tank(&self, base: [f64; 3], cap_stable: bool, cap_used: f64, cap_recharge: f64) -> [f64; 3] {
+    pub(crate) fn sustainable_tank(&self, base: [f64; 3], cap_stable: bool, cap_used: f64, cap_recharge: f64) -> [f64; 3] {
         let mut out = base;
         if cap_stable && !self.factor_reload {
             return out;
@@ -697,7 +697,7 @@ impl<'a> Fit<'a> {
         Some(lo * (1.0 - ch) + hi * ch)
     }
 
-    fn missile_range(&self, m: It) -> Option<(f64, f64, f64)> {
+    pub(crate) fn missile_range(&self, m: It) -> Option<(f64, f64, f64)> {
         let c = self.items[m].charge;
         if c == NONE {
             return None;
@@ -741,7 +741,7 @@ impl<'a> Fit<'a> {
     }
 
     /// weapon category label (contract `offense.weapons[].kind`)
-    fn weapon_kind(&self, m: It) -> &'static str {
+    pub(crate) fn weapon_kind(&self, m: It) -> &'static str {
         if self.has_effect_name(m, "turretFitted") {
             "turret"
         } else if self.has_effect_name(m, "launcherFitted") {
@@ -755,7 +755,7 @@ impl<'a> Fit<'a> {
         }
     }
 
-    fn effectivify(&self, pattern: [f64; 4], amount: f64, layer: &str) -> f64 {
+    pub(crate) fn effectivify(&self, pattern: [f64; 4], amount: f64, layer: &str) -> f64 {
         let r = self.resonances(layer);
         let tot: f64 = pattern.iter().sum();
         let tot = if tot == 0.0 { 1.0 } else { tot };
@@ -763,7 +763,7 @@ impl<'a> Fit<'a> {
         amount / if div == 0.0 { 1.0 } else { div }
     }
 
-    fn resonances(&self, layer: &str) -> [f64; 4] {
+    pub(crate) fn resonances(&self, layer: &str) -> [f64; 4] {
         const N: [[&str; 4]; 3] = [
             ["shieldEmDamageResonance", "shieldThermalDamageResonance", "shieldKineticDamageResonance", "shieldExplosiveDamageResonance"],
             ["armorEmDamageResonance", "armorThermalDamageResonance", "armorKineticDamageResonance", "armorExplosiveDamageResonance"],
@@ -782,7 +782,51 @@ impl<'a> Fit<'a> {
         [self.g(s, n[0]), self.g(s, n[1]), self.g(s, n[2]), self.g(s, n[3])]
     }
 
-    fn cap_recharge_at(&self, pct: f64, capacity: f64, rate_s: f64) -> f64 {
+    /// Fit.__generateDrain: capsim drains plus (capUsed GJ/s, capAdded GJ/s)
+    pub fn cap_drains(&self) -> (Vec<Drain>, f64, f64) {
+        let ds = self.ds;
+        let mods = &self.modules;
+        let mut drains = Vec::new();
+        let (mut used, mut added) = (0.0, 0.0);
+        let inj_group = |m: It| ds.group_name(self.items[m].t.group) == "Capacitor Booster";
+        for &m in mods {
+            if self.items[m].state < ACTIVE {
+                continue;
+            }
+            let need = self.g(m, "capacitorNeed");
+            if need == 0.0 {
+                continue;
+            }
+            let full = self.raw_cycle_time(m) + self.g(m, "moduleReactivationDelay");
+            if full > 0.0 {
+                let cu = self.cap_use(m);
+                if cu > 0.0 {
+                    used += cu;
+                } else {
+                    added -= cu;
+                }
+                drains.push(Drain {
+                    duration: full.trunc(),
+                    cap_need: need,
+                    clip_size: self.num_shots(m),
+                    disable_stagger: self.hardpoint(m) == 1,
+                    reload_time: self.reload_time(m),
+                    is_injector: inj_group(m),
+                });
+            }
+        }
+        for d in &self.extra_drains {
+            drains.push(Drain { duration: d.0.trunc(), cap_need: d.1, clip_size: d.2, disable_stagger: false, reload_time: d.3, is_injector: false });
+            if d.1 > 0.0 {
+                used += d.1 / (d.0 / 1000.0);
+            } else {
+                added += -d.1 / (d.0 / 1000.0);
+            }
+        }
+        (drains, used, added)
+    }
+
+    pub(crate) fn cap_recharge_at(&self, pct: f64, capacity: f64, rate_s: f64) -> f64 {
         10.0 / rate_s * pct.sqrt() * (1.0 - pct.sqrt()) * capacity
     }
 
@@ -918,43 +962,7 @@ impl<'a> Fit<'a> {
         // ---------------- capacitor (fit.simulateCap)
         let cap = s("capacitorCapacity");
         let rr = s("rechargeRate");
-        let mut drains = Vec::new();
-        let (mut used, mut added) = (0.0, 0.0);
-        let inj_group = |m: It| ds.group_name(self.items[m].t.group) == "Capacitor Booster";
-        for &m in mods {
-            if self.items[m].state < ACTIVE {
-                continue;
-            }
-            let need = self.g(m, "capacitorNeed");
-            if need == 0.0 {
-                continue;
-            }
-            let full = self.raw_cycle_time(m) + self.g(m, "moduleReactivationDelay");
-            if full > 0.0 {
-                let cu = self.cap_use(m);
-                if cu > 0.0 {
-                    used += cu;
-                } else {
-                    added -= cu;
-                }
-                drains.push(Drain {
-                    duration: full.trunc(),
-                    cap_need: need,
-                    clip_size: self.num_shots(m),
-                    disable_stagger: self.hardpoint(m) == 1,
-                    reload_time: self.reload_time(m),
-                    is_injector: inj_group(m),
-                });
-            }
-        }
-        for d in &self.extra_drains {
-            drains.push(Drain { duration: d.0.trunc(), cap_need: d.1, clip_size: d.2, disable_stagger: false, reload_time: d.3, is_injector: false });
-            if d.1 > 0.0 {
-                used += d.1 / (d.0 / 1000.0);
-            } else {
-                added += -d.1 / (d.0 / 1000.0);
-            }
-        }
+        let (drains, used, added) = self.cap_drains();
         let peak = self.cap_recharge_at(0.25, cap, rr / 1000.0);
         let recharge = added + peak;
         let mut capj = obj(vec![("capacity", Value::from(cap)), ("recharge_time_s", Value::from(rr / 1000.0)), ("peak_recharge_gj_s", Value::from(peak)), ("use_gj_s", Value::from(used)), ("injected_gj_s", Value::from(added)), ("delta_gj_s", Value::from(recharge - used))]);
@@ -1052,7 +1060,7 @@ impl<'a> Fit<'a> {
     }
 
     /// Fit.__getAppliedRr for shield (0), armor (1), hull (2)
-    fn applied_rr(&self, kind: usize) -> f64 {
+    pub(crate) fn applied_rr(&self, kind: usize) -> f64 {
         let list: Vec<(f64, f64)> = self.rr.iter().filter(|r| r.0 == kind).map(|r| (r.1, r.2)).collect();
         let total: f64 = list.iter().map(|(a, c)| a / c.trunc()).sum();
         let mut out = 0.0;
@@ -1065,7 +1073,7 @@ impl<'a> Fit<'a> {
         out
     }
 
-    fn violations(&self, cpu: f64, pg: f64, calib: f64, bw: f64) -> Vec<Value> {
+    pub(crate) fn violations(&self, cpu: f64, pg: f64, calib: f64, bw: f64) -> Vec<Value> {
         let mut v = Vec::new();
         let ship = self.ship;
         let s = |n: &str| self.g(ship, n);
@@ -1107,7 +1115,7 @@ impl<'a> Fit<'a> {
         v
     }
 
-    fn dump_attributes(&self, inc: &str) -> Value {
+    pub(crate) fn dump_attributes(&self, inc: &str) -> Value {
         let ds = self.ds;
         let want: Option<Vec<u32>> = if inc == "all" { None } else { Some(inc.split(',').map(|n| ds.attr_id(n.trim())).filter(|&x| x != 0).collect()) };
         let dump = |it: It| -> Value {
@@ -1167,7 +1175,7 @@ fn unused(_: &Ids) {}
 #[cfg(test)]
 mod round_tests {
     #[test]
-    fn fast_round_matches_format() {
+    pub(crate) fn fast_round_matches_format() {
         let mut x: u64 = 0x9E3779B97F4A7C15;
         for i in 0..2_000_000u64 {
             x ^= x << 13;
