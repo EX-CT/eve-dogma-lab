@@ -133,7 +133,7 @@ pub struct Item<'a> {
     pub req_index: usize,
     pub spool: Option<Spool>,
     /// effect ids in item order (Pyfa item.effects)
-    pub effects: Vec<u32>,
+    pub effects: &'a [u32],
     /// fighters: (ability effect id, active)
     pub abilities: Vec<(u32, bool)>,
     pub side_effects: Vec<u32>,

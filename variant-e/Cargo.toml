@@ -14,8 +14,10 @@ name = "eve_dogma_e"
 path = "src/lib.rs"
 
 [dependencies]
+bincode = "1.3"
 flate2 = "1"
 rustc-hash = "2"
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 

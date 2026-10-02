@@ -1,9 +1,9 @@
 //! EXCT dataset (eve-sde-pipeline `exct-eve-dataset` v1) loader.
 use rustc_hash::FxHashMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::io::Read;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttrInfo {
     pub name: String,
     pub default: f64,
@@ -13,7 +13,7 @@ pub struct AttrInfo {
     pub stackable: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectInfo {
     pub name: String,
     pub category: u32,
@@ -24,7 +24,7 @@ pub struct EffectInfo {
     pub is_assistance: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeInfo {
     pub id: u32,
     pub name: String,
@@ -35,6 +35,8 @@ pub struct TypeInfo {
     pub attrs: Vec<(u32, f64)>,
     /// (effect id, is_default) in dataset order
     pub effects: Vec<(u32, bool)>,
+    /// effect ids only (same order)
+    pub effect_ids: Vec<u32>,
     /// requiredSkill1..6 -> (skill type id, level)
     pub req_skills: Vec<(u32, u8)>,
 }
@@ -48,7 +50,7 @@ impl TypeInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbuffInfo {
     pub aggregate_max: bool,
     pub op: i32,
@@ -58,12 +60,13 @@ pub struct DbuffInfo {
     pub location_skill: Vec<(u32, u32)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mutaplasmid {
     pub attrs: Vec<(u32, f64, f64)>,
     pub mapping: Vec<(Vec<u32>, u32)>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Dataset {
     pub build: u64,
     pub sha256: String,
@@ -178,54 +181,50 @@ pub const A_RADIUS: u32 = 162;
 const REQ_SKILL_ATTRS: [(u32, u32); 6] = [(182, 277), (183, 278), (184, 279), (1285, 1286), (1289, 1287), (1290, 1288)];
 
 fn sha256_hex(data: &[u8]) -> String {
-    // small self-contained SHA-256 (dataset fingerprint for the response meta)
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
-        0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-        0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
-        0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08,
-        0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-    ];
-    let mut h: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-    let mut msg = data.to_vec();
-    let bitlen = (data.len() as u64) * 8;
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bitlen.to_be_bytes());
-    for chunk in msg.chunks(64) {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([chunk[4 * i], chunk[4 * i + 1], chunk[4 * i + 2], chunk[4 * i + 3]]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
-        }
-        let mut v = h;
-        for i in 0..64 {
-            let s1 = v[4].rotate_right(6) ^ v[4].rotate_right(11) ^ v[4].rotate_right(25);
-            let ch = (v[4] & v[5]) ^ (!v[4] & v[6]);
-            let t1 = v[7].wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
-            let s0 = v[0].rotate_right(2) ^ v[0].rotate_right(13) ^ v[0].rotate_right(22);
-            let maj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
-            let t2 = s0.wrapping_add(maj);
-            v = [t1.wrapping_add(t2), v[0], v[1], v[2], v[3].wrapping_add(t1), v[4], v[5], v[6]];
-        }
-        for i in 0..8 {
-            h[i] = h[i].wrapping_add(v[i]);
-        }
-    }
-    h.iter().map(|x| format!("{x:08x}")).collect()
+    use sha2::Digest;
+    let d = sha2::Sha256::digest(data);
+    d.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 impl Dataset {
+    /// Load the dataset, using a derived binary cache (bincode) keyed by a hash of the dataset file.
+    /// Cache dir: $EVE_DOGMA_E_CACHE, else $XDG_CACHE_HOME/eve-dogma-e, else ~/.cache/eve-dogma-e, else /tmp.
     pub fn load(path: &str) -> Result<Dataset, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("cannot read dataset {path}: {e}"))?;
+        let key = {
+            use std::hash::Hasher;
+            let mut h = rustc_hash::FxHasher::default();
+            h.write(&bytes);
+            h.write(concat!(env!("CARGO_PKG_VERSION"), "-cache-v1").as_bytes());
+            format!("{:016x}-{}", h.finish(), bytes.len())
+        };
+        let dir = std::env::var_os("EVE_DOGMA_E_CACHE")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(|x| std::path::PathBuf::from(x).join("eve-dogma-e")))
+            .or_else(|| std::env::var_os("HOME").map(|x| std::path::PathBuf::from(x).join(".cache/eve-dogma-e")))
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/eve-dogma-e"));
+        let cpath = dir.join(format!("dataset-{key}.bin"));
+        if std::env::var_os("EVE_DOGMA_E_NO_CACHE").is_none() {
+            if let Ok(c) = std::fs::read(&cpath) {
+                if let Ok(ds) = bincode::deserialize::<Dataset>(&c) {
+                    return Ok(ds);
+                }
+            }
+        }
+        let ds = Self::from_bytes(bytes)?;
+        if std::env::var_os("EVE_DOGMA_E_NO_CACHE").is_none() {
+            if let Ok(enc) = bincode::serialize(&ds) {
+                let _ = std::fs::create_dir_all(&dir);
+                let tmp = dir.join(format!(".tmp-{}-{key}", std::process::id()));
+                if std::fs::write(&tmp, enc).is_ok() {
+                    let _ = std::fs::rename(&tmp, &cpath);
+                }
+            }
+        }
+        Ok(ds)
+    }
+
+    fn from_bytes(bytes: Vec<u8>) -> Result<Dataset, String> {
         let mut json = Vec::with_capacity(bytes.len() * 11);
         if bytes.starts_with(&[0x1f, 0x8b]) {
             flate2::read::GzDecoder::new(&bytes[..]).read_to_end(&mut json).map_err(|e| format!("gunzip: {e}"))?;
@@ -316,6 +315,7 @@ impl Dataset {
                     category: t.category,
                     published: t.published.unwrap_or(false),
                     attrs: av,
+                    effect_ids: t.effects.iter().map(|(e, _)| *e).collect(),
                     effects: t.effects.into_iter().map(|(e, d)| (e, d != 0)).collect(),
                     req_skills: req,
                 },

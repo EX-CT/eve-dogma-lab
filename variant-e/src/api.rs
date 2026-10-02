@@ -15,11 +15,16 @@ fn be(e: BuildError) -> Value {
 
 /// Calculate one FitRequest given as JSON text.
 pub fn calc_str(ds: &Dataset, text: &str) -> Value {
-    let v: Value = match serde_json::from_str(text) {
-        Ok(v) => v,
-        Err(e) => return err("BAD_JSON", &e.to_string(), ""),
-    };
-    calc_value(ds, v)
+    match serde_json::from_str::<FitRequest>(text) {
+        Ok(req) => match calc(ds, &req) {
+            Ok(v) => v,
+            Err(e) => be(e),
+        },
+        Err(e) => match serde_json::from_str::<Value>(text) {
+            Ok(_) => err("BAD_REQUEST", &e.to_string(), ""),
+            Err(e) => err("BAD_JSON", &e.to_string(), ""),
+        },
+    }
 }
 
 pub fn calc_value(ds: &Dataset, v: Value) -> Value {
@@ -53,7 +58,9 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Result<Value, BuildError> {
             }
         }
     }
+    let t0 = std::time::Instant::now();
     let mut fit = Fit::build(ds, req)?;
+    let t1 = std::time::Instant::now();
     fit.command_bonuses = bonuses;
     let explicit: Vec<(u32, f64)> = req.fleet.buffs.iter().map(|b| (b.buff_id, b.value)).collect();
     fit.calculate(&explicit);
@@ -77,5 +84,11 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Result<Value, BuildError> {
             fit.project_from(&sf, rt, p.amount, p.distance_m, &mut mirror);
         }
     }
-    Ok(fit.stats(req))
+    let t2 = std::time::Instant::now();
+    let out = fit.stats(req);
+    if std::env::var_os("EVE_E_PROF").is_some() {
+        let t3 = std::time::Instant::now();
+        eprintln!("prof build={:?} calc={:?} stats={:?}", t1 - t0, t2 - t1, t3 - t2);
+    }
+    Ok(out)
 }

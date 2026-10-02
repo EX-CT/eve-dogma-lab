@@ -65,7 +65,7 @@ impl<'a> Fit<'a> {
             slot: None,
             req_index: 0,
             spool: None,
-            effects: t.effects.iter().map(|e| e.0).collect(),
+            effects: &t.effect_ids,
             abilities: Vec::new(),
             side_effects: Vec::new(),
             active: true,
@@ -87,7 +87,7 @@ impl<'a> Fit<'a> {
                     let item = &mut self.items[it];
                     item.t = t;
                     item.mad = Mad::new(&t.attrs);
-                    item.effects = t.effects.iter().map(|e| e.0).collect();
+                    item.effects = &t.effect_ids;
                 }
             }
         }
@@ -285,7 +285,7 @@ impl<'a> Fit<'a> {
             let m = meta();
             let mut std_seen = false;
             let mut ab = Vec::new();
-            for &e in &it.effects {
+            for &e in it.effects {
                 let Some(em) = m.get(&e) else {
                     ab.push((e, false));
                     continue;
@@ -413,8 +413,8 @@ impl<'a> Fit<'a> {
             // (character, ship)
             for k in 0..self.skills.len() {
                 let s = self.skills[k];
-                let effs = self.items[s].effects.clone();
-                for e in effs {
+                let effs: &'a [u32] = self.items[s].effects;
+                for &e in effs {
                     let Some(em) = m.get(&e) else { continue };
                     if em.run_time == rt && em.is(T_PASSIVE) && (!self.structure || em.is(T_STRUCTURE)) && em.active_by_default {
                         self.run_effect(e, s, Ctx::Skill as u16, None, s);
@@ -422,7 +422,7 @@ impl<'a> Fit<'a> {
                 }
             }
             let ship = self.ship;
-            for e in self.items[ship].effects.clone() {
+            for &e in self.items[ship].effects {
                 let Some(em) = m.get(&e) else { continue };
                 if em.run_time == rt && em.is(T_PASSIVE) && em.active_by_default {
                     self.run_effect(e, ship, Ctx::Ship as u16, None, ship);
@@ -441,7 +441,7 @@ impl<'a> Fit<'a> {
             if !self.structure {
                 for k in 0..self.boosters.len() {
                     let b = self.boosters[k];
-                    for e in self.items[b].effects.clone() {
+                    for &e in self.items[b].effects {
                         let Some(em) = m.get(&e) else { continue };
                         if em.run_time == rt && (em.is(T_PASSIVE) || em.is(T_BOOSTERSIDEEFFECT)) {
                             if em.is(T_BOOSTERSIDEEFFECT) && !self.items[b].side_effects.contains(&e) {
@@ -453,7 +453,7 @@ impl<'a> Fit<'a> {
                 }
                 for k in 0..self.implants.len() {
                     let i = self.implants[k];
-                    for e in self.items[i].effects.clone() {
+                    for &e in self.items[i].effects {
                         let Some(em) = m.get(&e) else { continue };
                         if em.run_time == rt && em.is(T_PASSIVE) && em.active_by_default {
                             self.run_effect(e, i, Ctx::Implant as u16, None, i);
@@ -473,7 +473,7 @@ impl<'a> Fit<'a> {
             // restricted: mode, projected drones, projected fighters, projected modules
             if self.mode != NONE {
                 let md = self.mode;
-                for e in self.items[md].effects.clone() {
+                for &e in self.items[md].effects {
                     let Some(em) = m.get(&e) else { continue };
                     if em.run_time == rt && em.active_by_default {
                         self.run_effect(e, md, Ctx::Module as u16, None, md);
@@ -527,7 +527,7 @@ impl<'a> Fit<'a> {
                     slot: s.slot,
                     req_index: s.req_index,
                     spool: s.spool,
-                    effects: s.effects.clone(),
+                    effects: s.effects,
                     abilities: s.abilities.clone(),
                     side_effects: Vec::new(),
                     active: s.active,
@@ -538,7 +538,7 @@ impl<'a> Fit<'a> {
                     let c = &src.items[s.charge];
                     self.items.push(Item { t: c.t, kind: Kind::Charge, mad: Mad::new(&[]), charge: NONE, parent: ti, state: 0, amount: 1,
                         amount_active: 0, level: 0, reload_time: None, force_reload: None, proj_range: None, slot: None, req_index: 0,
-                        spool: None, effects: c.effects.clone(), abilities: Vec::new(), side_effects: Vec::new(), active: true });
+                        spool: None, effects: c.effects, abilities: Vec::new(), side_effects: Vec::new(), active: true });
                     let ci = self.items.len() - 1;
                     self.items[ti].charge = ci;
                     mirror.push((s.charge, ci));
@@ -570,10 +570,10 @@ impl<'a> Fit<'a> {
             }
             for _ in 0..amount {
                 let pr = self.items[ti].proj_range;
-                let effs = self.items[ti].effects.clone();
+                let effs: &'a [u32] = self.items[ti].effects;
                 match kind {
                     Kind::ProjDrone => {
-                        for &e in &effs {
+                        for &e in effs {
                             let Some(em) = m.get(&e) else { continue };
                             if em.run_time == rt && em.active_by_default && em.is(T_PROJECTED) {
                                 let n = if em.grouped { 1 } else { self.items[ti].amount_active };
@@ -599,7 +599,7 @@ impl<'a> Fit<'a> {
                     }
                     _ => {
                         let state = self.items[ti].state;
-                        for &e in &effs {
+                        for &e in effs {
                             let Some(em) = m.get(&e) else { continue };
                             if em.run_time == rt && em.active_by_default && self.effect_ok_module(em, state) && em.is(T_PROJECTED) {
                                 self.run_effect(e, ti, Ctx::Projected as u16 | Ctx::Module as u16, pr, ti);
@@ -618,23 +618,23 @@ impl<'a> Fit<'a> {
         let pr = self.items[md].proj_range;
         let ch = self.items[md].charge;
         if ch != NONE {
-            for e in self.items[ch].effects.clone() {
+            for &e in self.items[ch].effects {
                 let Some(em) = m.get(&e) else { continue };
                 if em.run_time == rt && em.active_by_default && self.effect_ok_module(em, state) && em.is(T_GANG) {
                     self.run_effect(e, md, Ctx::ModuleCharge as u16, pr, md);
                 }
             }
         }
-        let effs = self.items[md].effects.clone();
+        let effs: &'a [u32] = self.items[md].effects;
         if state >= OVERHEATED {
-            for &e in &effs {
+            for &e in effs {
                 let Some(em) = m.get(&e) else { continue };
                 if em.run_time == rt && em.is(T_OVERHEAT) && em.active_by_default && em.is(T_GANG) {
                     self.run_effect(e, md, Ctx::Module as u16, pr, md);
                 }
             }
         }
-        for &e in &effs {
+        for &e in effs {
             let Some(em) = m.get(&e) else { continue };
             if em.run_time == rt && em.active_by_default && self.effect_ok_module(em, state) && em.is(T_GANG) {
                 self.run_effect(e, md, Ctx::Module as u16, pr, md);
@@ -672,7 +672,7 @@ impl<'a> Fit<'a> {
         let pr = self.items[md].proj_range;
         let ch = self.items[md].charge;
         if ch != NONE {
-            for e in self.items[ch].effects.clone() {
+            for &e in self.items[ch].effects {
                 let Some(em) = m.get(&e) else { continue };
                 if em.run_time == rt && em.active_by_default && self.effect_ok_module(em, state) {
                     self.run_effect(e, md, Ctx::ModuleCharge as u16, pr, md);
@@ -680,16 +680,16 @@ impl<'a> Fit<'a> {
             }
         }
         let ctx = if projected { Ctx::Projected as u16 | Ctx::Module as u16 } else { Ctx::Module as u16 };
-        let effs = self.items[md].effects.clone();
+        let effs: &'a [u32] = self.items[md].effects;
         if state >= OVERHEATED {
-            for &e in &effs {
+            for &e in effs {
                 let Some(em) = m.get(&e) else { continue };
                 if em.run_time == rt && em.is(T_OVERHEAT) && em.active_by_default {
                     self.run_effect(e, md, ctx, pr, md);
                 }
             }
         }
-        for &e in &effs {
+        for &e in effs {
             let Some(em) = m.get(&e) else { continue };
             if em.run_time == rt && em.active_by_default && self.effect_ok_module(em, state) && (!projected || em.is(T_PROJECTED)) {
                 self.run_effect(e, md, ctx, pr, md);
@@ -702,7 +702,7 @@ impl<'a> Fit<'a> {
         let m = self.meta;
         let ctx = if projected { Ctx::Projected as u16 | Ctx::Drone as u16 } else { Ctx::Drone as u16 };
         let pr = self.items[d].proj_range;
-        for e in self.items[d].effects.clone() {
+        for &e in self.items[d].effects {
             let Some(em) = m.get(&e) else { continue };
             if em.run_time == rt && em.active_by_default && ((projected && em.is(T_PROJECTED)) || (!projected && em.is(T_PASSIVE))) {
                 if em.grouped {
@@ -716,7 +716,7 @@ impl<'a> Fit<'a> {
         }
         let ch = self.items[d].charge;
         if ch != NONE {
-            for e in self.items[ch].effects.clone() {
+            for &e in self.items[ch].effects {
                 let Some(em) = m.get(&e) else { continue };
                 if em.run_time == rt && em.active_by_default {
                     self.run_effect(e, d, Ctx::DroneCharge as u16, pr, d);
