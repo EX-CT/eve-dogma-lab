@@ -4,7 +4,7 @@ Part of the EX-CT engine bake-off (`EX-CT/eve-dogma-lab`). Same contract as `eve
 (stateless `FitRequest` JSON → `FitStats` JSON, same dataset `exct-eve-dataset` v1), different architecture.
 
 ## Goals (in order)
-1. **Correctness** — identical numbers to the Pyfa oracle (`testdata/oracle/pyfa_expected.json`, 249 fits / 13 812 values; bench 249/249).
+1. **Correctness** — identical numbers to the Pyfa oracle (`testdata/oracle/pyfa_expected.json`, 297 fits / 19 103 values; bench 1.6.0 297/297, EFT export 297/297).
 2. **Speed** — beat eve-dogma-rs per calculation, not just Pyfa.
 3. **Maintainability / embeddability** — idiomatic Go, zero dependencies (stdlib only), library + CLI + HTTP.
 
@@ -50,9 +50,15 @@ skills becomes O(1) per fit instead of O(skills × modifiers).
 ### Dataset loading
 A byte scanner splits the 7 MB JSON document into top-level sections without decoding them. The
 `types` section (10 746 types) is split per type and decoded and indexed by a `GOMAXPROCS` worker pool.
-The small sections and the sha256 run in parallel with it. Gunzip writes straight into a buffer sized from
-the gzip ISIZE trailer, and GC is relaxed during the load. Load time fell from ~300 ms to ~125 ms wall clock.
-The data format is unchanged: no derived cache file is needed.
+Load time fell from ~300 ms to ~125 ms wall clock.
+
+**Binary cache (v4, `cache.go`).** `LoadPathCached` keeps a flat little-endian copy of the derived tables:
+types, attributes, effects, groups, categories, names, dbuffs and mutaplasmids. It is keyed by the sha256
+of the dataset file, guarded by a crc32c trailer, and lives in `$EVE_DOGMA_CACHE_DIR` or the user cache dir
+(`EVE_DOGMA_CACHE=off` disables it). Strings point into the cache buffer (`unsafe.String`, zero copy).
+Type attributes are slab-allocated, and GC is paused while loading. Name and group indices are built lazily
+(`sync.Once`), and the T3D mode lists are precomputed. Startup plus one calc takes 27 ms (min of 20), and the
+first calc in a process ≈4.5 ms.
 
 ### Evaluation
 CCP operator order (PreAssign, PreMul, PreDiv, ModAdd, ModSub, PostMul, PostDiv, PostPercent, PostAssign),
@@ -77,6 +83,31 @@ frozen into overlays, × amount), charges on projected modules, incoming remote 
 diminishing-returns formula) and neut/nos/cap-transfer drains in the capacitor sim, Pyfa missile range
 (acceleration phase, floor/ceil blend, FoF cap).
 
+### Hot path (per calculation)
+Pyfa parity fixes the arithmetic, so the speed work removes overhead around it:
+* **Fit reuse.** `Fit` objects (items, registry, caches) come from a `sync.Pool` and are reset rather than
+  reallocated. Working memory is reused across calcs.
+* **Dense registry and node cache.** Attribute ids are remapped to a dense index per Dataset, so registry
+  and cache lookups are slice indexing, not maps. `attrSet.get` is a branch-free lower bound with an
+  arithmetic mask.
+* **Request decoder (`fastdec.go`).** A strict, reflection-free parser for `FitRequest`. It falls back to
+  encoding/json on anything unusual and is fuzzed against it (`FuzzFastDecoder`, 6 M execs).
+  `DecodeRequest` is used everywhere. Decode went from 35 to 7 µs/fit.
+* **Output encoder (`jsonenc.go`, `rows.go`).** A hand-written encoder for the contract format (sorted
+  keys, 1e-6 rounding, non-finite → null). Stats objects are typed rows: `modRow` for modules, `fobj` for
+  fixed-key float objects, `kobj` for small unboxed key/value objects. `Tidy` turns them back into
+  generic maps for library users, and `TestFastEncoder` checks byte equality with the generic path.
+  Allocations per corpus run went from 98.5 k to 72.5 k.
+* **Capsim.** Pyfa's heapq order is reproduced exactly, with the same iteration counts (Vexor 20 320). The
+  reschedule is folded into the next pop (`pushPop`), and repeated exp/penalty terms are memoised. Vexor
+  went from 980 to 795 µs. `math.Min`/`Max` were replaced by builtins with the same NaN/±0 behaviour
+  (−10 % instructions).
+* **Pipelines.** `batch` decodes, computes and encodes on N goroutines with order-preserving output.
+  `serve-stdio` (JSONL) and `serve-http` are long-running and pay the dataset load once.
+* **Serve-mode memo (`cmd/eve-dogma-go/memo.go`).** Long-running modes only: an LRU of the last
+  `EVE_DOGMA_MEMO` (default 4096, `0` = off) request bytes → response bytes. `calc` and `batch`, and
+  therefore the bench throughput figures, never use it.
+
 ### Layers
 | package | file | role |
 |---|---|---|
@@ -87,8 +118,13 @@ diminishing-returns formula) and neut/nos/cap-transfer drains in the capacitor s
 | | `ids.go` | well-known attribute/effect/group ids resolved once per Dataset |
 | | `stats.go` | resources/offense/defense/capacitor/navigation/targeting/validation |
 | | `capsim.go` | Pyfa-compatible event-driven capacitor simulation |
-| | `eft.go` | EFT import/export (incl. mutations) |
+| | `eft.go` | EFT import, Pyfa-exact EFT export (incl. mutations) |
+| | `cache.go` | binary dataset cache v4 |
+| | `fastdec.go` | reflection-free FitRequest decoder |
+| | `jsonenc.go`, `rows.go` | contract JSON encoder, typed output rows (`modRow`, `fobj`, `kobj`) |
 | `cmd/eve-dogma-go` | `main.go` | CLI: calc, batch, serve-stdio, serve-http, eft, search, type, meta, bench |
+| | `memo.go` | serve-mode response memo |
+| `tools/` | `diff_vs_rs.py`, `eft_export_check.py`, `instr.sh` | full-output diff against A, EFT export parity, callgrind instructions/calc |
 
 ### Concurrency
 `Dataset` is immutable after load → any number of goroutines can `Calc` in parallel (HTTP server, batch
@@ -101,10 +137,10 @@ diminishing-returns formula) and neut/nos/cap-transfer drains in the capacitor s
 * **Exact parity with Rust over idiomatic floats.** The fold order and penalty constants follow
   eve-dogma-rs bit for bit. That adds some ceremony (the phase split, hardcoded constants), but full-output
   diffs against A are clean and easy to read.
-* **`map[string]any` output.** Stats are built as generic maps for contract fidelity (sorted keys, null
-  for non-finite numbers, 1e-6 rounding) rather than typed structs. That is simple and reflection-free to
-  read, at the price of some allocations (~1 k allocations per fit).
-* **No unsafe, no cgo, no dependencies.** Embeds in any Go service; `go build` is the whole toolchain.
+* **Typed rows, generic API.** Hot objects are typed rows (`modRow`/`fobj`/`kobj`) that the encoder writes
+  directly. Library callers still get `map[string]any` through `Tidy`. Two representations cost some code,
+  and `TestFastEncoder` keeps them byte-identical.
+* **No cgo, no dependencies; `unsafe` only for zero-copy cache strings.** Embeds in any Go service; `go build` is the whole toolchain.
 
 ## Contract
 CLI flags, JSON shapes and error codes mirror eve-dogma-rs (`calc`, `batch`, `serve-stdio`, `eft`, `search`,
