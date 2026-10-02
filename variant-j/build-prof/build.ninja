@@ -97,6 +97,14 @@ build CMakeFiles/evej.dir/src/api.cpp.o: CXX_COMPILER__evej_unscanned_Release /w
   OBJECT_DIR = CMakeFiles/evej.dir
   OBJECT_FILE_DIR = CMakeFiles/evej.dir/src
 
+build CMakeFiles/evej.dir/src/eft.cpp.o: CXX_COMPILER__evej_unscanned_Release /workspace/exct-eve/lab-j/variant-j/src/eft.cpp || cmake_object_order_depends_target_evej
+  DEFINES = -DSIMDJSON_THREADS_ENABLED=1
+  DEP_FILE = CMakeFiles/evej.dir/src/eft.cpp.o.d
+  FLAGS = -g -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-unused-parameter
+  INCLUDES = -I/workspace/exct-eve/lab-j/variant-j/src
+  OBJECT_DIR = CMakeFiles/evej.dir
+  OBJECT_FILE_DIR = CMakeFiles/evej.dir/src
+
 
 # =============================================================================
 # Link build statements for STATIC_LIBRARY target evej
@@ -105,7 +113,7 @@ build CMakeFiles/evej.dir/src/api.cpp.o: CXX_COMPILER__evej_unscanned_Release /w
 #############################################
 # Link the static library libevej.a
 
-build libevej.a: CXX_STATIC_LIBRARY_LINKER__evej_Release CMakeFiles/evej.dir/src/dataset.cpp.o CMakeFiles/evej.dir/src/request.cpp.o CMakeFiles/evej.dir/src/engine.cpp.o CMakeFiles/evej.dir/src/capsim.cpp.o CMakeFiles/evej.dir/src/stats.cpp.o CMakeFiles/evej.dir/src/api.cpp.o
+build libevej.a: CXX_STATIC_LIBRARY_LINKER__evej_Release CMakeFiles/evej.dir/src/dataset.cpp.o CMakeFiles/evej.dir/src/request.cpp.o CMakeFiles/evej.dir/src/engine.cpp.o CMakeFiles/evej.dir/src/capsim.cpp.o CMakeFiles/evej.dir/src/stats.cpp.o CMakeFiles/evej.dir/src/api.cpp.o CMakeFiles/evej.dir/src/eft.cpp.o
   LANGUAGE_COMPILE_FLAGS = -g -O3 -DNDEBUG
   OBJECT_DIR = CMakeFiles/evej.dir
   POST_BUILD = :
