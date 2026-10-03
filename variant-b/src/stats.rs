@@ -382,30 +382,30 @@ impl<'a> Fit<'a> {
         let tubes_used = fighters.iter().filter(|&&i| self.items[i].active_count > 0).count();
         let class_used = |c: &str| fighters.iter().filter(|&&i| self.items[i].active_count > 0 && fighter_class(i) == c).count() as f64;
         let resources = json!({
-            "cpu": usage(cpu_used, self.get(ship, id.cpu_out)),
-            "power": usage(pg_used, self.get(ship, id.power_out)),
-            "calibration": usage(calib_used, self.get(ship, id.upgrade_cap)),
-            "drone_bandwidth": usage(bw_used, self.get(ship, crate::attr_id!(ds, "droneBandwidth"))),
-            "drone_bay": usage(bay_used, self.get(ship, crate::attr_id!(ds, "droneCapacity"))),
-            "fighter_bay": usage(fbay_used, self.get(ship, crate::attr_id!(ds, "fighterCapacity"))),
-            "cargo": usage(cargo_used, self.get(ship, 38)),
+            "cpu": crate::out::own(usage(cpu_used, self.get(ship, id.cpu_out))),
+            "power": crate::out::own(usage(pg_used, self.get(ship, id.power_out))),
+            "calibration": crate::out::own(usage(calib_used, self.get(ship, id.upgrade_cap))),
+            "drone_bandwidth": crate::out::own(usage(bw_used, self.get(ship, crate::attr_id!(ds, "droneBandwidth")))),
+            "drone_bay": crate::out::own(usage(bay_used, self.get(ship, crate::attr_id!(ds, "droneCapacity")))),
+            "fighter_bay": crate::out::own(usage(fbay_used, self.get(ship, crate::attr_id!(ds, "fighterCapacity")))),
+            "cargo": crate::out::own(usage(cargo_used, self.get(ship, 38))),
             "slots": {
-                "high": usage(count_slot(Slot::High) as f64, slot_tot("hiSlots")),
-                "mid": usage(count_slot(Slot::Mid) as f64, slot_tot("medSlots")),
-                "low": usage(count_slot(Slot::Low) as f64, slot_tot("lowSlots")),
-                "rig": usage(count_slot(Slot::Rig) as f64, slot_tot("rigSlots")),
-                "subsystem": usage(count_slot(Slot::Subsystem) as f64, slot_tot("maxSubSystems")),
-                "service": usage(count_slot(Slot::Service) as f64, slot_tot("serviceSlots")),
+                "high": crate::out::own(usage(count_slot(Slot::High) as f64, slot_tot("hiSlots"))),
+                "mid": crate::out::own(usage(count_slot(Slot::Mid) as f64, slot_tot("medSlots"))),
+                "low": crate::out::own(usage(count_slot(Slot::Low) as f64, slot_tot("lowSlots"))),
+                "rig": crate::out::own(usage(count_slot(Slot::Rig) as f64, slot_tot("rigSlots"))),
+                "subsystem": crate::out::own(usage(count_slot(Slot::Subsystem) as f64, slot_tot("maxSubSystems"))),
+                "service": crate::out::own(usage(count_slot(Slot::Service) as f64, slot_tot("serviceSlots"))),
             },
             "hardpoints": {
-                "turret": usage(turrets_used as f64, slot_tot("turretSlotsLeft")),
-                "launcher": usage(launchers_used as f64, slot_tot("launcherSlotsLeft")),
+                "turret": crate::out::own(usage(turrets_used as f64, slot_tot("turretSlotsLeft"))),
+                "launcher": crate::out::own(usage(launchers_used as f64, slot_tot("launcherSlotsLeft"))),
             },
             "fighter_tubes": {
-                "total": usage(tubes_used as f64, self.get(ship, crate::attr_id!(ds, "fighterTubes"))),
-                "light": usage(class_used("light"), self.get(ship, crate::attr_id!(ds, "fighterLightSlots"))),
-                "support": usage(class_used("support"), self.get(ship, crate::attr_id!(ds, "fighterSupportSlots"))),
-                "heavy": usage(class_used("heavy"), self.get(ship, crate::attr_id!(ds, "fighterHeavySlots"))),
+                "total": crate::out::own(usage(tubes_used as f64, self.get(ship, crate::attr_id!(ds, "fighterTubes")))),
+                "light": crate::out::own(usage(class_used("light"), self.get(ship, crate::attr_id!(ds, "fighterLightSlots")))),
+                "support": crate::out::own(usage(class_used("support"), self.get(ship, crate::attr_id!(ds, "fighterSupportSlots")))),
+                "heavy": crate::out::own(usage(class_used("heavy"), self.get(ship, crate::attr_id!(ds, "fighterHeavySlots")))),
             },
         });
 
@@ -442,7 +442,7 @@ impl<'a> Fit<'a> {
                 "module_index": self.items[i].req_index, "type_id": self.items[i].type_id,
                 "name": ds.types[&self.items[i].type_id].name, "kind": kind,
                 "charge_type_id": self.items[i].charge.map(|c| self.items[c].type_id),
-                "volley": vol_spooled.json(), "dps": dps.json(), "cycle_time_ms": cyc,
+                "volley": crate::out::own(vol_spooled.json()), "dps": crate::out::own(dps.json()), "cycle_time_ms": cyc,
             });
             if kind == "turret" {
                 w["optimal_m"] = json!(opt);
@@ -505,7 +505,7 @@ impl<'a> Fit<'a> {
             let dps = v.scale(1000.0 / cyc);
             d_vol.add(&v);
             d_dps.add(&dps);
-            drone_out.push(json!({"drone_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "count": n, "volley": v.json(), "dps": dps.json(),
+            drone_out.push(json!({"drone_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "count": n, "volley": crate::out::own(v.json()), "dps": crate::out::own(dps.json()),
                 "optimal_m": self.get(i, crate::attr_id!(ds, "maxRange")), "falloff_m": self.get(i, crate::attr_id!(ds, "falloff")), "tracking": self.get(i, crate::attr_id!(ds, "trackingSpeed")),
                 "max_velocity": self.get(i, crate::attr_id!(ds, "maxVelocity")), "signature_radius": self.get(i, crate::attr_id!(ds, "signatureRadius"))}));
         }
@@ -547,7 +547,7 @@ impl<'a> Fit<'a> {
             if fv.total() > 0.0 {
                 f_vol.add(&fv);
                 f_dps.add(&fd);
-                fighter_out.push(json!({"fighter_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "squadron_size": n, "volley": fv.json(), "dps": fd.json(),
+                fighter_out.push(json!({"fighter_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "squadron_size": n, "volley": crate::out::own(fv.json()), "dps": crate::out::own(fd.json()),
                     "max_velocity": self.get(i, crate::attr_id!(ds, "maxVelocity")), "signature_radius": self.get(i, crate::attr_id!(ds, "signatureRadius"))}));
             }
         }
@@ -558,9 +558,9 @@ impl<'a> Fit<'a> {
         t_dps.add(&d_dps);
         t_dps.add(&f_dps);
         let offense = json!({
-            "weapons": weapons, "drones": drone_out, "fighters": fighter_out,
+            "weapons": crate::out::own(weapons), "drones": crate::out::own(drone_out), "fighters": crate::out::own(fighter_out),
             "total": {"weapon_dps": w_dps.total(), "weapon_volley": w_vol.total(), "drone_dps": d_dps.total(), "drone_volley": d_vol.total(),
-                      "fighter_dps": f_dps.total(), "fighter_volley": f_vol.total(), "dps": t_dps.json(), "volley": t_vol.json()},
+                      "fighter_dps": f_dps.total(), "fighter_volley": f_vol.total(), "dps": crate::out::own(t_dps.json()), "volley": crate::out::own(t_vol.json())},
             "vs_target_profile": {"dps": t_dps.vs(&tp_res), "volley": t_vol.vs(&tp_res)},
         });
 
@@ -640,7 +640,7 @@ impl<'a> Fit<'a> {
         let passive = if shield_rr_s > 0.0 { 10.0 / shield_rr_s * 0.5 * 0.5 * hp_s } else { 0.0 };
         let mut defense = json!({
             "hp": {"shield": hp_s, "armor": hp_a, "hull": hp_h, "total": hp_s + hp_a + hp_h},
-            "resonance": {"shield": res_json(rs), "armor": res_json(ra), "hull": res_json(rh)},
+            "resonance": {"shield": crate::out::own(res_json(rs)), "armor": crate::out::own(res_json(ra)), "hull": crate::out::own(res_json(rh))},
             "ehp": {"shield": e_s, "armor": e_a, "hull": e_h, "total": e_s + e_a + e_h},
             "damage_pattern": {"em": dp.em, "thermal": dp.thermal, "kinetic": dp.kinetic, "explosive": dp.explosive},
             "tank": {
@@ -919,18 +919,18 @@ impl<'a> Fit<'a> {
         }
         match req.options.include_attributes.as_deref() {
             Some("ship") => {
-                out.insert("attributes", json!({"ship": self.dump_attrs(ship)}));
+                out.insert("attributes", json!({"ship": crate::out::own(self.dump_attrs(ship))}));
             }
             Some("all") => {
                 let mut m = Map::new();
                 m.insert("ship", self.dump_attrs(ship));
                 m.insert("character", self.dump_attrs(ch));
                 let mods: Vec<Value> = modules.iter().map(|&i| {
-                    json!({"module_index": self.items[i].req_index, "type_id": self.items[i].type_id, "attributes": self.dump_attrs(i),
+                    json!({"module_index": self.items[i].req_index, "type_id": self.items[i].type_id, "attributes": crate::out::own(self.dump_attrs(i)),
                            "charge": self.items[i].charge.map(|c| self.dump_attrs(c))})
                 }).collect();
                 m.insert("modules", Value::Array(mods));
-                let dr: Vec<Value> = drones.iter().map(|&i| json!({"drone_index": self.items[i].req_index, "attributes": self.dump_attrs(i)})).collect();
+                let dr: Vec<Value> = drones.iter().map(|&i| json!({"drone_index": self.items[i].req_index, "attributes": crate::out::own(self.dump_attrs(i))})).collect();
                 m.insert("drones", Value::Array(dr));
                 out.insert("attributes", Value::Object(m));
             }

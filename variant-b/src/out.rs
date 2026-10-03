@@ -230,6 +230,26 @@ fn write_str(out: &mut Vec<u8>, s: &str) {
     let _ = serde_json::to_writer(&mut *out, s);
 }
 
+/// `jv!` converts its operands by reference; `own(x)` hands an already-built document over by value
+/// (taken out of the cell on conversion) instead of deep-cloning it.
+pub struct Own(std::cell::Cell<J>);
+#[inline]
+pub fn own(j: impl Into<J>) -> Own {
+    Own(std::cell::Cell::new(j.into()))
+}
+impl ToJ for Own {
+    #[inline]
+    fn to_j(&self) -> J {
+        self.0.take()
+    }
+}
+impl From<Vec<J>> for J {
+    #[inline]
+    fn from(v: Vec<J>) -> J {
+        J::Array(v)
+    }
+}
+
 /// Conversion used by `jv!(expr)` (the counterpart of `serde_json::to_value(&expr)`).
 pub trait ToJ {
     fn to_j(&self) -> J;
