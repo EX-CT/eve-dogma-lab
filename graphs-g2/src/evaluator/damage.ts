@@ -131,7 +131,7 @@ export function dealers(p: FitPrim): Dealer[] {
     d.dps = v4(dr.dps);
     d.volley = v4(dr.volley);
     d.count = dr.count;
-    d.mobile = (it.attrs.maxVelocity ?? 0) > 0;
+    d.mobile = (it.attrs.maxVelocity ?? 0) >= 1; // sentries have a token 1.25e-5 m/s: they never follow
     d.speed = it.attrs.maxVelocity ?? 0;
     d.sig = it.attrs.signatureRadius ?? 0;
     d.optimal = dr.optimal_m;
@@ -503,7 +503,8 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
         if (f <= 0) continue;
         const hp = tgt.hp;
         const tick = Math.min(d.breacher!.maxTick, hp === Infinity ? Infinity : (d.breacher!.pct / 100) * hp);
-        breach = Math.max(breach, tick === Infinity ? d.breacher!.maxTick : tick);
+        // range chance (flight time between whole seconds) scales the tick like any missile
+        breach = Math.max(breach, (tick === Infinity ? d.breacher!.maxTick : tick) * f);
         continue;
       }
       const f = applicationFactor(d, g, settings, dcr, lockRange);
