@@ -76,6 +76,11 @@ damage axes, ewar/RR target fits, empty `x.values`, and the error codes. Code: `
 | errors (expected error code) | 20/20 | 20/20 |
 | **total** | **178/178** | **2437/2437** |
 
+Extra oracle probes (not part of 0.2 scoring), no code change needed:
+- G2's random probes (`graphs-g2/testdata/oracle-probes.jsonl`): 7493/7493.
+- The bench's pending 0.3 probes (`graphs/pending/probes-0.3.jsonl`: sentries in follow_target, breacher range, bomb
+  reactivation gaps, fighters vs fast targets, application-profile projected-cache grid, XL navy tier): 1367/1367.
+
 Same result via `graph-batch`, one-process-per-case `graph`, and RPC `graph` (`run_graphs.py --batch-cmd / --cmd /
 --rpc-cmd`). 178 requests in one `graph-batch` process: ~120 ms incl. 8 ms start-up (≈0.6 ms per request, release
 build). Under 0.1 the score was 111/111 cases and 1843/1843 values. Results: `bench/graphs-scorecard.md` / `.json`. Bench manifest keys: `graph_cmd`, `graph_batch_cmd`.
