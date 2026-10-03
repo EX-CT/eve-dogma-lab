@@ -10,6 +10,17 @@ use std::borrow::Cow;
 
 pub type Key = Cow<'static, str>;
 
+/// Byte-wise key order (same as `str::cmp`); short keys usually differ in the first bytes,
+/// so a leading-byte check avoids the memcmp call.
+#[inline]
+fn key_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    match (a.first(), b.first()) {
+        (Some(x), Some(y)) if x != y => x.cmp(y),
+        _ => a.cmp(b),
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum J {
     #[default]
@@ -138,7 +149,7 @@ impl J {
             }
             J::Object(o) => {
                 let mut ix: Vec<&(Key, J)> = o.0.iter().collect();
-                ix.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                ix.sort_unstable_by(|a, b| key_cmp(&a.0, &b.0));
                 out.push(b'{');
                 for (k, (key, x)) in ix.into_iter().enumerate() {
                     if k > 0 {
@@ -167,7 +178,7 @@ impl J {
                 out.push(b']');
             }
             J::Object(mut o) => {
-                o.0.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                o.0.sort_unstable_by(|a, b| key_cmp(&a.0, &b.0));
                 out.push(b'{');
                 for (k, (key, x)) in o.0.into_iter().enumerate() {
                     if k > 0 {
