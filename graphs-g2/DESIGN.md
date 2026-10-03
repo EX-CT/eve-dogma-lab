@@ -89,9 +89,9 @@ observation of the Pyfa oracle; no Pyfa (GPL) graph code was copied or translate
 | corpus via `graph-batch` (111 requests, 1843 points; engine + evaluator, incl. process start) | 0.94 s |
 | engine `graph-primitives` for the corpus (incl. dataset load) | 0.55 s |
 | evaluator only, replaying cached primitives (`--eval-only`) | 0.33 s incl. Node start |
-| evaluator only, in-process (`bench/perf.mjs`) | ~58 k points/s, ~3.5 k requests/s (time-axis schedules and capsim dominate) |
-| dense interactive: `damage` vs distance, 500 points, evaluator only | ~0.5 ms |
-| dense `application_profile`, 500 points, 50 charges | ~14 ms (identical weapons merged, target geometry shared across charges) |
+| evaluator only, in-process (`bench/perf.mjs`) | ~90 k points/s, ~5.5 k requests/s |
+| dense interactive: `damage` vs distance, 500 points, evaluator only | ~0.45 ms |
+| dense `application_profile`, 500 points, 50 charges | ~14–19 ms (identical weapons merged, target geometry shared across charges) |
 | cold start + one dense damage request (engine + Node) | ~190 ms |
 | primitives JSON size | median 41 KB per request; application_profile up to 1.1 MB (one module set per charge) |
 | WASM engine (`GOOS=js GOARCH=wasm`, 11.6 MB) + evaluator, whole corpus | 111/111, 8.0 s (WASM start + dataset load per batch) |
@@ -105,5 +105,7 @@ graphs-g2/src/test/        unit + golden tests (npm test)
 graphs-g2/testdata/        golden requests + primitives + results
 graphs-g2/bin/             graph-batch, eve-dogma-wasm
 graphs-g2/bench/           scorecards, perf.mjs
+graphs-g2/tools/           check_probes.py (extra oracle probes)
+graphs-g2/web/             browser demo
 graphs-g2/score.sh         build + score against a graphs-round2 checkout
 ```

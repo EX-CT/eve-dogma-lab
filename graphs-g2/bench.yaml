@@ -1,3 +1,4 @@
 # graphs round 2 (approach G2); run from this directory
 build: npm ci && npx tsc -p . && (cd ../variant-c && go build -trimpath -o bin/eve-dogma-go ./cmd/eve-dogma-go)
 graph_batch_cmd: ./bin/graph-batch --dataset {dataset}
+graph_cmd: ./bin/graph-batch --dataset {dataset}   # one GraphRequest line in, one GraphResult line out
