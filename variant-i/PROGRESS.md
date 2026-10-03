@@ -115,3 +115,16 @@ database per request (INC_OK, FRESH_OK); EFT export 326/326; deterministic outpu
 - Bench 1.8.0: still 326/326 with byte-identical batch output (corpus x5), INC_OK and FRESH_OK, EFT export 326/326,
   deterministic. The official 08:18 row measured 9a4844a. 349c6fd adds no new optimisation; it adds a per-request
   slot check over implants and boosters.
+
+## 2026-10-03 ~09:55 CST: bench 1.9.0 port (branch `variant-i-wip`)
+- Overheat order: an `overload*` attribute of a ship module sees only the modifiers from modules fitted before it
+  (by req_index). If a later module modifies it, that value is computed uncached with the later modules skipped.
+  Other attributes keep the cached path.
+- Breacher pods (charge effect `dotMissileLaunching`): weapon kind `breacher`. Volley and DPS are one tick
+  (`dotMaxDamagePerTick` per 1 s) and `duration_s` = floor(dotDuration/1000). A new `pure` damage component is
+  added to the volley/DPS totals and emitted only when non-zero.
+- Semantics follow eve-dogma-rs 0fa98c3 (A). No code was copied. The capsim `round(cap,1)` change was not ported
+  because no case needs it.
+- Bench 1.9.0: 331/331 (22,046/22,046 values), deterministic. The scorecard is in `bench/bench-1.9.0/scorecard.md`.
+- Bench 1.8.0: 326/326 (21,051/21,051 values), byte-identical batch output (corpus x5), INC_OK and FRESH_OK,
+  EFT export 326/326. Mutated suite: 93/93, EFT export 93/93, EFT import 99/99.

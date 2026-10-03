@@ -116,6 +116,8 @@ pub struct Consts {
     pub capped: Vec<u32>,
     /// bitmap of `capped` + `rounded` (attribute id -> bit), for the hot `special` test
     pub special_bits: Vec<u64>,
+    /// bitmap of `overload*` attributes (read by overheat effects in Pyfa's module order, contract 1.4.4)
+    pub overload_bits: Vec<u64>,
     pub v: ValidateIds,
 }
 
@@ -137,12 +139,26 @@ impl Consts {
         w < self.special_bits.len() && self.special_bits[w] & (1u64 << (attr & 63)) != 0
     }
 
+    #[inline]
+    pub fn overload(&self, attr: u32) -> bool {
+        let w = (attr >> 6) as usize;
+        w < self.overload_bits.len() && self.overload_bits[w] & (1u64 << (attr & 63)) != 0
+    }
+
     pub fn new(ds: &Dataset) -> Consts {
         let a = |n: &str| ds.attr_id(n);
         let e = |n: &str| ds.effect_id(n);
         let w = |k: u32| (a(&format!("warfareBuff{k}ID")), a(&format!("warfareBuff{k}Value")));
         let mut c = Consts {
             special_bits: Vec::new(),
+            overload_bits: {
+                let ids: Vec<u32> = ds.attrs.values().filter(|i| i.name.starts_with("overload")).map(|i| i.id).collect();
+                let mut b = vec![0u64; ids.iter().copied().max().unwrap_or(0) as usize / 64 + 1];
+                for x in ids {
+                    b[x as usize / 64] |= 1u64 << (x % 64);
+                }
+                b
+            },
             e_ab: e("moduleBonusAfterburner"),
             e_mwd: e("moduleBonusMicrowarpdrive"),
             e_slot: e("slotModifier"),
@@ -1321,7 +1337,13 @@ fn attr_cycle<'db>(db: &'db dyn Db, _id: salsa::Id, fit: FitIn, k: AKey<'db>) ->
 
 fn src_value(db: &dyn Db, fit: FitIn, s: &Src, layer: u32, vc: &mut VCache) -> f64 {
     match *s {
-        Src::Attr { item, attr } => value_c(db, fit, item, attr, layer, vc),
+        Src::Attr { item, attr } => {
+            if db.consts().overload(attr) {
+                value_before(db, fit, item, attr, layer, vc)
+            } else {
+                value_c(db, fit, item, attr, layer, vc)
+            }
+        }
         Src::Const(v) => v.0,
         Src::Prop { module, ship, speed, thrust, mass } => {
             let m = value_c(db, fit, ship, mass, layer, vc);
@@ -1338,13 +1360,60 @@ fn src_value(db: &dyn Db, fit: FitIn, s: &Src, layer: u32, vc: &mut VCache) -> f
     }
 }
 
+/// Source item of a modifier (the item whose attribute it reads).
+#[inline]
+fn src_item(s: &Src) -> Option<u32> {
+    match *s {
+        Src::Attr { item, .. } | Src::Projected { item, .. } => Some(item),
+        Src::Prop { module, .. } => Some(module),
+        Src::Const(_) => None,
+    }
+}
+
+/// Pyfa runs effects item by item in fit order, so an overheat effect reads its module's `overload*` attribute
+/// before modules listed later in `modules[]` have applied their modifiers (contract 1.4.4 "Overheat order", as A
+/// 0fa98c3). Evaluated without those later modules' modifiers; not cached (overheat sources are few).
+fn value_before(db: &dyn Db, fit: FitIn, item: u32, attr: u32, layer: u32, vc: &mut VCache) -> f64 {
+    let im = vc.im(db, fit, item);
+    let lim = match (im.spec.kind, im.spec.req_index) {
+        (Kind::Module, Some(r)) => r,
+        _ => return value_c(db, fit, item, attr, layer, vc),
+    };
+    let Some(ms) = im.mods.get(&attr) else { return value_c(db, fit, item, attr, layer, vc) };
+    let mut later = false;
+    for m in ms {
+        if let Some(si) = src_item(&m.src) {
+            if is_later(db, fit, si, lim, vc) {
+                later = true;
+                break;
+            }
+        }
+    }
+    if !later {
+        return value_c(db, fit, item, attr, layer, vc);
+    }
+    attr_body_f(db, fit, item, attr, layer, vc, Some(lim))
+}
+
+#[inline]
+fn is_later(db: &dyn Db, fit: FitIn, si: u32, lim: usize, vc: &mut VCache) -> bool {
+    let s = vc.im(db, fit, si);
+    s.spec.kind == Kind::Module && s.spec.loc == Loc::Ship && s.spec.req_index.is_some_and(|r| r > lim)
+}
+
 #[salsa::tracked(returns(copy), cycle_result = attr_cycle)]
 pub fn attr_value<'db>(db: &'db dyn Db, fit: FitIn, k: AKey<'db>) -> F {
     qcount(9);
     F(attr_body(db, fit, k.item(db), k.attr(db), k.layer(db), &mut VCache::new(true)))
 }
 
+#[inline]
 fn attr_body(db: &dyn Db, fit: FitIn, item: u32, attr_id: u32, layer: u32, vc: &mut VCache) -> f64 {
+    attr_body_f(db, fit, item, attr_id, layer, vc, None)
+}
+
+/// `before = Some(lim)`: skip modifiers from ship modules listed after `modules[lim]` (see `value_before`)
+fn attr_body_f(db: &dyn Db, fit: FitIn, item: u32, attr_id: u32, layer: u32, vc: &mut VCache, before: Option<usize>) -> f64 {
     let ds = db.ds();
     let im = vc.im(db, fit, item);
     let base = im.spec.base(attr_id).unwrap_or_else(|| ds.attr_default(attr_id));
@@ -1353,6 +1422,11 @@ fn attr_body(db: &dyn Db, fit: FitIn, item: u32, attr_id: u32, layer: u32, vc: &
     let mut vals: smallvec::SmallVec<[(i8, bool, f64); 16]> = smallvec::SmallVec::new();
     if let Some(ms) = im.mods.get(&attr_id) {
         for m in ms {
+            if let (Some(lim), Some(si)) = (before, src_item(&m.src)) {
+                if is_later(db, fit, si, lim, vc) {
+                    continue;
+                }
+            }
             vals.push((m.op, m.penalized, src_value(db, fit, &m.src, layer, vc)));
         }
     }
@@ -1360,6 +1434,11 @@ fn attr_body(db: &dyn Db, fit: FitIn, item: u32, attr_id: u32, layer: u32, vc: &
         let lm = vc.layer(db, fit, l).clone();
         if let Some(ms) = lm.get(&(item, attr_id)) {
             for m in ms {
+                if let (Some(lim), Some(si)) = (before, src_item(&m.src)) {
+                    if is_later(db, fit, si, lim, vc) {
+                        continue;
+                    }
+                }
                 vals.push((m.op, m.penalized, src_value(db, fit, &m.src, layer, vc)));
             }
         }
