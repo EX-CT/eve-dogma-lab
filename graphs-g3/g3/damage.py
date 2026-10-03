@@ -1171,14 +1171,20 @@ def compute(eng, c, tgt, xs, ys, params, settings, axis, dealer_list=None):
         sig = tgt.sig * sm
     else:
         d = None if dpar is None else np.full(n, float(dpar))
-        if axis == "tgt_speed_mps":
-            tv, sm = tackle(c, tgt, settings, d, n, x)
+        if axis in ("tgt_speed_mps", "tgt_speed_pct"):
+            xv = x if axis == "tgt_speed_mps" else x / 100.0 * tgt.vmax  # Pyfa ('tgtSpeed', '%') normaliser
+            tv, sm = tackle(c, tgt, settings, d, n, xv)
             sig = tgt.sig * sm
             bad = x < 0
-        elif axis == "tgt_sig_m":
+        elif axis in ("tgt_sig_m", "tgt_sig_pct"):
+            if axis == "tgt_sig_m":
+                xs_ = x
+                bad = x <= 0
+            else:  # % of the target's signature; infinite-signature target -> null everywhere
+                xs_ = x / 100.0 * tgt.sig if math.isfinite(tgt.sig) else np.full(n, NAN)
+                bad = (x <= 0) | ~np.isfinite(xs_)
             tv, sm = tackle(c, tgt, settings, d, n, tspeed)
-            sig = x * sm
-            bad = x <= 0
+            sig = np.where(bad, 1.0, xs_) * sm
         else:  # time
             tv, sm = tackle(c, tgt, settings, d, n, tspeed)
             sig = tgt.sig * sm
@@ -1190,7 +1196,7 @@ def compute(eng, c, tgt, xs, ys, params, settings, axis, dealer_list=None):
     if axis == "time_s":
         tq = np.where(bad, 0.0, x)
     elif tpar is not None:
-        tq = np.full(n, float(tpar))
+        tq = np.full(n, min(2500.0, max(0.0, float(tpar))))  # contract: time_s param clamped to 0 .. 2500
     for y in ys:
         if tq is None:
             if y == "damage":

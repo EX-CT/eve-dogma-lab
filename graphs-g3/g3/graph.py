@@ -8,7 +8,8 @@ from .ctx import FitCache, GraphError
 
 AXES = {
     "damage": {"distance_m": ("dps", "volley", "damage"), "time_s": ("dps", "volley", "damage"),
-               "tgt_speed_mps": ("dps", "volley", "damage"), "tgt_sig_m": ("dps", "volley", "damage")},
+               "tgt_speed_mps": ("dps", "volley", "damage"), "tgt_sig_m": ("dps", "volley", "damage"),
+               "tgt_speed_pct": ("dps", "volley", "damage"), "tgt_sig_pct": ("dps", "volley", "damage")},
     "application_profile": {"distance_m": ("dps", "volley")},
     "ewar": {"distance_m": tuple(simple.EWAR_Y)},
     "remote_reps": {"distance_m": ("rps", "total"), "time_s": ("rps", "total")},

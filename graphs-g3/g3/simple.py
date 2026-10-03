@@ -574,6 +574,8 @@ def remote_reps(eng, req, c, xs, ys, params, settings, axis, tctx=None):
     n = len(x)
     if axis == "distance_m":
         d, tq = x, params.get("time_s")
+        if tq is not None:
+            tq = min(2500.0, max(0.0, float(tq)))  # contract: time_s param clamped to 0 .. 2500
         bad = x < 0
     else:
         d, tq = params.get("distance_m"), None
