@@ -359,15 +359,32 @@ EWAR_Y = {"neut_gj_s": "neut", "web_pct": "web", "ecm_strength": "ecm", "damp_lo
           "td_optimal_pct": "td", "gd_range_pct": "gd", "tp_sig_pct": "tp"}
 
 
-def ewar(eng, req, c, xs, ys, params, settings):
+EWAR_RESIST_ATTR = {"neut": "energyWarfareResistance", "web": "stasisWebifierResistance", "ecm": "ECMResistance",
+                    "damp": "sensorDampenerResistance", "td": "weaponDisruptionResistance",
+                    "gd": "weaponDisruptionResistance", "tp": "targetPainterResistance"}
+
+
+def _clamp01(v):
+    return min(1.0, max(0.0, float(v)))
+
+
+def ewar(eng, req, c, xs, ys, params, settings, tctx=None):
     d = np.asarray(xs, float)
-    res = 1 - (params.get("resist") or 0)
+    pres = params.get("resist")
     lock, dcr = _lock_ok(c, settings, d), _dcr_ok(c, settings, d)
+    disallow = tctx is not None and bool(tctx.g(tctx.ship, "disallowOffensiveModifiers"))
     out = {}
     for y in ys:
         kind = EWAR_Y[y]
-        srcs = _ewar_sources(c, kind, res)
         n = len(d)
+        if disallow and kind != "neut":  # Pyfa's ewar handlers return early; neutralizers do not
+            out[y] = np.zeros(n)
+            continue
+        if pres is not None or tctx is None:
+            res = 1 - _clamp01(pres or 0)
+        else:  # contract 0.2: resist = clamp(1 - T.ship[attr]) with 0 / missing counting as 1
+            res = 1 - _clamp01(1 - (tctx.gopt(tctx.ship, EWAR_RESIST_ATTR[kind]) or 1))
+        srcs = _ewar_sources(c, kind, res)
         if kind in ("neut", "ecm"):
             tot = np.zeros(n)
             for s, o, f, nl, nd in srcs:
@@ -551,7 +568,7 @@ def _point_lookup(times, t):
     return np.searchsorted(tu, unerr(t), side="right") - 1
 
 
-def remote_reps(eng, req, c, xs, ys, params, settings, axis):
+def remote_reps(eng, req, c, xs, ys, params, settings, axis, tctx=None):
     x = np.asarray(xs, float)
     anc = params.get("anc_reload", True) is not False
     n = len(x)
@@ -612,4 +629,11 @@ def remote_reps(eng, req, c, xs, ys, params, settings, axis):
             tot += sum(am.values()) / (cyc / 1000.0) * A(("drone", i))
         out["rps"] = tot
         out["total"] = np.full(n, NAN)
+    if tctx is not None:  # contract 0.2 target fit: remoteRepairImpedance, disallowAssistance
+        if tctx.g(tctx.ship, "disallowAssistance"):
+            imp = 0.0
+        else:
+            imp = tctx.gopt(tctx.ship, "remoteRepairImpedance")
+            imp = 1.0 if imp is None else float(imp)
+        out = {k: v * imp for k, v in out.items()}
     return {k: np.where(bad, NAN, out[k]) for k in ys}

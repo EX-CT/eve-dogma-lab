@@ -18,6 +18,9 @@ AXES = {
     "warp_time": {"distance_m": ("time_s",)},
     "lock_time": {"tgt_sig_m": ("time_s",)},
 }
+RESIST_MODES = ("auto", "shield", "armor", "hull", "weighted_average")
+DRONE_MODES = ("auto", "follow_attacker", "follow_target")
+AMMO_QUALITIES = ("t1", "navy", "all")
 SETTINGS_DEFAULT = {"ignore_resists": True, "apply_projected": True, "ignore_lock_range": True,
                     "ignore_drone_control_range": False, "mobile_drone_mode": "auto"}
 
@@ -60,25 +63,29 @@ class Engine:
         sv = req.get("schema_version", 1)
         if sv != 1:
             raise GraphError("UNSUPPORTED_SCHEMA", f"schema_version {sv!r} not supported", "/schema_version")
+        # 0.2 validation order: structural BAD_REQUEST, UNKNOWN_GRAPH, BAD_AXIS, enums (BAD_REQUEST), UNKNOWN_TYPE
         gname = req.get("graph")
-        if gname not in AXES:
-            raise GraphError("UNKNOWN_GRAPH", f"unknown graph {gname!r}", "/graph")
+        if not isinstance(gname, str):
+            raise GraphError("BAD_REQUEST", "graph must be a string", "/graph")
+        fit = req.get("fit")
+        if not isinstance(fit, dict):
+            raise GraphError("BAD_REQUEST", "fit must be a FitRequest object", "/fit")
         x = req.get("x")
         if not isinstance(x, dict):
             raise GraphError("BAD_REQUEST", "x must be an object", "/x")
-        axis = x.get("axis")
-        if axis not in AXES[gname]:
-            raise GraphError("BAD_AXIS", f"x axis {axis!r} not valid for graph {gname}", "/x/axis")
         vals = x.get("values")
         if not isinstance(vals, list) or not _all_num(vals):
             raise GraphError("BAD_REQUEST", "x.values must be a list of finite numbers", "/x/values")
         ys = req.get("y")
-        if isinstance(ys, str):
-            ys = [ys]
         if not isinstance(ys, list) or not ys:
-            raise GraphError("BAD_AXIS", "y must be a non-empty list", "/y")
+            raise GraphError("BAD_REQUEST", "y must be a non-empty list", "/y")
+        if gname not in AXES:
+            raise GraphError("UNKNOWN_GRAPH", f"unknown graph {gname!r}", "/graph")
+        axis = x.get("axis")
+        if axis not in AXES[gname]:
+            raise GraphError("BAD_AXIS", f"x axis {axis!r} not valid for graph {gname}", "/x/axis")
         for k, y in enumerate(ys):
-            if y not in AXES[gname][axis]:
+            if not isinstance(y, str) or y not in AXES[gname][axis]:
                 raise GraphError("BAD_AXIS", f"y series {y!r} not valid for graph {gname} / x {axis}", f"/y/{k}")
         params = req.get("params") or {}
         if not isinstance(params, dict):
@@ -90,10 +97,23 @@ class Engine:
         for k, v in s.items():
             if k in settings and v is not None:
                 settings[k] = v
-        fit = req.get("fit")
-        if not isinstance(fit, dict):
-            raise GraphError("BAD_REQUEST", "fit must be a FitRequest object", "/fit")
+        tgt = req.get("target")
+        if tgt is not None and not isinstance(tgt, dict):
+            raise GraphError("BAD_REQUEST", "target must be an object", "/target")
+        tgt = tgt or {}
+        for val, allowed, path in ((tgt.get("resist_mode"), RESIST_MODES, "/target/resist_mode"),
+                                   (s.get("mobile_drone_mode"), DRONE_MODES, "/settings/mobile_drone_mode"),
+                                   (params.get("ammo_quality"), AMMO_QUALITIES, "/params/ammo_quality")):
+            if val is not None and val not in allowed:
+                raise GraphError("BAD_REQUEST", f"{val!r} is not one of {', '.join(allowed)}", path)
         c = self.cache.get(fit)
+        tfit = tgt.get("fit")
+        if tfit is not None:
+            if not isinstance(tfit, dict):
+                raise GraphError("BAD_REQUEST", "target.fit must be a FitRequest object", "/target/fit")
+            tctx = self.cache.get(tfit, path="/target/fit")  # own cache entry, keyed by the target FitRequest
+        else:
+            tctx = None
         xs = np.asarray(vals, dtype=float)
         if gname == "lock_time":
             out = simple.lock_time(self, fit, c, xs, ys, params, settings)
@@ -106,9 +126,9 @@ class Engine:
         elif gname == "capacitor":
             out = simple.capacitor(self, fit, c, xs, ys, params, settings, axis)
         elif gname == "ewar":
-            out = simple.ewar(self, fit, c, xs, ys, params, settings)
+            out = simple.ewar(self, fit, c, xs, ys, params, settings, tctx)
         elif gname == "remote_reps":
-            out = simple.remote_reps(self, fit, c, xs, ys, params, settings, axis)
+            out = simple.remote_reps(self, fit, c, xs, ys, params, settings, axis, tctx)
         else:
             from . import damage
             out = damage.run(self, req, c, xs, ys, params, settings, gname, axis)
