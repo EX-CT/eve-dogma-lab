@@ -30,7 +30,8 @@ export function offense(c: StatsCtx): object {
   const factorReload = req.options.factor_reload;
   const weapons: object[] = [];
   const wVol = new Dmg(), wDps = new Dmg();
-  for (const i of c.modules) {
+  for (let k1 = 0; k1 < c.modules.length; k1++) {
+    const i = c.modules[k1];
     if (!c.active(i)) continue;
     const [base, kind] = moduleVolley(c, i);
     if (base.total() === 0) continue;
@@ -73,7 +74,8 @@ export function offense(c: StatsCtx): object {
   }
   const dVol = new Dmg(), dDps = new Dmg();
   const droneOut: object[] = [];
-  for (const i of c.drones) {
+  for (let k2 = 0; k2 < c.drones.length; k2++) {
+    const i = c.drones[k2];
     const n = c.item(i).activeCount;
     if (n === 0) continue;
     const mult = fit.has(i, A.dmgMult) ? fit.get(i, A.dmgMult) : 1;
@@ -89,7 +91,8 @@ export function offense(c: StatsCtx): object {
   }
   const fVol = new Dmg(), fDps = new Dmg();
   const fighterOut: object[] = [];
-  for (const i of c.fighters) {
+  for (let k3 = 0; k3 < c.fighters.length; k3++) {
+    const i = c.fighters[k3];
     const it = c.item(i);
     const n = it.activeCount;
     if (n === 0) continue;

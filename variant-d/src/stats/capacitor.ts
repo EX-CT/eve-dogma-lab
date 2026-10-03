@@ -15,7 +15,8 @@ export function capacitor(c: StatsCtx): CapInfo {
   const drains: Drain[] = [];
   let used = 0, added = 0;
   const rows: object[] = [];
-  for (const i of c.modules) {
+  for (let k1 = 0; k1 < c.modules.length; k1++) {
+    const i = c.modules[k1];
     const it = c.item(i);
     let capNeed = fit.get(i, A.capNeed);
     const isInj = ds.groups.get(it.group)?.name === 'Capacitor Booster';
@@ -45,7 +46,8 @@ export function capacitor(c: StatsCtx): CapInfo {
   }
   // incoming neuts / nos / cap transfers (Pyfa fit.addDrain): no stagger, after the fit's own modules
   const sigNow = c.g(ship, 'signatureRadius');
-  for (const ps of fit.projSpecial) {
+  for (let k2 = 0; k2 < fit.projSpecial.length; k2++) {
+    const ps = fit.projSpecial[k2];
     if (ps.kind !== 'drain') continue;
     let need = fit.get(ps.item, ps.amount) * ps.factor * ps.sign;
     if (ps.resist !== 0) need *= fit.get(ship, ps.resist);

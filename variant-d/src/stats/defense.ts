@@ -21,7 +21,8 @@ export function defense(c: StatsCtx, cap: CapInfo): object {
   const eS = effectivify(hpS, rs), eA = effectivify(hpA, ra), eH = effectivify(hpH, rh);
   const resJson = (r: number[]) => ({ em: r[0], thermal: r[1], kinetic: r[2], explosive: r[3] });
   let shieldRep = 0, armorRep = 0, hullRep = 0;
-  for (const i of c.modules) {
+  for (let k1 = 0; k1 < c.modules.length; k1++) {
+    const i = c.modules[k1];
     if (!c.active(i)) continue;
     const dur = fit.get(i, c.A.duration) / 1000;
     if (dur <= 0) continue;
@@ -36,7 +37,8 @@ export function defense(c: StatsCtx, cap: CapInfo): object {
   }
   // incoming remote repairs (Pyfa __getAppliedRr diminishing-returns formula)
   const lists: [number, number][][] = [[], [], []];
-  for (const ps of fit.projSpecial) {
+  for (let k2 = 0; k2 < fit.projSpecial.length; k2++) {
+    const ps = fit.projSpecial[k2];
     if (ps.kind !== 'rep') continue;
     const dur = fit.get(ps.item, c.A.duration) / 1000;
     if (dur > 0) lists[ps.layer].push([fit.get(ps.item, ps.amount) * ps.mult * ps.factor, dur]);
@@ -98,7 +100,8 @@ function sustained(c: StatsCtx, cap: CapInfo, raw: number[]): number[] {
   let used = cap.used;
   const reps: [number, number, string, number][] = [];
   for (let layer = 0; layer < 3; layer++) {
-    for (const i of c.modules) {
+    for (let k3 = 0; k3 < c.modules.length; k3++) {
+      const i = c.modules[k3];
       if (!c.active(i)) continue;
       const g = grp(i);
       const spec = SUSTAIN_SPEC[g];

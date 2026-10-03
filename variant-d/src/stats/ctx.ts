@@ -55,7 +55,8 @@ export class StatsCtx {
   rawCycleMs(i: number): number {
     const f = this.fit;
     let v = Math.max(f.get(i, this.A.speed), f.get(i, this.A.duration));
-    for (const a of this.durAttrs) if (a !== 0) v = Math.max(v, f.get(i, a));
+    const da = this.durAttrs;
+    for (let k = 0; k < da.length; k++) if (da[k] !== 0) v = Math.max(v, f.get(i, da[k]));
     return v;
   }
 
