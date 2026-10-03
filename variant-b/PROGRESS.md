@@ -103,3 +103,26 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
 | folded skills: stacking flag once per modifier | 336.7M | 464.1M |
 Every step: diff vs A 326/326 byte-identical (bench corpus + factor_reload variants), corpus batch md5 unchanged,
 cargo test green. Tried and reverted: hand-written string escape fast path (slower than serde_json's table).
+
+## 08:45–09:45 CST — single-core per-calc latency (eve3 now measures (T_N−T_1)/(N−1) under taskset)
+Instructions per run (callgrind, `batch --threads 1`); every step diff vs A 326/326 byte-identical (bench + reload
+variants), corpus batch md5 unchanged, `cargo test --release` green.
+| step | commit | rifter x300 | corpus (326) |
+|---|---|---|---|
+| (previous) compile sorted copy | 2dd7e13 | 331.1M | 458.4M |
+| `attr_id!`/`effect_id!`: literal name lookups memoised per call site + dataset generation | 6f8c2f8 | 325.1M | 454.5M |
+| output key sort: leading-byte compare before memcmp | 166a294 | 320.9M | 450.7M |
+| validate: skill levels by binary search in the sorted skill list (no per-fit map) | 733b4b3 | 311.0M | 440.6M |
+| compile: node bases via per-item cursors over patch/type_attrs | f14e554 | 298.0M | 425.5M |
+| item request paths (error pointers) built lazily | 0b9b8a6 | 295.4M | 423.5M |
+| CLI allocator: word-aligned layouts to `mi_malloc` (MiMalloc always took the aligned path) | a8179ed | 289.9M | 417.8M |
+| compile: stable LSD radix sort on a compact (item, attr, op) key | b0bd286 | 287.3M | 415.2M |
+| validate: merge canFitShip* ids against sorted module attrs, no vectors | ccbb56b | 280.6M | 409.5M |
+| `out::own()`: move built sub-documents into `jv!` instead of deep clones | 779e043 | 273.2M | 401.6M |
+Rifter: −17.5% instructions vs 2dd7e13. Also: capsim LCM saturating multiply (9efbe86; debug-build overflow in the
+randomised capsim test), unit tests for `out` / stacking penalty / capsim (34 → 51 tests).
+Tried and reverted: skip-sort when already ordered (+0.4%), dense ship attr→node table in `Fit::get` (+3%).
+evaluate.py dry run at bcd80df (`results/eval-dryrun-0945`): gate pass 326/326, 21051/21051; single-core latency
+0.099 ms/calc (5 pinned samples, n=4120), 21513 fits/s, cold 4.7 ms; maint 0.92 (tests 0.94 with 51 tests, deps
+0.45 for 6 runtime deps), features 1.0, portability 0.5 (docs only: no wasm32 toolchain on the box to build/verify
+a real WASM target), total 0.923 (B alone, dry run).
