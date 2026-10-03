@@ -1508,6 +1508,45 @@ impl<'a> Fit<'a> {
         {
             let raw = &self.raw;
             // packed key: item(16) | attr(20) | op+1(4) | seq(24) — one u64 compare per step
+            // compact key (item, attr, op) when it fits in u32: stable LSD radix sort on it keeps
+            // registration order within equal keys (raw is pushed in seq order), i.e. the same order
+            // as sorting by (item, attr, op, seq)
+            let max_attr = raw.iter().map(|r| r.attr).max().unwrap_or(0) as u64 + 1;
+            let span = self.items.len() as u64 * max_attr * 16;
+            if raw.len() < (1 << 31) && span < (1 << 32) && raw.iter().all(|r| (-1..=14).contains(&r.op)) {
+                let key = |r: &RawMod| ((r.item as u64 * max_attr + r.attr as u64) * 16 + (r.op as i64 + 1) as u64) as u32;
+                let mut a: Vec<(u32, u32)> = raw.iter().enumerate().map(|(i, r)| (key(r), i as u32)).collect();
+                let mut b: Vec<(u32, u32)> = vec![(0, 0); a.len()];
+                let bits = 64 - (span.max(1) - 1).leading_zeros();
+                let mut shift = 0;
+                while shift < bits {
+                    let mut cnt = [0u32; 257];
+                    for &(k, _) in &a {
+                        cnt[((k >> shift) & 0xFF) as usize + 1] += 1;
+                    }
+                    if cnt[1..].iter().any(|&c| c as usize == a.len()) {
+                        shift += 8;
+                        continue; // every key has the same digit: pass is the identity
+                    }
+                    for d in 0..256 {
+                        cnt[d + 1] += cnt[d];
+                    }
+                    for &e in &a {
+                        let d = ((e.0 >> shift) & 0xFF) as usize;
+                        b[cnt[d] as usize] = e;
+                        cnt[d] += 1;
+                    }
+                    std::mem::swap(&mut a, &mut b);
+                    shift += 8;
+                }
+                for (o, e) in order.iter_mut().zip(&a) {
+                    *o = e.1;
+                }
+                debug_assert!(order.windows(2).all(|w| {
+                    let (x, y) = (&raw[w[0] as usize], &raw[w[1] as usize]);
+                    (x.item, x.attr, x.op, x.seq) < (y.item, y.attr, y.op, y.seq)
+                }));
+            } else {
             let packable = raw.len() < (1 << 24) && self.items.len() < (1 << 16) && raw.iter().all(|r| r.attr < (1 << 20));
             if !packable {
                 order.sort_unstable_by_key(|&k| {
@@ -1524,6 +1563,7 @@ impl<'a> Fit<'a> {
                 for (o, k) in order.iter_mut().zip(keyed) {
                     *o = (k & 0xFF_FFFF) as u32;
                 }
+            }
             }
         }
         // modifiers in compile order, copied once so the passes below read sequentially
