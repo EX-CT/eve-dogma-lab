@@ -89,6 +89,49 @@ struct Ids {
     dmg: [u32; 4],
     /// extra duration attributes of raw_cycle_ms that exist in the dataset (in check order)
     dur_extra: Vec<u32>,
+    /// per item: bit k set when the item has an effect named in FX[k] (resolved once per stats call)
+    fx: Vec<u16>,
+}
+
+/// Effects the stats code tests by name; `Ids::fx` holds one bit per entry.
+const FX: [&[&str]; 11] = [
+    &["turretFitted"],
+    &["launcherFitted"],
+    &["empWave"],
+    &["ChainLightning"],
+    &["doomsdaySlash"],
+    &["fofMissileLaunching"],
+    &["shieldBoosting", "fueledShieldBoosting"],
+    &["armorRepair"],
+    &["fueledArmorRepair"],
+    &["structureRepair"],
+    &["energyNosferatuFalloff"],
+];
+const FX_TURRET: u16 = 1 << 0;
+const FX_LAUNCHER: u16 = 1 << 1;
+const FX_EMP_WAVE: u16 = 1 << 2;
+const FX_CHAIN_LIGHTNING: u16 = 1 << 3;
+const FX_DOOMSDAY_SLASH: u16 = 1 << 4;
+const FX_FOF: u16 = 1 << 5;
+const FX_SHIELD_BOOST: u16 = 1 << 6;
+const FX_ARMOR_REP: u16 = 1 << 7;
+const FX_FUELED_ARMOR_REP: u16 = 1 << 8;
+const FX_HULL_REP: u16 = 1 << 9;
+const FX_NOS: u16 = 1 << 10;
+
+fn fx_flags(f: &Fit) -> Vec<u16> {
+    // (effect id, bit); effect names are unique among these
+    let ids: Vec<(u32, u16)> = FX
+        .iter()
+        .enumerate()
+        .flat_map(|(k, names)| names.iter().map(move |n| (k, *n)))
+        .map(|(k, n)| (f.ds.effect_id(n), 1u16 << k))
+        .filter(|&(e, _)| e != 0)
+        .collect();
+    f.items
+        .iter()
+        .map(|it| it.effects.iter().fold(0u16, |m, (e, _)| ids.iter().fold(m, |m, &(x, b)| if x == *e { m | b } else { m })))
+        .collect()
 }
 
 fn ids(f: &Fit) -> Ids {
@@ -119,6 +162,7 @@ fn ids(f: &Fit) -> Ids {
         .map(|n| a(n))
         .filter(|&x| x != 0)
         .collect(),
+        fx: fx_flags(f),
     }
 }
 
@@ -222,6 +266,11 @@ impl ValidateIds {
 }
 
 impl<'a> Fit<'a> {
+    #[inline]
+    fn fx(&self, id: &Ids, i: usize, flag: u16) -> bool {
+        id.fx[i] & flag != 0
+    }
+
     fn has_effect_named(&self, i: usize, names: &[&str]) -> bool {
         self.items[i].effects.iter().any(|(e, _)| self.ds.effects.get(e).map(|x| names.contains(&x.name.as_str())).unwrap_or(false))
     }
@@ -281,13 +330,13 @@ impl<'a> Fit<'a> {
 
     fn module_volley(&self, i: usize, id: &Ids) -> (Dmg, &'static str) {
         let it = &self.items[i];
-        let kind = if self.has_effect_named(i, &["turretFitted"]) {
+        let kind = if self.fx(&id, i, FX_TURRET) {
             "turret"
-        } else if self.has_effect_named(i, &["launcherFitted"]) {
+        } else if self.fx(&id, i, FX_LAUNCHER) {
             "missile"
-        } else if self.has_effect_named(i, &["empWave"]) {
+        } else if self.fx(&id, i, FX_EMP_WAVE) {
             "smartbomb"
-        } else if self.has_effect_named(i, &["ChainLightning"]) {
+        } else if self.fx(&id, i, FX_CHAIN_LIGHTNING) {
             "vorton"
         } else {
             "other"
@@ -342,8 +391,8 @@ impl<'a> Fit<'a> {
         let fbay_used: f64 = fighters.iter().map(|&i| self.get(i, 161) * self.items[i].quantity as f64).sum();
         let cargo_used: f64 = req.cargo.iter().map(|c| ds.types.get(&c.type_id).map(|t| t.volume).unwrap_or(0.0) * c.quantity as f64).sum();
         let count_slot = |s: Slot| modules.iter().filter(|&&i| self.items[i].slot == Some(s)).count();
-        let turrets_used = modules.iter().filter(|&&i| self.has_effect_named(i, &["turretFitted"])).count();
-        let launchers_used = modules.iter().filter(|&&i| self.has_effect_named(i, &["launcherFitted"])).count();
+        let turrets_used = modules.iter().filter(|&&i| self.fx(&id, i, FX_TURRET)).count();
+        let launchers_used = modules.iter().filter(|&&i| self.fx(&id, i, FX_LAUNCHER)).count();
         let usage = |u: f64, t: f64| json!({"used": u, "total": t});
         let slot_tot = |n: &str| g(ship, n);
         let fighter_class = |i: usize| -> &'static str {
@@ -408,7 +457,7 @@ impl<'a> Fit<'a> {
             // doomsdays / lances deal their volley every doomsdayDamageCycleTime during doomsdayDamageDuration
             // (Pyfa getVolleyParameters subcycles; the Reaper slash hits once); volley = one tick
             let (dd, dsub) = (g(i, "doomsdayDamageDuration"), g(i, "doomsdayDamageCycleTime"));
-            let subcycles = if dd != 0.0 && dsub != 0.0 && !self.has_effect_named(i, &["doomsdaySlash"]) { float_unerr7(dd / dsub).floor().max(0.0) } else { 1.0 };
+            let subcycles = if dd != 0.0 && dsub != 0.0 && !self.fx(&id, i, FX_DOOMSDAY_SLASH) { float_unerr7(dd / dsub).floor().max(0.0) } else { 1.0 };
             let dps = if cyc > 0.0 { vol_spooled.scale(subcycles * 1000.0 / cyc) } else { Dmg::default() };
             w_vol.add(&vol_spooled); // Pyfa reports spooled volley
             w_dps.add(&dps);
@@ -440,7 +489,7 @@ impl<'a> Fit<'a> {
                         };
                         let (lt, ht) = (ft.floor(), ft.ceil());
                         let (mut lr, mut hr) = (range_at(lt), range_at(ht));
-                        if self.has_effect_named(c, &["fofMissileLaunching"]) {
+                        if self.fx(&id, c, FX_FOF) {
                             let lim = g(c, "maxFOFTargetRange");
                             if lim > 0.0 {
                                 lr = lr.min(lim);
@@ -573,17 +622,17 @@ impl<'a> Fit<'a> {
             if dur <= 0.0 {
                 continue;
             }
-            if self.has_effect_named(i, &["shieldBoosting", "fueledShieldBoosting"]) {
+            if self.fx(&id, i, FX_SHIELD_BOOST) {
                 shield_rep += g(i, "shieldBonus") / dur;
             }
-            if self.has_effect_named(i, &["armorRepair"]) {
+            if self.fx(&id, i, FX_ARMOR_REP) {
                 armor_rep += g(i, "armorDamageAmount") / dur;
             }
-            if self.has_effect_named(i, &["fueledArmorRepair"]) {
+            if self.fx(&id, i, FX_FUELED_ARMOR_REP) {
                 let paste = self.items[i].charge.map(|c| ds.types[&self.items[c].type_id].name == "Nanite Repair Paste").unwrap_or(false);
                 armor_rep += g(i, "armorDamageAmount") * if paste { 3.0 } else { 1.0 } / dur;
             }
-            if self.has_effect_named(i, &["structureRepair"]) {
+            if self.fx(&id, i, FX_HULL_REP) {
                 hull_rep += g(i, "structureDamageAmount") / dur;
             }
         }
@@ -641,7 +690,7 @@ impl<'a> Fit<'a> {
             if is_inj {
                 cap_need = -self.items[i].charge.map(|c| g(c, "capacitorBonus")).unwrap_or(0.0);
             }
-            if self.has_effect_named(i, &["energyNosferatuFalloff"]) && !req.options.nos_no_target_cap {
+            if self.fx(&id, i, FX_NOS) && !req.options.nos_no_target_cap {
                 // local nosferatu counts as cap income (assumes the target has cap), like Pyfa
                 cap_need = -g(i, "powerTransferAmount");
             }
@@ -665,7 +714,7 @@ impl<'a> Fit<'a> {
                     clip_size: self.num_shots(i, &id),
                     reload_ms: self.get(i, id.reload),
                     is_injector: is_inj,
-                    disable_stagger: self.has_effect_named(i, &["turretFitted"]),
+                    disable_stagger: self.fx(&id, i, FX_TURRET),
                 });
             }
             module_rows.push(row);
