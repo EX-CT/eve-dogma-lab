@@ -1,6 +1,6 @@
 # PROGRESS — Variant D (TypeScript)
 
-Updated: 2026-10-03 08:00 CST
+Updated: 2026-10-03 08:15 CST
 
 ## Done
 - Full port of the eve-dogma-rs contract in TypeScript, zero runtime dependencies (Node 20+, browsers):
@@ -25,8 +25,9 @@ Updated: 2026-10-03 08:00 CST
   re-arm, chunked JSONL I/O, per-type validation memo. Cold start: VDC4 lazy cache (load ≈ 33 ms), single-file CLI,
   V8 code cache, and a **startup snapshot with the dataset preloaded** (`snapshot` command, used by `bench.yaml`).
   The design is in DESIGN.md §7.
-- Bench 1.8.0, official run in the shared checkout (07:22 CST, bench ad9ee22, D 9632cd8): **326/326, 21 051 values,
-  EFT 326/326, deterministic; Rifter 0.757 ms/calc, batch 1040 fits/s, cold median 114 ms** (was 203 ms at 06:30).
+- Bench 1.8.0, official run in the shared checkout (08:13 CST, bench 33db85a, D df7dcae, box load ≈ 11): **326/326,
+  21 051 values, EFT 326/326, deterministic; Rifter 0.758 ms/calc, batch 947 fits/s, cold median 122 ms** (07:22 run
+  at load ≈ 7: 0.757 ms, 1040 fits/s, 114 ms).
   In-process warm corpus ≈ 0.5 ms/fit. Build-side: deferred ship bonuses (Fit.build ~20% faster), validation memo.
   Small hot-path cleanups since: static attribute-name tables (defense, jam chance, warfare buffs), single-name
   effect test without an array per call, capsim wrap-key fast path, default skill level set directly.
