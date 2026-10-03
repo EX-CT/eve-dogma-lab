@@ -113,6 +113,7 @@ Every row passed the gate: sha256 `214f6192…` native+wasm, bench 326/326 and 2
 | af1c04b | baseline | 472.04 M | – |
 | acc2549 | P1 dense attr→slot table for items 0/1, recycled per thread | 443.21 M | −6.1 % |
 | fd652fd | P2a `write_str` no-escape fast path | 435.34 M | −1.8 % (cum. −7.8 %) |
+| 9a7378f | P12 thread-local direct-mapped (type, attr) → VALS index cache in `type_attr` | 387.24 M | −11.0 % (cum. −18.0 %) |
 
 Lessons:
 - P1 first allocated a fresh 2 × 6466 × u32 table per calc. The memset (34 M Ir) ate the whole gain, so the table is now pooled
@@ -123,7 +124,7 @@ Lessons:
 
 | # | idea | why (code reading) | expected | parity risk |
 |---|---|---|---|---|
-| P12 | **(type, attr) → value cache** for `get` on unmodified attrs: a thread-local direct-mapped 4096-entry table `[(u32 key, f64)]`; static data, so it's valid across calcs | `Fit::get` falls back to `d::type_attr` (binary search) + `post` on every read of an unmodified attr, and stats read many. `type_attr` is 10 % self Ir. | −4…−7 % | none (same values) |
+| ~~P12~~ (done, 9a7378f) | **(type, attr) → value cache** for `get` on unmodified attrs: a thread-local direct-mapped 4096-entry table `[(u32 key, f64)]`; static data, so it's valid across calcs | `Fit::get` falls back to `d::type_attr` (binary search) + `post` on every read of an unmodified attr, and stats read many. `type_attr` is 10 % self Ir. | −4…−7 % | none (same values) |
 | P13 | `J::write` objects: skip the key index sort when keys are already sorted (one linear `windows(2)` check) and write in place | `idx.sort_unstable_by` runs for every object (~2.7 %). Most `jv!{}` literals are already alphabetic, or can be made so in source. | −1…−3 % | none (output order is identical by construction; the gate's sha checks it) |
 | P14 | `jv!` objects/arrays: `Vec::with_capacity(<literal count>)` via a counting macro | each object grows 0→4→8→16 (realloc + memcpy) | −1…−2 % | none |
 | P15 | capsim: reuse the `key()` buffers on period wrap, the `good` Vec, and pre-size `EvHeap` | allocs in the hot loop; corpus capsim 23 % | corpus −2…−4 % | none |
