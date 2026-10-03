@@ -23,9 +23,13 @@ Python ≥ 3.10 and NumPy. The bench manifest is `bench.yaml`.
 ## Tests
 
 ```sh
+EVE_DOGMA_DATASET=<dataset.json.gz> EVE_DOGMA_GRAPH_CASES=<bench>/graphs/cases python3 -m unittest discover -s tests
 python3 tests/test_empty_x.py <dataset.json.gz> <bench>/graphs/cases     # empty x.values -> empty series
 bench/identity_check.sh <dataset.json.gz> <bench>/graphs/cases          # byte-identity vs f7aa4cb
 ```
+
+`tests/test_validation.py` covers the 0.2 error precedence and codes and the `time_s` / `resist` clamps (it needs only
+the dataset). Tests skip themselves when the environment variables are unset.
 
 ## Scoring
 
