@@ -1,585 +1,4 @@
 {
-"fz0038-7ba04408": {
-"note": "overheated Bastion Module (no overheat effect) -> online",
-"request": {
-"fit": {
-"boosters": [],
-"cargo": [],
-"character": {
-"security_status": null,
-"skills": {
-"default_level": 5,
-"levels": {}
-}
-},
-"damage_pattern": null,
-"drones": [],
-"environment": {
-"effect_type_ids": [],
-"system_security": null
-},
-"fighters": [],
-"fleet": {
-"booster_fits": [],
-"buffs": []
-},
-"implants": [],
-"modules": [
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 519
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 519
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 519
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 1999
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 10842
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 24443
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 2281
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 2281
-},
-{
-"charge_type_id": 32014,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "overheated",
-"type_id": 3578
-},
-{
-"charge_type_id": 29001,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "overheated",
-"type_id": 1978
-},
-{
-"charge_type_id": 12779,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2929
-},
-{
-"charge_type_id": 12779,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2929
-},
-{
-"charge_type_id": 12779,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2929
-},
-{
-"charge_type_id": 12779,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2929
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "overheated",
-"type_id": 33400
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "rig",
-"spool": null,
-"state": "online",
-"type_id": 26430
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "rig",
-"spool": null,
-"state": "online",
-"type_id": 26424
-}
-],
-"options": {
-"cap_sim": {
-"max_time_s": null,
-"reload": false,
-"stagger": false
-},
-"default_spool": null,
-"factor_reload": false,
-"include_attributes": null,
-"nos_no_target_cap": false,
-"rah": null,
-"sources": false,
-"validate": true
-},
-"overrides": [],
-"projected": [],
-"schema_version": 1,
-"ship": {
-"mode_type_id": null,
-"type_id": 28665
-},
-"target_profile": null
-},
-"graph": "damage",
-"schema_version": 1,
-"settings": {
-"mobile_drone_mode": "follow_attacker"
-},
-"target": {
-"fit": {
-"boosters": [
-{
-"side_effects": [
-2735,
-2746,
-2748,
-4970
-],
-"type_id": 10151
-}
-],
-"cargo": [],
-"character": {
-"security_status": null,
-"skills": {
-"default_level": 5,
-"levels": {}
-}
-},
-"damage_pattern": null,
-"drones": [
-{
-"active": 5,
-"mutation": null,
-"quantity": 5,
-"type_id": 23707
-}
-],
-"environment": {
-"effect_type_ids": [],
-"system_security": null
-},
-"fighters": [],
-"fleet": {
-"booster_fits": [],
-"buffs": []
-},
-"implants": [],
-"modules": [
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 22291
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 22291
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 22291
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 2048
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 3841
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 3841
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 2281
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 19806
-},
-{
-"charge_type_id": 35795,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 35790
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 12084
-},
-{
-"charge_type_id": 2506,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2420
-},
-{
-"charge_type_id": 2506,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2420
-},
-{
-"charge_type_id": 2506,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2420
-},
-{
-"charge_type_id": 2506,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2420
-},
-{
-"charge_type_id": 2506,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2420
-},
-{
-"charge_type_id": 2506,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 2420
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "rig",
-"spool": null,
-"state": "online",
-"type_id": 26420
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "rig",
-"spool": null,
-"state": "online",
-"type_id": 26414
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "rig",
-"spool": null,
-"state": "online",
-"type_id": 26448
-}
-],
-"options": {
-"cap_sim": {
-"max_time_s": null,
-"reload": false,
-"stagger": false
-},
-"default_spool": null,
-"factor_reload": false,
-"include_attributes": null,
-"nos_no_target_cap": false,
-"rah": null,
-"sources": false,
-"validate": true
-},
-"overrides": [],
-"projected": [],
-"schema_version": 1,
-"ship": {
-"mode_type_id": null,
-"type_id": 638
-},
-"target_profile": null
-},
-"resist_mode": "hull"
-},
-"x": {
-"axis": "distance_m",
-"values": [
-2761.4,
-4857.0,
-9181.0,
-10006.91,
-13208.0,
-14162.8,
-19185.9
-]
-},
-"y": [
-"dps",
-"volley",
-"damage"
-]
-},
-"want": 1107.8610470485446,
-"x0": 2761.4,
-"y": "dps"
-},
-"fz0157-0919616b": {
-"note": "overheated doomsday (no overheat effect) -> online, as the bench oracle",
-"request": {
-"fit": {
-"boosters": [],
-"cargo": [],
-"character": {
-"security_status": null,
-"skills": {
-"default_level": 5,
-"levels": {}
-}
-},
-"damage_pattern": null,
-"drones": [],
-"environment": {
-"effect_type_ids": [],
-"system_security": null
-},
-"fighters": [],
-"fleet": {
-"booster_fits": [],
-"buffs": []
-},
-"implants": [],
-"modules": [
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 41500
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "low",
-"spool": null,
-"state": "active",
-"type_id": 41500
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 41486
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "mid",
-"spool": null,
-"state": "active",
-"type_id": 41486
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "overheated",
-"type_id": 40631
-},
-{
-"charge_type_id": null,
-"mutation": null,
-"slot": "high",
-"spool": null,
-"state": "active",
-"type_id": 40662
-}
-],
-"options": {
-"cap_sim": {
-"max_time_s": null,
-"reload": false,
-"stagger": false
-},
-"default_spool": null,
-"factor_reload": false,
-"include_attributes": null,
-"nos_no_target_cap": false,
-"rah": null,
-"sources": false,
-"validate": true
-},
-"overrides": [],
-"projected": [],
-"schema_version": 1,
-"ship": {
-"mode_type_id": null,
-"type_id": 11567
-},
-"target_profile": null
-},
-"graph": "damage",
-"params": {
-"atk_angle_deg": 0,
-"atk_speed_pct": 0,
-"tgt_angle_deg": 135,
-"tgt_speed_pct": 100
-},
-"schema_version": 1,
-"settings": {
-"ignore_lock_range": false
-},
-"target": {
-"profile": {
-"em": 0,
-"explosive": 0,
-"hp": 5000,
-"kinetic": 0,
-"max_velocity": 1200,
-"radius": 30,
-"signature_radius": 2500,
-"thermal": 0
-}
-},
-"x": {
-"axis": "tgt_speed_mps",
-"values": [
-196.0,
-303.0,
-312.0,
-368.698,
-466.095,
-616.0,
-723.0,
-1032.0,
-1287.0,
-1365.266,
-1384.318,
-1469.3,
-1483.0
-]
-},
-"y": [
-"dps",
-"volley",
-"damage"
-]
-},
-"want": 0.0,
-"x0": 196.0,
-"y": "dps"
-},
 "fz0185-c3a9d7ab": {
 "note": "projected TP stacks with target's own penalised sig multipliers (CDFE rigs)",
 "request": {
@@ -2105,6 +1524,227 @@
 },
 "want": 141.6898677565503,
 "x0": 0,
+"y": "dps"
+},
+"state_ruling_vargur_bastion_overheated": {
+"note": "eve ruling 2026-10-03: a state the module can't use (overheated Bastion) keeps the requested value -> same effects as active (Pyfa oracle run with the bastion active)",
+"request": {
+"fit": {
+"boosters": [],
+"cargo": [],
+"character": {
+"security_status": null,
+"skills": {
+"default_level": 5,
+"levels": {}
+}
+},
+"damage_pattern": null,
+"drones": [],
+"environment": {
+"effect_type_ids": [],
+"system_security": null
+},
+"fighters": [],
+"fleet": {
+"booster_fits": [],
+"buffs": []
+},
+"implants": [],
+"modules": [
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "low",
+"spool": null,
+"state": "active",
+"type_id": 519
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "low",
+"spool": null,
+"state": "active",
+"type_id": 519
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "low",
+"spool": null,
+"state": "active",
+"type_id": 519
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "low",
+"spool": null,
+"state": "active",
+"type_id": 1999
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "mid",
+"spool": null,
+"state": "active",
+"type_id": 10842
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "mid",
+"spool": null,
+"state": "active",
+"type_id": 24443
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "mid",
+"spool": null,
+"state": "active",
+"type_id": 2281
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "mid",
+"spool": null,
+"state": "active",
+"type_id": 2281
+},
+{
+"charge_type_id": 32014,
+"mutation": null,
+"slot": "mid",
+"spool": null,
+"state": "overheated",
+"type_id": 3578
+},
+{
+"charge_type_id": 29001,
+"mutation": null,
+"slot": "mid",
+"spool": null,
+"state": "overheated",
+"type_id": 1978
+},
+{
+"charge_type_id": 12779,
+"mutation": null,
+"slot": "high",
+"spool": null,
+"state": "active",
+"type_id": 2929
+},
+{
+"charge_type_id": 12779,
+"mutation": null,
+"slot": "high",
+"spool": null,
+"state": "active",
+"type_id": 2929
+},
+{
+"charge_type_id": 12779,
+"mutation": null,
+"slot": "high",
+"spool": null,
+"state": "active",
+"type_id": 2929
+},
+{
+"charge_type_id": 12779,
+"mutation": null,
+"slot": "high",
+"spool": null,
+"state": "active",
+"type_id": 2929
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "high",
+"spool": null,
+"state": "overheated",
+"type_id": 33400
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "rig",
+"spool": null,
+"state": "online",
+"type_id": 26430
+},
+{
+"charge_type_id": null,
+"mutation": null,
+"slot": "rig",
+"spool": null,
+"state": "online",
+"type_id": 26424
+}
+],
+"options": {
+"cap_sim": {
+"max_time_s": null,
+"reload": false,
+"stagger": false
+},
+"default_spool": null,
+"factor_reload": false,
+"include_attributes": null,
+"nos_no_target_cap": false,
+"rah": null,
+"sources": false,
+"validate": true
+},
+"overrides": [],
+"projected": [],
+"schema_version": 1,
+"ship": {
+"mode_type_id": null,
+"type_id": 28665
+},
+"target_profile": null
+},
+"graph": "damage",
+"schema_version": 1,
+"target": {
+"profile": {
+"em": 0,
+"explosive": 0,
+"hp": null,
+"kinetic": 0,
+"max_velocity": 100,
+"radius": 250,
+"signature_radius": 400,
+"thermal": 0
+}
+},
+"x": {
+"axis": "distance_m",
+"values": [
+0,
+2000,
+5000,
+10000,
+20000,
+30000,
+50000
+]
+},
+"y": [
+"dps",
+"volley"
+]
+},
+"want": 2158.818380335298,
+"x0": 2000,
 "y": "dps"
 }
 }

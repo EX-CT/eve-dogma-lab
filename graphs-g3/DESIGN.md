@@ -153,10 +153,10 @@ as 1. Pyfa's `getModifiedItemAttr(name, 1)` returns the attribute's SDE default,
 (`damage._ship_attr_or`). 9 stress outputs changed, and 9/9 now match the Pyfa oracle (0/9 before).
 
 Fourth round (seed 4):
-- A module requested `overheated` whose type has no overheat effect (Bastion Module, doomsdays, …) is treated as
-  `online`. That is the bench oracle's rule (`oracle/pyfa_oracle.py`, which follows Pyfa `isValidState`), applied by
-  `ctx.normalize_states` before a fit context is built. variant G's own `calc` is unchanged. Before this, a
-  Vargur's damage was ×2 and a titan lance did damage. The rule is applied on the graph path only.
+- ~~Overheated non-overheatable modules → online~~ (aa04330) was **reverted** after eve's ruling (2026-10-03): a state the module
+  can't use (not overheatable / not activatable) **keeps the requested value**, as variant-g, A and H do. An overheated
+  Bastion therefore behaves as active (no overheat effects exist to add). The bench's Pyfa oracle downgrades such states to
+  online, so its values for these fits are not the contract values. See graphs/draft-0.3.
 - Mobile (drone) webs: `float()` of a 1-element array raised `INTERNAL` under NumPy 2.5 (`damage._scalar`).
 The stress outputs are unchanged.
 
