@@ -356,6 +356,19 @@ def _launcher_group(eng, c, i, tier, res, ship_r):
             return (cc.g(ch, attr) * extra or 0) / b
         return 1.0
     dmults = [mult(a, mdm) for a in DMG]
+    # a damage type the loaded charge doesn't deal has no measurable multiplier on it (ship bonuses can be
+    # per damage type, e.g. kinetic missile bonuses): measure it on a charge that deals it (Pyfa loads each charge)
+    for k, a in enumerate(DMG):
+        if (_base(ds, cti, a) or 0) > 0:
+            continue
+        alt = next((t for t in tis if (_base(ds, t, a) or 0) > 0), None)
+        if alt is None:
+            continue
+        c2, i2 = _with_charge(eng, c, i, int(ds.t_id[alt]))
+        ch2 = c2.charge(i2)
+        if ch2 is not None:
+            mdm2 = c2.g(c2.char, "missileDamageMultiplier") or 1.0
+            dmults[k] = (c2.g(ch2, a) * mdm2 or 0) / _base(ds, alt, a)
     fv, fd = mult("maxVelocity"), mult("explosionDelay")
     ae, av, ad = mult("aoeCloudSize"), mult("aoeVelocity"), mult("aoeDamageReductionFactor")
     lmult = cc.gopt(ii, "damageMultiplier") or 1

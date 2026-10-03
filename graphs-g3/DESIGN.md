@@ -141,6 +141,12 @@ changed (all damage / application profile against such target fits) were checked
 30/30 now match it, and 0/30 matched before. The identity baseline was moved to this commit. All other stress
 requests are still byte-identical.
 
+Second fuzz finding (fz0278-6a1506cd): the application-profile launcher path measured each damage type's
+multiplier on the loaded charge. A damage type that charge doesn't deal therefore got ×1 and lost skills, BCS and ship
+bonuses, so the wrong torpedo won against resist-weighted targets. Such a type is now measured on a charge that deals
+it, with that charge loaded through the fit cache. Stress outputs are unchanged. `tests/test_fuzz_regressions.py` pins both
+findings to the Pyfa oracle values.
+
 ## Known limits / next steps
 
 - The cold path is dominated by variant G's fit calculation, which is not modified on this branch.
