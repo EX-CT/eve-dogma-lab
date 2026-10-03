@@ -64,6 +64,12 @@ FitRequest ──build──▶ items: Vec<Item>            (base attrs = sorted
 8. **Fast cold start.** Dataset JSON is parsed with a borrowed-key visitor straight into `Vec<(id, T)>` (no key
    `String`s, no intermediate `HashMap`s), SHA-256 (only reported in `meta`) runs on a second thread (in-tree
    `data::sha256_hex`, no crypto dependency; hidden behind the JSON parse), gzip via `zlib-rs`. Load ≈ 65 ms vs ≈ 140 ms.
+9. **Light output document.** `stats` builds FitStats as `out::J` (objects are small `Vec<(Cow<'static, str>, J)>`
+   with static keys, no per-key `String`, no BTreeMap) using `jv!` (serde_json's `json!` macro retargeted), and
+   `calc_json` writes it directly: keys sorted per object at write time, floats rounded to 6 decimals, numbers and
+   escapes via serde_json's own formatter, so the bytes equal `serde_json::to_string(&tidy(value))` of the old
+   `Value` tree (unit-tested; diff vs A byte-identical). `calc` (library `Value` API) converts with `J::to_value`.
+   Replacing the tree saved ~12% of a Rifter calc (a `Value` walker without replacing the tree saved nothing).
 
 ## What is shared with A (and why)
 
@@ -115,9 +121,8 @@ booster fits, projected fits, remote reps/neuts) is re-expressed in the compile/
 * Capacitor simulation: `capsim::simulate_fast` (packed u128 heap keys, static per-stream data, exact exp memo,
   in-place top update like A 1db626a) with `simulate_ref` (the plain Pyfa port) as fallback on NaN / overflow /
   `VB_CAPSIM_REF`. Still ~12% of corpus instructions (long simulations, e.g. 5000-iteration weather fits).
-* JSON output is still built as a `serde_json::Value` tree (~20% of per-fit cost: BTreeMap inserts, drops,
-  serialisation). A direct `Value` walker replacing serde's serializer was tried (07:20) and was not faster
-  (+1% instructions); the win needs skipping the tree, i.e. writing sections straight to the output buffer.
+* Output writing (`out::J::write_owned`) is still ~15% of a Rifter calc (string escaping, float formatting,
+  drops); request parsing (serde derive) ~4%.
 * WASM build (no threads, no mmap) is straightforward: the only native-code dependency is mimalloc (optional);
   zlib-rs and the in-tree SHA-256/Fx hash are pure Rust.
 

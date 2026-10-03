@@ -92,3 +92,14 @@ Updated: 2026-10-03 04:40 (Asia/Shanghai)
   `rustc-hash` by `src/hash.rs` (same integer mixing, so u32-keyed maps behave as before). Removed a stray
   `src/main.rs.orig`. Output identical (diff vs A 326/326 on corpus and reload variants; corpus batch md5 equal).
 - Tried a direct JSON `Value` writer instead of serde's serializer: +1.1% instructions, reverted.
+
+## 08:30 CST — speed (instructions, callgrind, batch --threads 1)
+| step | rifter x300 | corpus (326) |
+|---|---|---|
+| start (5874d0e effect flags) | 409.2M | 528.9M |
+| `out::J` output document instead of `serde_json::Value` | 361.4M | 486.7M |
+| `TypeInfo::attr` binary search (attrs sorted at load) | 344.4M | 471.6M |
+| consuming writer, in-place key sort, static keys unescaped | 338.4M | 465.9M |
+| folded skills: stacking flag once per modifier | 336.7M | 464.1M |
+Every step: diff vs A 326/326 byte-identical (bench corpus + factor_reload variants), corpus batch md5 unchanged,
+cargo test green. Tried and reverted: hand-written string escape fast path (slower than serde_json's table).
