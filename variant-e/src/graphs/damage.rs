@@ -1141,12 +1141,28 @@ pub fn run(ds: &Dataset, req: &GraphRequest) -> Result<Vec<(String, Vec<Option<f
     let mut out = Vec::new();
     for y in &req.y {
         let mut vals = Vec::new();
-        for &x in &req.x.values {
-            if axis == "time_s" && !in_range(x, 0.0, 2500.0) {
+        for &x0 in &req.x.values {
+            // 0.2 percentage axes (Pyfa `_normalizers` ('tgtSpeed', '%') / ('tgtSigRad', '%'))
+            let (ax, x) = match axis {
+                "tgt_speed_pct" => ("tgt_speed_mps", x0 / 100.0 * tgt.vmax),
+                "tgt_sig_pct" => {
+                    if !tgt.sig.is_finite() {
+                        vals.push(None);
+                        continue;
+                    }
+                    ("tgt_sig_m", x0 / 100.0 * tgt.sig)
+                }
+                _ => (axis, x0),
+            };
+            if ax == "tgt_sig_m" && !(x > 0.0) {
                 vals.push(None);
                 continue;
             }
-            let (d, t) = match axis {
+            if ax == "time_s" && !in_range(x, 0.0, 2500.0) {
+                vals.push(None);
+                continue;
+            }
+            let (d, t) = match ax {
                 "distance_m" => (Some(x), ptime),
                 "time_s" => (pdist, Some(x)),
                 _ => (pdist, ptime),
@@ -1159,13 +1175,13 @@ pub fn run(ds: &Dataset, req: &GraphRequest) -> Result<Vec<(String, Vec<Option<f
                 (Some(t), Some(td)) => time_map(td, y, t),
                 _ => static_map(&src, y == "volley"),
             };
-            let mut ts = if axis == "tgt_speed_mps" { x } else { tgt_speed0 };
+            let mut ts = if ax == "tgt_speed_mps" { x } else { tgt_speed0 };
             let mut sig = tgt.sig;
             if let Some(p) = &proj {
                 ts = tackled_speed(&c, &src, &tgt, p, ts, d);
                 let sm = sig_mult(&c, &src, &tgt, p, ts, d);
-                sig = if axis == "tgt_sig_m" { x * sm } else { sig * sm };
-            } else if axis == "tgt_sig_m" {
+                sig = if ax == "tgt_sig_m" { x * sm } else { sig * sm };
+            } else if ax == "tgt_sig_m" {
                 sig = x;
             }
             let mo = Mob { atk_speed, atk_angle, tgt_speed: ts, tgt_angle, tgt_sig: sig };

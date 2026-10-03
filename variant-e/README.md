@@ -21,7 +21,7 @@ $B eft fit.txt --dataset $D [--calc]                 # EFT text -> FitRequest (o
 $B search "Shield Ext" --dataset $D                  # type search (interim spec: exact > prefix > substring, en/zh)
 $B type 587 --dataset $D                             # type info by id or name
 $B meta --dataset $D
-$B graph --dataset $D < graph_request.json           # one GraphRequest -> one GraphResult (CONTRACT-GRAPHS 0.1)
+$B graph --dataset $D < graph_request.json           # one GraphRequest -> one GraphResult (CONTRACT-GRAPHS 0.2)
 $B graph-batch --dataset $D < graphs.jsonl > out.jsonl
 ```
 
@@ -55,24 +55,27 @@ Contract rulings applied: explicit `fleet.buffs` override booster fits and the f
 Full scorecard: `bench/scorecard.md` / `bench/scorecard.json`. Bench manifest: `bench.yaml`.
 Dev loop: `tools/devbench.sh` (scores the local build with `run.py`).
 
-## Graphs (eve-dogma-bench `graphs-round2`, CONTRACT-GRAPHS 0.1, Pyfa graph oracle)
+## Graphs (eve-dogma-bench `graphs-round2`, CONTRACT-GRAPHS 0.2, Pyfa graph oracle)
 
-All 9 graph types of Pyfa's graph subsystem: `damage`, `application_profile`, `ewar`, `remote_reps`, `capacitor`,
-`shield_regen`, `mobility`, `warp_time`, `lock_time` (code: `src/graphs/`, notes in DESIGN.md).
+All 10 graph types: Pyfa's 9 public graphs `damage`, `application_profile`, `ewar`, `remote_reps`, `capacitor`,
+`shield_regen`, `mobility`, `warp_time`, `lock_time`, plus the hidden `ecm_burst` graph (0.2). Also from 0.2: the %
+damage axes, ewar/RR target fits, empty `x.values`, and the error codes. Code: `src/graphs/`, notes in DESIGN.md.
 
 | graph | cases | values |
 |---|---|---|
 | application_profile | 10/10 | 120/120 (charge ids, informational: 103/120) |
-| capacitor | 11/11 | 164/164 |
-| damage | 48/48 | 828/828 |
-| ewar | 10/10 | 168/168 |
-| lock_time | 6/6 | 78/78 |
-| mobility | 9/9 | 253/253 |
-| remote_reps | 6/6 | 87/87 |
-| shield_regen | 4/4 | 54/54 |
-| warp_time | 7/7 | 91/91 |
-| **total** | **111/111** | **1843/1843** |
+| capacitor | 14/14 | 173/173 |
+| damage | 60/60 | 918/918 |
+| ecm_burst | 11/11 | 218/218 |
+| ewar | 22/22 | 337/337 |
+| lock_time | 7/7 | 82/82 |
+| mobility | 10/10 | 259/259 |
+| remote_reps | 11/11 | 151/151 |
+| shield_regen | 5/5 | 66/66 |
+| warp_time | 8/8 | 93/93 |
+| errors (expected error code) | 20/20 | 20/20 |
+| **total** | **178/178** | **2437/2437** |
 
 Same result via `graph-batch`, one-process-per-case `graph`, and RPC `graph` (`run_graphs.py --batch-cmd / --cmd /
---rpc-cmd`). 111 requests in one `graph-batch` process: ~80 ms incl. 8 ms start-up (≈0.6 ms per request, release
-build). Results: `bench/graphs-scorecard.md` / `.json`. Bench manifest keys: `graph_cmd`, `graph_batch_cmd`.
+--rpc-cmd`). 178 requests in one `graph-batch` process: ~120 ms incl. 8 ms start-up (≈0.6 ms per request, release
+build). Under 0.1 the score was 111/111 cases and 1843/1843 values. Results: `bench/graphs-scorecard.md` / `.json`. Bench manifest keys: `graph_cmd`, `graph_batch_cmd`.

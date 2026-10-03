@@ -251,6 +251,19 @@ fn time_series(fit: &Fit, k: &Key, anc_reload: bool, max_t: f64) -> Series {
 
 pub fn run(ds: &Dataset, req: &GraphRequest) -> Result<Vec<(String, Vec<Option<f64>>)>, GErr> {
     let fit = build_calc(ds, &req.fit)?;
+    // 0.2: target fit -> x remoteRepairImpedance (resistanceID 2116 of the RR effects), 0 if disallowAssistance
+    let tmult = match req.target.as_ref().and_then(|t| t.fit.as_ref()) {
+        Some(f) => {
+            let t = build_calc(ds, f).map_err(|e| GErr { code: e.code, message: e.message, path: format!("/target/fit{}", e.path) })?;
+            if t.g(t.ship, "disallowAssistance") != 0.0 {
+                0.0
+            } else {
+                let m = t.g(t.ship, "remoteRepairImpedance");
+                if m == 0.0 { 1.0 } else { m }
+            }
+        }
+        None => 1.0,
+    };
     let anc = req.pb("anc_reload", true);
     let ptime = req.p("time_s").map(|t| t.clamp(0.0, 2500.0));
     let pdist = req.p("distance_m");
@@ -333,7 +346,7 @@ pub fn run(ds: &Dataset, req: &GraphRequest) -> Result<Vec<(String, Vec<Option<f
                     total[i] += r[i] * a;
                 }
             }
-            vals.push(Some(rr_sum(&total)));
+            vals.push(Some(rr_sum(&total) * tmult));
         }
         out.push((y.clone(), vals));
     }

@@ -1,4 +1,4 @@
-//! Graphs (EXCT CONTRACT-GRAPHS 0.1): Pyfa's graph subsystem re-implemented on top of the engine.
+//! Graphs (EXCT CONTRACT-GRAPHS 0.2): Pyfa's graph subsystem re-implemented on top of the engine.
 //! One GraphRequest in -> one GraphResult out; every sample point is evaluated exactly (Pyfa `getPoint`).
 //! GPL-3.0-or-later.
 pub mod common;
@@ -8,6 +8,7 @@ pub mod ewar;
 pub mod rr;
 pub mod damage;
 pub mod app;
+pub mod ecm;
 
 use crate::data::Dataset;
 use crate::eos::fit::BuildError;
@@ -137,7 +138,7 @@ pub fn in_range(x: f64, lo: f64, hi: f64) -> bool {
 
 const GRAPHS: &[(&str, &[&str], &[&str])] = &[
     ("application_profile", &["distance_m"], &["dps", "volley"]),
-    ("damage", &["distance_m", "time_s", "tgt_speed_mps", "tgt_sig_m"], &["dps", "volley", "damage"]),
+    ("damage", &["distance_m", "time_s", "tgt_speed_mps", "tgt_speed_pct", "tgt_sig_m", "tgt_sig_pct"], &["dps", "volley", "damage"]),
     ("ewar", &["distance_m"], &["neut_gj_s", "web_pct", "ecm_strength", "damp_lock_range_pct", "td_optimal_pct", "gd_range_pct", "tp_sig_pct"]),
     ("remote_reps", &["distance_m", "time_s"], &["rps", "total"]),
     ("capacitor", &["time_s", "cap_pct"], &["cap_gj", "cap_regen_gj_s"]),
@@ -145,9 +146,35 @@ const GRAPHS: &[(&str, &[&str], &[&str])] = &[
     ("mobility", &["time_s"], &["speed_mps", "distance_m", "momentum_kg_mps", "bump_speed_mps", "bump_distance_m"]),
     ("warp_time", &["distance_m"], &["time_s"]),
     ("lock_time", &["tgt_sig_m"], &["time_s"]),
+    ("ecm_burst", &["tgt_scan_res_mm", "tgt_dps"], &["src_damage", "tgt_lock_time_s", "tgt_lock_uptime_s"]),
 ];
 
+/// 0.2 validation of enumerated values (BAD_REQUEST)
+fn check_enums(req: &GraphRequest) -> Result<(), GErr> {
+    if let Some(m) = req.target.as_ref().and_then(|t| t.resist_mode.as_deref()) {
+        if !["auto", "shield", "armor", "hull", "weighted_average"].contains(&m) {
+            return Err(gerr("BAD_REQUEST", format!("unknown resist_mode {m}"), "/target/resist_mode"));
+        }
+    }
+    let m = req.settings.mobile_drone_mode.as_str();
+    if !["auto", "follow_attacker", "follow_target"].contains(&m) {
+        return Err(gerr("BAD_REQUEST", format!("unknown mobile_drone_mode {m}"), "/settings/mobile_drone_mode"));
+    }
+    if let Some(v) = req.params.get("ammo_quality") {
+        if !matches!(v.as_str(), Some("t1" | "navy" | "all")) {
+            return Err(gerr("BAD_REQUEST", format!("unknown ammo_quality {v}"), "/params/ammo_quality"));
+        }
+    }
+    Ok(())
+}
+
 pub fn run(ds: &Dataset, req: &GraphRequest) -> Result<Value, GErr> {
+    if req.y.is_empty() {
+        return Err(gerr("BAD_REQUEST", "y must list at least one series", "/y"));
+    }
+    if let Some(i) = req.x.values.iter().position(|v| !v.is_finite()) {
+        return Err(gerr("BAD_REQUEST", "x values must be finite numbers", &format!("/x/values/{i}")));
+    }
     let Some(g) = GRAPHS.iter().find(|g| g.0 == req.graph) else {
         return Err(gerr("UNKNOWN_GRAPH", req.graph.clone(), "/graph"));
     };
@@ -159,6 +186,12 @@ pub fn run(ds: &Dataset, req: &GraphRequest) -> Result<Value, GErr> {
             return Err(gerr("BAD_AXIS", format!("y {y} not valid for {}", req.graph), &format!("/y/{i}")));
         }
     }
+    if req.graph == "ecm_burst" && req.x.axis == "tgt_dps" {
+        if let Some(i) = req.y.iter().position(|y| y != "src_damage") {
+            return Err(gerr("BAD_AXIS", format!("y {} not defined for ecm_burst x tgt_dps", req.y[i]), &format!("/y/{i}")));
+        }
+    }
+    check_enums(req)?;
     let mut series: Map<String, Value> = Map::new();
     let mut put = |name: String, v: Vec<Option<f64>>| {
         series.insert(name, Value::Array(v.into_iter().map(fnum).collect()));
@@ -181,6 +214,11 @@ pub fn run(ds: &Dataset, req: &GraphRequest) -> Result<Value, GErr> {
         }
         "damage" => {
             for (k, v) in damage::run(ds, req)? {
+                put(k, v);
+            }
+        }
+        "ecm_burst" => {
+            for (k, v) in ecm::run(ds, req)? {
                 put(k, v);
             }
         }

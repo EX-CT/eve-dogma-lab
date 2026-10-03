@@ -87,13 +87,24 @@ FitRequest ─▶ eos::fit::build ─▶ calculate (early/normal/late) ─▶ pr
   order (and therefore every float) is unchanged.
 - Every perf change is checked by byte-comparing batch output for the whole corpus against a saved reference.
 
-## Graphs (`src/graphs/`, CONTRACT-GRAPHS 0.1)
+## Graphs (`src/graphs/`, CONTRACT-GRAPHS 0.2)
 
 Every sample point is evaluated exactly like Pyfa's getter `getPoint` (no adaptive sampling). The source fit is
 built with the normal `calc` pipeline (`api::build_calc`), so projected/fleet/environment inputs apply.
 
-- `mod.rs` — GraphRequest parsing, axis/series validation (`UNKNOWN_GRAPH`, `BAD_AXIS`, `BAD_REQUEST`, `BAD_JSON`),
-  dispatch, GraphResult (non-finite values -> `null`).
+- `mod.rs` — GraphRequest parsing and validation, then dispatch and the GraphResult (non-finite values -> `null`).
+  Validation order follows 0.2: empty `y` / non-finite x gives `BAD_REQUEST`, then `UNKNOWN_GRAPH`, then `BAD_AXIS`
+  (including the `ecm_burst` `tgt_dps` × lock-time pair), then the enum checks (`resist_mode`, `mobile_drone_mode`,
+  `ammo_quality`) giving `BAD_REQUEST`. Empty `x.values` returns empty series.
+- `ecm.rs` — `ecm_burst` (Pyfa `fitEcmBurstScanresDamps`):
+  - damp scan-res multiplier, computed like `getDampMultScanRes`;
+  - `calculateLockTime`;
+  - the burst-cycle damage loop, fed by the stats-panel weapon/drone+fighter dps and the EHP total.
+- Target fits for `ewar` / `remote_reps`:
+  - ewar: resist = 1 − the target ship's resistance attribute per series; 0 for `disallowOffensiveModifiers`, except neuts;
+  - RR: × `remoteRepairImpedance`; 0 for `disallowAssistance`.
+- `damage` % axes: `tgt_speed_pct` / `tgt_sig_pct` are converted to absolute values with the target's max speed / sig.
+  `tgt_sig_m` ≤ 0 gives `null`.
 - `cycles.rs` — Pyfa `CycleInfo`/`CycleSequence` (module `getCycleParameters(reloadOverride)`), cycle iteration.
 - `simple.rs` — capacitor (capSim with saved states), shield regen, mobility (incl. bump), warp time (subwarp
   rebuild like `SubwarpSpeedCache`), lock time.

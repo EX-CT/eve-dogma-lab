@@ -134,11 +134,40 @@ fn sources(fit: &Fit, y: &str, res: f64) -> Vec<Src> {
     v
 }
 
+/// target-ship resistance attribute per EWAR series (the effects' resistanceID / modules' remoteResistanceID)
+fn resist_attr(y: &str) -> &'static str {
+    match y {
+        "neut_gj_s" => "energyWarfareResistance",
+        "web_pct" => "stasisWebifierResistance",
+        "ecm_strength" => "ECMResistance",
+        "damp_lock_range_pct" => "sensorDampenerResistance",
+        "td_optimal_pct" | "gd_range_pct" => "weaponDisruptionResistance",
+        _ => "targetPainterResistance",
+    }
+}
+
 pub fn run(ds: &Dataset, req: &GraphRequest) -> Result<Vec<(String, Vec<Option<f64>>)>, GErr> {
     let fit = build_calc(ds, &req.fit)?;
-    let res = 1.0 - req.p("resist").map(|r| r.clamp(0.0, 1.0)).unwrap_or(0.0);
+    // 0.2: target fit -> resist from the target ship's resistance attribute (explicit params.resist wins)
+    let tfit = match req.target.as_ref().and_then(|t| t.fit.as_ref()) {
+        Some(f) => Some(build_calc(ds, f).map_err(|e| GErr { code: e.code, message: e.message, path: format!("/target/fit{}", e.path) })?),
+        None => None,
+    };
     let mut out = Vec::new();
     for y in &req.y {
+        let res = match (req.p("resist"), &tfit) {
+            (Some(r), _) => 1.0 - r.clamp(0.0, 1.0),
+            (None, Some(t)) => {
+                if y != "neut_gj_s" && t.g(t.ship, "disallowOffensiveModifiers") != 0.0 {
+                    0.0
+                } else {
+                    let a = t.g(t.ship, resist_attr(y));
+                    let a = if a == 0.0 { 1.0 } else { a }; // Pyfa `resist or 1`
+                    1.0 - (1.0 - a).clamp(0.0, 1.0)
+                }
+            }
+            (None, None) => 1.0,
+        };
         let srcs = sources(&fit, y, res);
         let vals = req
             .x
