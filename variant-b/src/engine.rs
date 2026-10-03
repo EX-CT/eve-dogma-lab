@@ -903,8 +903,15 @@ impl<'a> Fit<'a> {
                     continue;
                 }
                 self.for_targets(self.char, m.func, m.domain, m.extra, targets);
+                if targets.is_empty() {
+                    continue;
+                }
+                // push_mod for every target, with the per-(attr, category) part computed once
+                let penalized = !self.prep.meta(m.modified).stackable && !EXEMPT_CATEGORIES.contains(&f.category);
+                self.raw.reserve(targets.len());
                 for &t in targets.iter() {
-                    self.push_mod(t as usize, m.modified, m.op, Src::Const(vals[k]), f.category);
+                    let seq = self.raw.len() as u32;
+                    self.raw.push(RawMod { item: t, attr: m.modified, op: m.op as i8, penalized, seq, src: Src::Const(vals[k]) });
                 }
             }
         }
