@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Application profile graph (Pyfa "Application Profile"): best charge per distance for the dominant weapon group.
 
 Behaviour follows the Pyfa graph: charge stats come from base charge attributes scaled by the multipliers of the

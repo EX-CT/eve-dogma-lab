@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Vectorised building blocks shared by the graphs."""
 import math
 

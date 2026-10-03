@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Empty x.values -> empty series, never an error (DESIGN.md "Empty x.values").
 
 usage: tests/test_empty_x.py DATASET CASES_DIR   (CASES_DIR = eve-dogma-bench graphs/cases)

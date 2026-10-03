@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Non-damage graphs: lock_time, warp_time, mobility, capacitor, shield_regen, ewar, remote_reps."""
 import heapq
 import math

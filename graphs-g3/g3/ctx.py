@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Per-fit evaluation context: one variant-g calc of a FitRequest plus the attribute helpers the graphs need.
 
 A context is a pure function of (dataset, canonical FitRequest); `FitCache` memoises contexts (and everything

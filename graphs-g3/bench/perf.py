@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """G3 perf harness. usage: bench/perf.py DATASET CASES_DIR  (CASES_DIR = eve-dogma-bench graphs/cases)
 
 Measures (CPU time, min of N runs; the shared box is noisy):

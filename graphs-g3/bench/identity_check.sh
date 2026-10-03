@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Output-identity gate used for the perf work: runs a stress corpus through a base commit and the working tree
 # and requires byte-identical graph-batch output (cached and --no-cache).
 # usage: bench/identity_check.sh DATASET CASES_DIR [BASE_COMMIT=f7aa4cb]

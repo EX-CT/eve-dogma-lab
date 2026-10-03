@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """stress corpora for bench/identity_check.sh: usage make_stress.py CASES_DIR OUT_DIR
 stress:  every case + a dense (397 pts, incl. one negative x) and a descending variant
 stress2: every damage case against 3 target fits, plus rescaled/reversed x and y = dps+volley+damage

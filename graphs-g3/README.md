@@ -64,3 +64,10 @@ per-request overhead (validation, fit-key hashing, target set-up).
 
 Architecture, the cache and the Pyfa mapping are described in `DESIGN.md`. This is a behavioural reimplementation:
 no Pyfa code is copied.
+
+## License
+
+SPDX-License-Identifier: **LGPL-3.0-or-later** — the same as variant G (`../variant-g`), which G3 builds on. The full
+texts are in `LICENSE` (GNU LGPL v3) and `LICENSE.GPL-3.0` (GNU GPL v3, which the LGPL incorporates). You may use
+version 3 of the LGPL or, at your option, any later version. The Pyfa oracle (GPL) was used only as a black-box test
+tool through the bench. No Pyfa code is included. EVE Online data © CCP hf.

@@ -1,4 +1,5 @@
-"""GraphRequest -> GraphResult dispatcher (contract CONTRACT-GRAPHS 0.1)."""
+# SPDX-License-Identifier: LGPL-3.0-or-later
+"""GraphRequest -> GraphResult dispatcher (contract CONTRACT-GRAPHS 0.2)."""
 import math
 
 import numpy as np

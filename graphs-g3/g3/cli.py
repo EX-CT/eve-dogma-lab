@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """eve-dogma-g3 CLI: graph | graph-batch | serve-stdio (graph + every variant-g method); other commands are
 forwarded to the variant-g CLI."""
 import gc

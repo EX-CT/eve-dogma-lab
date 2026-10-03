@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Contract 0.2 validation precedence and error codes, plus the 0.2 clamps (self-contained; dataset from
 EVE_DOGMA_DATASET, skipped when unset).  python3 -m unittest discover -s tests"""
 import copy
