@@ -395,3 +395,7 @@ impl ToJ for crate::request::State {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "tests/out.rs"]
+mod tests;
