@@ -86,3 +86,36 @@ FitRequest ─▶ eos::fit::build ─▶ calculate (early/normal/late) ─▶ pr
   resonances/cycle-time lookups. capSim uses an index-arena binary heap with the same `heapq` ordering, so event
   order (and therefore every float) is unchanged.
 - Every perf change is checked by byte-comparing batch output for the whole corpus against a saved reference.
+
+## Graphs (`src/graphs/`, CONTRACT-GRAPHS 0.1)
+
+Every sample point is evaluated exactly like Pyfa's getter `getPoint` (no adaptive sampling). The source fit is
+built with the normal `calc` pipeline (`api::build_calc`), so projected/fleet/environment inputs apply.
+
+- `mod.rs` — GraphRequest parsing, axis/series validation (`UNKNOWN_GRAPH`, `BAD_AXIS`, `BAD_REQUEST`, `BAD_JSON`),
+  dispatch, GraphResult (non-finite values -> `null`).
+- `cycles.rs` — Pyfa `CycleInfo`/`CycleSequence` (module `getCycleParameters(reloadOverride)`), cycle iteration.
+- `simple.rs` — capacitor (capSim with saved states), shield regen, mobility (incl. bump), warp time (subwarp
+  rebuild like `SubwarpSpeedCache`), lock time.
+- `ewar.rs`, `rr.rs` — EWAR strength and remote repairs (time cache with spool by nonstop cycles, ancillary reload).
+- `damage.rs` — damage stats: per-dealer dps/volley (stats-panel spool, or the time cache with forced
+  `CYCLES` spool, reloads always on, breacher +1 s offsets and per-tick keys), Pyfa `DmgTypes` semantics for
+  breacher pods (best `min(abs, rel·hp)` per tick key), application per weapon kind (turret/drone chance to hit,
+  missiles, vorton, smartbombs, bombs, guided bombs, doomsdays, breachers, fighter abilities), projected webs/TPs
+  (`getTackledSpeed` / `getSigRadiusMult`): extra penalised multipliers are added to the target ship attribute's
+  default stacking group with the target's resist attribute (`Mad::get_extended`); a source scram in range is
+  modelled by rebuilding the target fit with its MWD/MJD modules online (equivalent to Pyfa `ignoreAfflictors`).
+  Target fits: resists by `resist_mode` (`auto` = Pyfa `_getAutoResists` scoring), full HP, radius, sig.
+- `app.rs` — application profile: dominant weapon group, valid charges (charge groups / size / capacity, published),
+  quality tiers, turret base stats with the loaded charge's multipliers divided out, missile multipliers taken from
+  the loaded charge (`modified / base`, or applied to a pre-assigned 1 when the base is 0), Pyfa's coarse
+  transition scan (`getSampleStep`, 10 m bisection, the scan point's charge index) and the distance-sampled,
+  linearly interpolated projected cache — reproduced as-is because they determine the values.
+  The dataset has no `metaGroupID`, so the tier uses: meta level 5 = Tech II, a variation parent = faction, else
+  Tech I (identical to eve.db's metaGroupID for every turret/missile charge). Civilian charges are unpublished in
+  the dataset but published in Pyfa's eve.db; they are kept as candidates. Charge ids are informational: equal-stat
+  faction charges tie and Pyfa picks by set order.
+
+Engine changes for graphs (calc output unchanged, 326/326): `Fit::volley_params_sp` (resolved spool options),
+`Mad::get_extended` / `Mad::get_preassigned` (read-only what-if evaluation), `capsim::run_ex` (saved states),
+`Fit::cap_drains`, stats helpers `pub(crate)`.

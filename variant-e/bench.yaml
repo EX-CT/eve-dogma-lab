@@ -2,3 +2,5 @@ build: cargo build --release
 cmd: ./target/release/eve-dogma-e calc --dataset {dataset}
 batch_cmd: ./target/release/eve-dogma-e batch --dataset {dataset}
 rpc_cmd: ./target/release/eve-dogma-e serve-stdio --dataset {dataset}
+graph_cmd: ./target/release/eve-dogma-e graph --dataset {dataset}
+graph_batch_cmd: ./target/release/eve-dogma-e graph-batch --dataset {dataset}
