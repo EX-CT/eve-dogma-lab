@@ -4,8 +4,8 @@
 
 Bench **1.8.0+0969967** (frozen for the 10:20 CST evaluation; 326 cases, 21 051 Pyfa-expected values, adding abyssal
 weather / AoE cloud beacons, incursion system effects, burst projectors and Standup weapon disruptors). Official run in the
-shared bench checkout at 07:57 CST on commit 9fbeb2a (bench 1.8.0+33db85a, corpus unchanged since 0969967);
-earlier runs: 07:28 CST on 65e1eda, 07:01 CST on ab420d1 and 06:19 CST on b430abe, both 326/326. Scorecards are committed in [`scorecards/`](scorecards/):
+shared bench checkout at 08:35 CST on commit cbf2f6a (bench 1.8.0+33db85a, corpus unchanged since 0969967);
+earlier runs: 07:57 CST on 9fbeb2a, 07:28 CST on 65e1eda, 07:01 CST on ab420d1 and 06:19 CST on b430abe, both 326/326. Scorecards are committed in [`scorecards/`](scorecards/):
 [`bench-1.8.0.md`](scorecards/bench-1.8.0.md) and [`bench-1.7.0.md`](scorecards/bench-1.7.0.md), each with a `.json`.
 
 | | cases | values |
@@ -15,13 +15,13 @@ earlier runs: 07:28 CST on 65e1eda, 07:01 CST on ab420d1 and 06:19 CST on b430ab
 | vs Pyfa (bench 1.6.0, 05:51 CST) | 297/297 | 19103/19103 |
 | eft export column (EFT export vs Pyfa `exportEft` after `fill()`, informational) | **326/326** | |
 
-| perf (bench harness, shared box under load) | H @ 1.8.0 07:57 (9fbeb2a) | H @ 1.8.0 07:28 (65e1eda) | H @ 1.8.0 07:01 (ab420d1) | H @ 1.8.0 06:19 | H @ 1.7.0 06:12 | H @ 1.6.0 05:51 | A @ 1.6.0 05:42 |
-|---|---|---|---|---|---|---|---|
-| ms/fit (exct_rifter latency) | **0.237** | 0.381 | 0.506¹ | 0.281 | 0.255 | 0.308 | 0.432 |
-| batch throughput, fits/s | **2469** | 1934 | 2885 | 2662 | 3033 | 2863 | 1777 |
-| cold ms (one process per case, median) | **5.0** | 6.7 | 5.2 | 4.8 | 6.2 | 8.9 | 138 |
-| startup + one calc, ms | **7.3** | 20.2 | 7.9 | 6.2 | 6.0 | 7.8 | |
-| deterministic | yes | yes | yes | yes | yes | yes | yes |
+| perf (bench harness, shared box under load) | H @ 1.8.0 08:35 (cbf2f6a) | H @ 1.8.0 07:57 (9fbeb2a) | H @ 1.8.0 07:28 (65e1eda) | H @ 1.8.0 07:01 (ab420d1) | H @ 1.8.0 06:19 | H @ 1.7.0 06:12 | H @ 1.6.0 05:51 | A @ 1.6.0 05:42 |
+|---|---|---|---|---|---|---|---|---|
+| ms/fit (exct_rifter latency) | **0.233** | 0.237 | 0.381 | 0.506¹ | 0.281 | 0.255 | 0.308 | 0.432 |
+| batch throughput, fits/s | **3348** | 2469 | 1934 | 2885 | 2662 | 3033 | 2863 | 1777 |
+| cold ms (one process per case, median) | **5.1** | 5.0 | 6.7 | 5.2 | 4.8 | 6.2 | 8.9 | 138 |
+| startup + one calc, ms | **6.5** | 7.3 | 20.2 | 7.9 | 6.2 | 6.0 | 7.8 | |
+| deterministic | yes | yes | yes | yes | yes | yes | yes | yes |
 
 ¹ Load average was 7.4 during that run. Timed back to back under the same load, ab420d1 does 2887 fits/s
 (0.346 ms/fit including startup), against 2528 fits/s for the earlier reference build, so the latency figure is
@@ -113,7 +113,7 @@ Every output leaf was compared, abs 1e-6 / rel 1e-9, against A's working-tree bu
 - Bench 1.4.0 corpus: **289/289 identical**.
 - The 23 newest cases: **23/23 identical**.
 
-**Module states (08:40 CST, A at a6b3720).** A requested state the module cannot take (`active` without an active effect,
+**Module states (08:30 CST, A at a6b3720).** A requested state the module cannot take (`active` without an active effect,
 `overheated` without an overload effect) is now kept as requested, as A does. Before, H fell back to `online` like Pyfa's
 `isValidState`. Rigs and subsystems are still `online` unless `offline`. A request that is valid JSON but not a FitRequest
 (unknown state string such as `"ACTIVE"` / `"bogus"`, wrong type, duplicate field) is `BAD_REQUEST` with the same message
