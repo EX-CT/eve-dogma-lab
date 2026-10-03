@@ -117,6 +117,34 @@ impl EvHeap {
         }
         self.h[pos] = item;
     }
+    #[inline]
+    fn peek(&self) -> Option<Ev> {
+        self.h.first().map(|&(_, i)| self.slab[i as usize])
+    }
+    /// Replace the minimum with `ev` and restore the heap with one sift-down (the event loop reschedules the
+    /// event it just handled; this replaces a pop + push pair).
+    fn replace_top(&mut self, ev: Ev) {
+        let idx = self.h[0].1;
+        self.slab[idx as usize] = ev;
+        let item = (ev.t, idx);
+        let n = self.h.len();
+        let mut pos = 0;
+        loop {
+            let l = 2 * pos + 1;
+            if l >= n {
+                break;
+            }
+            let r = l + 1;
+            let c = if r < n && self.less(self.h[r], self.h[l]) { r } else { l };
+            if self.less(self.h[c], item) {
+                self.h[pos] = self.h[c];
+                pos = c;
+            } else {
+                break;
+            }
+        }
+        self.h[pos] = item;
+    }
     fn pop(&mut self) -> Option<Ev> {
         let top = *self.h.first()?;
         let last = self.h.pop().unwrap();
@@ -227,10 +255,13 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: f
     };
     let mut last_ev: Option<Ev> = None;
     let mut exp_memo = [(u64::MAX, 0.0f64); 2];
-    while let Some(mut ev) = heap.pop() {
+    // the current event stays at the top of the heap while it is handled (injectors pushed meanwhile are
+    // strictly later); it is removed on exit / when parked, else rescheduled in place
+    while let Some(mut ev) = heap.peek() {
         let t_now = ev.t;
         if t_now >= t_max_ms {
             last_ev = Some(ev);
+            heap.pop();
             break;
         }
         if t_now > t_last && cap_max > 0.0 && tau > 0.0 {
@@ -258,6 +289,7 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: f
                 let k = key(&awaiting);
                 if cap >= cap_wrap && k == awaiting_wrap {
                     last_ev = Some(ev);
+            heap.pop();
                     break;
                 }
                 cap_wrap = crate::stats::py_round(cap, 1);
@@ -269,10 +301,12 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: f
         iterations += 1;
         if iterations > 5_000_000 {
             last_ev = Some(ev);
+            heap.pop();
             break;
         }
         if ev.inj && cap - ev.cap_need > cap_max {
             awaiting.push(ev);
+            heap.pop();
             continue;
         }
         if ev.cap_need > cap && cap < cap_max {
@@ -302,6 +336,7 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: f
             if cap < 0.0 {
                 ran_out = true;
                 last_ev = Some(ev);
+            heap.pop();
                 break;
             }
             cap_lowest = cap;
@@ -333,7 +368,7 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: f
         }
         ev.seq = seq;
         seq += 1;
-        heap.push(ev);
+        heap.replace_top(ev);
     }
     // EVE's own stability estimate
     let mut all: Vec<Ev> = heap.into_vec();
