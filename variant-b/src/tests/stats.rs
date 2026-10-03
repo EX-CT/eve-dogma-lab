@@ -72,6 +72,7 @@ fn output_doc_writes_tidy_compact_json() {
     assert_eq!(j.to_value(), v);
     let s = j.to_string();
     assert_eq!(s, serde_json::to_string(&tidy(v)).unwrap());
+    assert_eq!(j.into_string(), s);
     assert!(s.contains("0.123457"), "{s}");
     assert!(s.starts_with("{\"a\":"), "keys are sorted: {s}");
 }

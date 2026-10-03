@@ -144,7 +144,7 @@ impl J {
                     if k > 0 {
                         out.push(b',');
                     }
-                    write_str(out, key);
+                    write_key(out, key);
                     out.push(b':');
                     x.write(out);
                 }
@@ -153,11 +153,63 @@ impl J {
         }
     }
 
+    /// `write` that consumes the document: objects are sorted in place (no index vector).
+    pub fn write_owned(self, out: &mut Vec<u8>) {
+        match self {
+            J::Array(a) => {
+                out.push(b'[');
+                for (k, x) in a.into_iter().enumerate() {
+                    if k > 0 {
+                        out.push(b',');
+                    }
+                    x.write_owned(out);
+                }
+                out.push(b']');
+            }
+            J::Object(mut o) => {
+                o.0.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                out.push(b'{');
+                for (k, (key, x)) in o.0.into_iter().enumerate() {
+                    if k > 0 {
+                        out.push(b',');
+                    }
+                    write_key(out, &key);
+                    out.push(b':');
+                    x.write_owned(out);
+                }
+                out.push(b'}');
+            }
+            leaf => leaf.write(out),
+        }
+    }
+
+    /// Consuming `to_string`.
+    pub fn into_string(self) -> String {
+        let mut out = Vec::with_capacity(8 * 1024);
+        self.write_owned(&mut out);
+        // SAFETY: only valid UTF-8 is written (str contents verbatim or escaped by serde_json, ASCII otherwise)
+        unsafe { String::from_utf8_unchecked(out) }
+    }
+
     pub fn to_string(&self) -> String {
         let mut out = Vec::with_capacity(8 * 1024);
         self.write(&mut out);
         // SAFETY: only valid UTF-8 is written (str contents verbatim or escaped by serde_json, ASCII otherwise)
         unsafe { String::from_utf8_unchecked(out) }
+    }
+}
+
+/// Static keys are identifiers from this crate's source (nothing to escape); owned keys go through serde_json.
+#[inline]
+fn write_key(out: &mut Vec<u8>, k: &Key) {
+    match k {
+        Cow::Borrowed(k) => {
+            debug_assert!(k.bytes().all(|c| c >= 0x20 && c != b'"' && c != b'\\'));
+            out.push(b'"');
+            out.extend_from_slice(k.as_bytes());
+            out.push(b'"');
+        }
+        Cow::Owned(k) => write_str(out, k),
     }
 }
 

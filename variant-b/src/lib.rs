@@ -27,7 +27,7 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Value {
 pub fn calc_json(ds: &Dataset, request_json: &str) -> String {
     let v = match serde_json::from_str::<FitRequest>(request_json) {
         Ok(req) => match engine::Fit::build(ds, &req) {
-            Ok(fit) => return fit.compute_stats_raw(&req).to_string(),
+            Ok(fit) => return fit.compute_stats_raw(&req).into_string(),
             Err(e) => json!({"error": {"code": e.code, "message": e.message, "path": e.path}}),
         },
         Err(e) => json!({"error": {"code": "BAD_REQUEST", "message": e.to_string(), "path": ""}}),
