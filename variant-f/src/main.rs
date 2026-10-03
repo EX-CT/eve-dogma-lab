@@ -3,10 +3,6 @@
 use std::io::{BufRead, Read, Write};
 use std::time::Instant;
 
-#[cfg(not(target_arch = "wasm32"))]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 const USAGE: &str = "eve-dogma-f <command> [args]   (dataset compiled in; --dataset PATH is accepted and ignored)
 
 Commands:
