@@ -69,9 +69,9 @@ fit* with the correct stacking penalty (Pyfa's "extended" attributes) without th
   Grid = 250 steps over the profile's reach rounded up to 25 km; reach = the longest turret optimal + 2 × falloff
   over every loadable charge, or for launchers the longest missile flight (velocity × flight time) over the
   charges of the requested tier. This was derived from black-box probes of the oracle and is checked by `tools/check_probes.py`
-  (`testdata/oracle-probes.jsonl`: 213 extra oracle requests, 5913 values: web ranges, other webs, overheat,
-  tiers, random application profiles and random damage requests (all axes, settings, drone modes, targets) on
-  every corpus fit): 5906/5913 correct; the 7 misses are the crossover case below.
+  (`testdata/oracle-probes.jsonl`: 319 extra oracle requests, 7493 values: web ranges, other webs, overheat,
+  tiers, random application profiles, random damage requests (all axes, settings, drone modes, targets) and
+  random requests of the other seven graphs on every corpus fit): 7486/7493 correct; the 7 misses are the crossover case below.
 - Known deviation: very close to a charge crossover inside an interpolated stretch Pyfa sometimes keeps the
   previous charge for a few metres (e.g. Hyperion navy tier at 10 006–10 011 m it keeps Void, we switch to Caldari
   Navy Antimatter at 10 006 m, which is 1 % higher). Not in the corpus; noted for the contract discussion.
