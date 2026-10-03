@@ -279,6 +279,34 @@ def _type_id_by_name(ds, nm):
     return m.get(nm)
 
 
+def _overheatable(ds, type_id):
+    m = _OH.setdefault(id(ds), {})
+    v = m.get(type_id)
+    if v is None:
+        ti = ds.tidx(type_id) if isinstance(type_id, int) else -1
+        v = m[type_id] = ti < 0 or any(ds.eff_info.get(e, {}).get("category") == 5 for e, _ in ds.t_effects[ti])
+    return v
+
+
+_OH = {}
+
+
+def normalize_states(ds, req):
+    """Bench oracle / Pyfa rule: a module requested `overheated` whose type has no overheat effect (Bastion,
+    doomsdays, ...) fails Pyfa's isValidState and is set to `online` (oracle/pyfa_oracle.py). Returns the request
+    unchanged (same object) when nothing applies."""
+    mods = req.get("modules") if isinstance(req, dict) else None
+    if not isinstance(mods, list):
+        return req
+    bad = [k for k, m in enumerate(mods) if isinstance(m, dict) and m.get("state") == "overheated"
+           and not _overheatable(ds, m.get("type_id"))]
+    if not bad:
+        return req
+    req = dict(req)
+    req["modules"] = [dict(m, state="online") if k in bad else m for k, m in enumerate(mods)]
+    return req
+
+
 class FitCache:
     """LRU memo of contexts keyed by canonical FitRequest JSON (+ a variant tag)"""
 
@@ -288,6 +316,7 @@ class FitCache:
         self.hits = self.misses = 0
 
     def get(self, req, tag="", build=None, path="/fit"):
+        req = normalize_states(self.ds, req)
         if not self.enabled:
             return build(req) if build else Ctx(self.ds, req, path)
         key = tag + canon(req)

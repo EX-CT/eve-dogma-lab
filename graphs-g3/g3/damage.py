@@ -706,7 +706,7 @@ def tackle(c, tgt, settings, d, n, speed):
                     for w in longe:
                         rj.append((np.array([1 + w[0] / 100]), w[3]))
                         mws.remove(w)
-                    cur = float(tgt.extended("maxVelocity", rj, ign) * ratio[j]) if rj else float(vmax0 * ratio[j])
+                    cur = _scalar(tgt.extended("maxVelocity", rj, ign) * ratio[j]) if rj else _scalar(vmax0 * ratio[j])
                     while mws:
                         fast = max(w[4] for w in mws)
                         for w in [w for w in mws if w[4] == fast]:
@@ -717,7 +717,7 @@ def tackle(c, tgt, settings, d, n, speed):
                                 b = w[0] * (1.0 if rd is None else float(range_factor(w[1], w[2], np.array([rd]))[0]))
                             rj.append((np.array([1 + b / 100]), w[3]))
                             mws.remove(w)
-                        cur = float(tgt.extended("maxVelocity", rj, ign) * ratio[j])
+                        cur = _scalar(tgt.extended("maxVelocity", rj, ign) * ratio[j])
                     tv[j] = cur
             tv = unerr(np.broadcast_to(tv, (m,)))
         out_v[idx] = tv
@@ -875,6 +875,11 @@ def application(c, tgt, settings, D, d, tv, sig, n, atk_speed, atk_angle, tgt_an
     else:
         return np.zeros(n)
     return unerr(a)
+
+
+def _scalar(v):
+    """float of a scalar or 1-element array (NumPy 2.5 refuses float() of a 1-d array)"""
+    return float(np.ravel(v)[0])
 
 
 def _ship_attr_or(f, name, default):
