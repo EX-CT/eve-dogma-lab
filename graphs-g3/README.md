@@ -20,6 +20,13 @@ Every other command (`calc`, `batch`, `meta`, `type`, ...) is forwarded to varia
 still works through this binary. `EVE_DOGMA_DATASET` and `EVE_DOGMA_G3_NO_CACHE=1` are honoured. The tool needs
 Python ≥ 3.10 and NumPy. The bench manifest is `bench.yaml`.
 
+## Tests
+
+```sh
+python3 tests/test_empty_x.py <dataset.json.gz> <bench>/graphs/cases     # empty x.values -> empty series
+bench/identity_check.sh <dataset.json.gz> <bench>/graphs/cases          # byte-identity vs f7aa4cb
+```
+
 ## Scoring
 
 ```sh

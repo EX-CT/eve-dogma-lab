@@ -96,11 +96,23 @@ work for modules that don't spool. Everything after it is array code, cached per
 Output identity was the rule for this work: every change is checked byte-for-byte against f7aa4cb on 3285 stress
 requests, plus the corpus and the 1.8.0 stats gate.
 
+## Empty `x.values`
+
+CONTRACT-GRAPHS 0.1 doesn't list empty input as an error. It says each series has "the same length as x", and
+Pyfa evaluates per point (`getPoint`), so no points means nothing to evaluate. Eve ruled (2026-10-03) that an empty
+`x.values` succeeds with empty series:
+- `{"graph", "x_axis", "x": [], "series": {<y>: [] ...}}`. Application profile also returns empty
+  `<y>_charge_type_id` arrays.
+- Exit 0 for `graph`, and a `result` over RPC.
+
+f7aa4cb..3357471 returned `INTERNAL` (an AxisError) on the time-axis and time-parameter damage paths. That is fixed.
+`tests/test_empty_x.py` covers every graph and axis of the corpus with all valid y series, in-process (cached and
+`--no-cache`), through `graph-batch`, `graph` and `serve-stdio`. Every non-empty request is unchanged: the identity
+check still passes all 3285 stress requests.
+
 ## Known limits / next steps
 
 - The cold path is dominated by variant G's fit calculation, which is not modified on this branch.
 - The mobile-drone web speed model (drones chasing the target) still loops over points in Python, but costs well
   under 1 ms at 500 points.
-- An empty `x.values` list on a time axis still returns `INTERNAL` (an AxisError), as in f7aa4cb. It was kept for
-  output identity and can be fixed once identity with the old version is no longer required.
 - The extra 2-D `x2` heat-map axis from the plan is not implemented. The scorer ignores it.

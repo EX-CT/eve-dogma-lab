@@ -924,8 +924,8 @@ def _apply(maps, apps, tgt, settings, n):
                     val = np.minimum(ab * a, rl * a * tgt.hp)
                     ticks[t] = np.maximum(ticks[t], val) if t in ticks else val
         else:
-            if n == 0:
-                raise np.exceptions.AxisError("axis 1 is out of bounds for array of dimension 1")
+            if n == 0:  # empty x.values: nothing to evaluate (empty series, see DESIGN.md)
+                continue
             tot = _pp_apply(dm, np.broadcast_to(np.asarray(a, float), (n,)), tuple(res), tgt.hp, n, tot, gpos,
                             gcols)
     for v in ticks.values():
