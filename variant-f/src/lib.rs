@@ -2,6 +2,7 @@
 //!
 //! The SDE dataset is compiled into this crate by `build.rs`: static tables plus generated Rust code for every
 //! effect's modifiers. `calc(request) -> stats` is pure: no I/O, no clocks, no global state, no data loading.
+#![recursion_limit = "1024"]
 pub mod capsim;
 pub mod data;
 pub mod eft;

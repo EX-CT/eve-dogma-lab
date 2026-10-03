@@ -167,6 +167,20 @@ impl J {
                 out.push(']');
             }
             J::O(o) => {
+                // keys already in strictly ascending order (most `jv!` literals): write in place
+                if o.windows(2).all(|w| w[0].0 < w[1].0) {
+                    out.push('{');
+                    for (n, (key, v)) in o.iter().enumerate() {
+                        if n > 0 {
+                            out.push(',');
+                        }
+                        write_str(out, key);
+                        out.push(':');
+                        v.write(out);
+                    }
+                    out.push('}');
+                    return;
+                }
                 // sorted keys; objects are small, so an index sort on the stack is cheap
                 let mut idx_small = [0u16; 48];
                 let mut idx_big: Vec<u16> = Vec::new();
@@ -231,17 +245,26 @@ macro_rules! jv {
     (null) => { $crate::j::J::Null };
     ({ $($tt:tt)* }) => {{
         #[allow(unused_mut)]
-        let mut o: Vec<($crate::j::Key, $crate::j::J)> = Vec::new();
+        let mut o: Vec<($crate::j::Key, $crate::j::J)> = Vec::with_capacity($crate::jv_count!(@n 1usize; $($tt)*));
         $crate::jv_obj!(o; $($tt)*);
         $crate::j::J::O(o)
     }};
     ([ $($tt:tt)* ]) => {{
         #[allow(unused_mut)]
-        let mut a: Vec<$crate::j::J> = Vec::new();
+        let mut a: Vec<$crate::j::J> = Vec::with_capacity($crate::jv_count!(@n 1usize; $($tt)*));
         $crate::jv_arr!(a; $($tt)*);
         $crate::j::J::A(a)
     }};
     ($e:expr) => { $crate::j::J::from($e) };
+}
+
+/// Upper bound of the item count of a `jv!` body (top-level commas + 1), for an exact-size allocation.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! jv_count {
+    (@n $n:expr;) => { $n };
+    (@n $n:expr; , $($rest:tt)*) => { $crate::jv_count!(@n $n + 1usize; $($rest)*) };
+    (@n $n:expr; $t:tt $($rest:tt)*) => { $crate::jv_count!(@n $n; $($rest)*) };
 }
 
 #[macro_export]

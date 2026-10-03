@@ -1,4 +1,5 @@
 //! eve-dogma-f CLI — stateless: JSON FitRequest in, JSON FitStats out. The dataset is compiled in.
+#![recursion_limit = "1024"]
 use std::io::{BufRead, Read, Write};
 use std::time::Instant;
 
