@@ -254,7 +254,7 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: f
         k
     };
     let mut last_ev: Option<Ev> = None;
-    let mut exp_memo = [(u64::MAX, 0.0f64); 2];
+    let mut exp_memo = [(u64::MAX, 0.0f64); 32];
     // the current event stays at the top of the heap while it is handled (injectors pushed meanwhile are
     // strictly later); it is removed on exit / when parked, else rescheduled in place
     while let Some(mut ev) = heap.peek() {
@@ -268,15 +268,13 @@ pub fn simulate(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: f
             let x = (cap / cap_max).max(0.0).sqrt();
             // the same few event spacings recur all the time: memoise exp() (bit-identical results)
             let arg = (t_last - t_now) / tau;
-            let e = if arg.to_bits() == exp_memo[0].0 {
-                exp_memo[0].1
-            } else if arg.to_bits() == exp_memo[1].0 {
-                exp_memo.swap(0, 1);
-                exp_memo[0].1
+            let bits = arg.to_bits();
+            let slot = (bits.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 59) as usize; // 32-entry direct-mapped memo
+            let e = if exp_memo[slot].0 == bits {
+                exp_memo[slot].1
             } else {
                 let e = arg.exp();
-                exp_memo[1] = exp_memo[0];
-                exp_memo[0] = (arg.to_bits(), e);
+                exp_memo[slot] = (bits, e);
                 e
             };
             cap = (1.0 + (x - 1.0) * e).powi(2) * cap_max;
