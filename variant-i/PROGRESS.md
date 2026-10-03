@@ -51,3 +51,46 @@
 - Result: 326/326, 21,051/21,051, EFT export 326/326.
 - Perf: salsa durability. Skill and character specs, the slot ids, and the fit core are HIGH durability, so the
   ~400 skill memos are shallow-verified when only modules or the ship change. That is -10% Ir on the corpus.
+
+## 2026-10-03 06:20–08:20 CST — speed round 3 (bench 1.8.0, final)
+Every commit below was checked before it was pushed. The checks were: 326/326 and 21,051/21,051 values; batch output
+byte-identical to the golden for the corpus x5; the corpus run forward and reverse in one session matching a fresh
+database per request (INC_OK, FRESH_OK); EFT export 326/326; deterministic output.
+- 59d93dc:
+  - `item_mods` carries the spec, so an attribute records one dependency.
+  - A `roles` query means bursts and RAH skip skill specs.
+  - The skill level list is memoised.
+  - Facade layer and modmap caches.
+- 7c192b1:
+  - Floats are rounded in a serde Formatter at serialisation.
+  - Batch output goes through a BufWriter.
+  - Attr-id caches in `validate` and `raw_cycle_ms`; `Consts::special` is a bitmap.
+- 3928254: `load` diffs specs against a shadow Vec with no salsa reads; `validate` scans canFit attributes in one pass.
+- 84cd44a: **attributes are evaluated inline from the memoised modifier graph** (`engine::VCache`).
+  - The per-attribute salsa memo is used automatically when a request keeps the previous request's hull, which is
+    what an edit looks like.
+  - `EVE_I_ATTR_MEMO=0/1` forces inline or memo mode.
+  - The inline cache is reused while the salsa revision is unchanged. See DESIGN.md.
+- 6759b31: per-target maps and view caches are pre-sized, and the index skips copying required skills for skills.
+- 71027e5: SmallVec in `attr_body`. Fast path for `py_round2` away from ties, validated on 2M random values against
+  the exact path.
+- c434df7: resolved skill specs are memoised with the level list; `validate` looks skills up in a sorted Vec.
+- e0f3f89: `raw_cycle_ms` is memoised per item per view.
+- 9a4844a: `validate` reads required skills in one pass (`req_bits`).
+- Tried and reverted:
+  - a `has_effect_named` memo (no gain);
+  - a new DB per hull or per request ("soft reset"): 2.1–2.3G vs 1.45G Ir on the single corpus.
+- Not done: PGO, which would have to be trained on a representative workload rather than the scored corpus.
+- Results:
+  - Callgrind Ir for the corpus x5 went from 6.54G to **4.61G** (-30%).
+  - An edit recomputes in ~83–90 µs at best, down from ~211 µs.
+
+### Official bench 1.8.0+33db85a, head 9a4844a (08:18 CST, `bench.py --only I`)
+- Accuracy: 326/326 cases, 21,051/21,051 values. Deterministic. EFT export 326/326.
+- Batch: 1799 fits/s. Cold start: 19.8 ms per process.
+- Latency: **0.017 ms/fit as printed, but treat it as a measurement artefact.** run.py computes
+  (500 identical fits - 1 fit) / 499. On this run the single-fit reference took 72.3 ms (cold start median 19.8 ms),
+  which pulls the result down. An identical re-request is genuinely cheap in I, because the revision is unchanged
+  and the cache is reused. Still, two dev reruns of the same binary straight afterwards gave 0.146 and 0.194 ms/fit.
+  Use ~0.15–0.2 ms for comparisons.
+- Copied to `bench/official/` (scorecard and combined.md).

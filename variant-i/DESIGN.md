@@ -41,17 +41,43 @@ so they are incremental too; their evaluated values are frozen into the parent's
 Stats (`stats.rs`), capacitor simulation and EFT are shared semantics with variant A (eve-dogma-rs, LGPL) and run
 on a read view (`session::Fit`) whose `get()` is a salsa query.
 
-## Trade-offs
-* Per-query overhead (interning `(item, attr, layer)`, memo lookup, dependency recording) makes a cold, from-scratch
-  fit ~3x slower than variant A's plain `Cell` cache (≈3.2 ms vs ≈1.1 ms).
-* In a session, an edit costs ≈0.8–1.6 ms and an unchanged re-request ≈1.0 ms — currently dominated by
-  re-building specs for ~500 skills and re-running the (non-memoised) stats layer. Next steps: memoise spec
-  building per request section, make stats sections salsa queries, cheaper keys (avoid interning per `get`).
-* Memory grows with distinct keys; the session resets itself after 20 000 slots.
+## Attribute evaluation: inline vs. per-attribute memo (since 84cd44a)
+Most of the query graph stays as above. After `84cd44a`, an attribute value is not always its own salsa query:
+* **Inline mode:** values are computed from the memoised modifier graph (`item_mods`, `layer_mods`) by a plain
+  per-request cache (`engine::VCache`). It holds the value map, a cycle stack with salsa-style fallback to the base
+  value, and caches for item mods and layers. This avoids interning, memo lookup and dependency recording for every
+  `(item, attr, layer)`.
+* **Memo mode:** this is the per-attribute `attr_value` salsa query. It pays off only when the previous request kept
+  the same hull, which is what an edit looks like (only 59 of the 326 consecutive corpus fits share a hull).
+* **Auto (default):** uses memo mode when the request keeps the previous request's hull and inline mode otherwise.
+  `EVE_I_ATTR_MEMO=1` forces memo mode and `EVE_I_ATTR_MEMO=0` forces inline mode. Output is byte-identical in
+  all three modes.
+* The session's inline cache is reused while the salsa revision is unchanged
+  (`salsa::plumbing::current_revision`). That makes an identical re-request almost free.
 
-## Measurements (box, 1 thread)
-| | ms |
+Other changes from the speed rounds:
+* `item_mods(fit, slot)` returns the spec together with the mods, so an attribute records one dependency.
+* A `roles` query means bursts and RAH never visit skill specs.
+* Resolved skill specs are memoised together with the skill level list.
+* `load` diffs specs against a shadow Vec and does no salsa reads.
+* `validate` reads canFit and required skills in one pass, using bitmaps.
+* `raw_cycle_ms` is memoised per item per view.
+* Floats are rounded in a serde Formatter at serialisation, and batch output goes through a BufWriter.
+
+## Trade-offs
+* For a fit computed from scratch, I is still about 1.6x variant A in instructions (4.61G vs ~2.9G Ir on the
+  corpus x5, A measured ~07:24). The salsa input diff, the modifier-graph queries and verifying ~400 skill memos per
+  request cost more than A's plain cache.
+* In a session, an edit (toggle one module on exct_rifter, `bench-edit`) recomputes in **~83–90 µs** at best
+  (~140–190 µs on a loaded box). Before the speed rounds it was about 0.8 ms, and about 211 µs earlier this round.
+* Memory grows with distinct keys. The session resets itself after 20,000 slots.
+
+## Measurements (box, 1 thread, noisy shared load)
+| | value |
 |---|---|
-| bench latency (same fit repeated, session) | ~1.0–1.6 |
-| fresh database per fit (`--fresh`) | ~3.2 |
-| incremental edit, toggle one module (rifter / hyperion / RAH hyperion) | 0.82 / 1.60 / 1.08 |
+| Callgrind Ir, corpus x5 batch | 6.54G (a3f4b8e era) → **4.61G** (9a4844a) |
+| batch, corpus x5 (official, 08:18 CST) | 1799 fits/s |
+| latency one fit, official | 0.017 ms (artefact, see PROGRESS) |
+| latency one fit, dev reruns | 0.146 / 0.194 ms |
+| cold start, one process per case | 19.8 ms (binary dataset cache) |
+| incremental edit, rifter module toggle | ~83–90 µs (best of several runs) |
