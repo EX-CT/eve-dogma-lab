@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Damage graph (Pyfa "Damage Stats") and application profile, vectorised over the sample points.
 
 Per source fit (memoised on its context): the damage dealers with their dps / volley maps and, lazily, the
@@ -499,7 +500,51 @@ class Target:
                 adj.append(mult)
             else:
                 adj.append((mult - 1) * rm + 1)
-        return val * stack_mult(adj)
+        own = _own_penalized(f, attr)
+        if not own:
+            return val * stack_mult(adj)
+        # Pyfa getModifiedItemAttrExtended: the extra multipliers join the target's own stacking-penalised
+        # multipliers of the attribute (one "default" group), e.g. TPs + core-defense-field-extender sig drawbacks
+        n = len(adj[0])
+        own_rows = [np.full(n, m) for m in own]
+        return val / stack_mult([r[:1] for r in own_rows])[0] * stack_mult(own_rows + list(adj))
+
+
+def _own_penalized(f, attr):
+    """the fit ship's own stacking-penalised multipliers on `attr` (from the dogma engine's modifier table)"""
+    key = ("ownpen", attr)
+    if key in f.memo:
+        return f.memo[key]
+    from evedogma_g.dataset import ATTR_BITS, ATTR_MASK
+    out = []
+    hit = f.b.__dict__.get("_mtab")
+    aid = f.ds.attr_by_name.get(attr)
+    if hit is not None and aid is not None:
+        M = hit[2]
+        sel = np.nonzero((M["tgt"] == f.ship) & (M["attr"] == aid) & (M["pen"] != 0))[0]
+        for j in sel.tolist():
+            op, kind = int(M["op"][j]), int(M["kind"][j])
+            if op not in (0, 1, 4, 5, 6):
+                continue
+
+            def val(k):
+                k = int(k)
+                return f.v.get(k >> ATTR_BITS, k & ATTR_MASK)
+            if kind == 1:  # constant
+                sv = float(M["const"][j])
+            elif kind == 0:  # attribute
+                sv = val(M["a"][j])
+            elif kind == 3:  # projected (the target fit's own `projected` entries)
+                fac = float(M["factor"][j]) * (val(M["c"][j]) if int(M["c"][j]) >= 0 else 1.0)
+                pv = val(M["a"][j])
+                sv = (pv - 1.0) * fac + 1.0 if M["mul"][j] else pv * fac
+            else:
+                continue
+            m = sv if op in (0, 4) else (1.0 / sv if sv else 1.0) if op in (1, 5) else 1.0 + sv / 100.0
+            if m != 1.0:
+                out.append(m)
+    f.memo[key] = out
+    return out
 
 
 def _fit_hp_layers(f):

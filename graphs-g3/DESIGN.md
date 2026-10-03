@@ -128,6 +128,19 @@ check still passes all 3285 stress requests.
   stats-panel EHP / weapon dps / drone + fighter dps from variant G's `FitStats`.
 - Identity: the 3285 stress requests (all 0.1-valid) are still byte-identical to f7aa4cb.
 
+## Target fits: own stacking-penalised multipliers (found by the differential fuzzer)
+
+Pyfa's `getModifiedItemAttrExtended` puts the source's webs / TPs into the target fit's own penalised-multiplier
+group of the attribute ("default"), so they stack together with, e.g., core-defense-field-extender signature
+drawbacks or overdrive speed bonuses. G3 used to stack the projected multipliers on their own on top of the final
+value. Now `Target.extended` reads the target ship's own penalised multipliers for `signatureRadius` /
+`maxVelocity` from variant G's modifier table (`damage._own_penalized`) and re-stacks them with the projected
+rows: `val / P(own) · P(own ∪ projected)`. Found by `graphs/tools/fuzz_graphs.py` (bench graphs-round2) case
+fz0185-c3a9d7ab: a Raven with a TP vs a Tengu with CDFE rigs, about 2 % off. The 30 stress requests whose output
+changed (all damage / application profile against such target fits) were checked against the Pyfa oracle:
+30/30 now match it, and 0/30 matched before. The identity baseline was moved to this commit. All other stress
+requests are still byte-identical.
+
 ## Known limits / next steps
 
 - The cold path is dominated by variant G's fit calculation, which is not modified on this branch.
