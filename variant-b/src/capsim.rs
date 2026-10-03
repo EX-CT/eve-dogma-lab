@@ -135,7 +135,8 @@ pub fn simulate_ref(capacity: f64, recharge_ms: f64, drains: &[Drain], start_fra
             d.cap_need *= *n as f64;
         }
         let dur = d.duration.round().max(1.0) as u64;
-        period = period / gcd(period, dur) * dur;
+        // saturating: an overflowing LCM is longer than any simulated window anyway (falls back to t_max)
+        period = (period / gcd(period, dur)).saturating_mul(dur);
         heap.push(Ev { t: 0.0, duration: d.duration, cap_need: d.cap_need, shot: 0, clip: d.clip_size, reload: d.reload_ms, inj: false, seq });
         seq += 1;
     }
@@ -390,7 +391,8 @@ fn simulate_fast(capacity: f64, recharge_ms: f64, drains: &[Drain], start_frac: 
             d.cap_need *= *n as f64;
         }
         let dur = d.duration.round().max(1.0) as u64;
-        period = period / gcd(period, dur) * dur;
+        // saturating: an overflowing LCM is longer than any simulated window anyway (falls back to t_max)
+        period = (period / gcd(period, dur)).saturating_mul(dur);
         let st = push_stream(&mut streams, Stream { duration: d.duration, cap_need: d.cap_need, clip: d.clip_size, reload: d.reload_ms, inj: false });
         init.push((0.0, st, seq));
         seq += 1;
