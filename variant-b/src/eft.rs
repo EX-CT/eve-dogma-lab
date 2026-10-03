@@ -224,7 +224,7 @@ const FIGHTER_ORDER: [&str; 6] = ["Light Fighter", "Structure Light Fighter", "H
 /// mode is not written (Pyfa's EFT format has no mode line; importers default it).
 pub fn export(ds: &Dataset, req: &FitRequest, name: &str) -> String {
     let n = |id: u32| ds.types.get(&id).map(|t| t.name.clone()).unwrap_or_else(|| id.to_string());
-    let attr = |id: u32, a: &str| -> f64 { ds.types.get(&id).and_then(|t| { let id = ds.attr_id(a); t.attrs.iter().find(|x| x.0 == id).map(|x| x.1) }).unwrap_or(0.0) };
+    let attr = |id: u32, a: &str| -> f64 { ds.types.get(&id).and_then(|t| { let id = ds.attr_id(a); t.attr(id) }).unwrap_or(0.0) };
     let group_of = |id: u32| ds.types.get(&id).and_then(|t| ds.groups.get(&t.group));
     // slot totals after modifiers (subsystems, structure rigs, ...)
     let totals: Option<crate::engine::Fit> = crate::engine::Fit::build(ds, req).ok();

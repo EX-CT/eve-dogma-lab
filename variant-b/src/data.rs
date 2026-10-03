@@ -87,8 +87,9 @@ pub struct TypeInfo {
 }
 
 impl TypeInfo {
+    /// `attrs` is sorted by attribute id (sorted once at dataset load)
     pub fn attr(&self, id: u32) -> Option<f64> {
-        self.attrs.iter().find(|(a, _)| *a == id).map(|(_, v)| *v)
+        self.attrs.binary_search_by_key(&id, |x| x.0).ok().map(|p| self.attrs[p].1)
     }
     pub fn has_effect(&self, id: u32) -> bool {
         self.effects.iter().any(|(e, _)| *e == id)
