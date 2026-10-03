@@ -391,7 +391,9 @@ export class Fit extends AttrGraph {
       const state = this.effectiveState(i);
       const cat = it.category;
       const plan = planFor(ds, it.typeId, it.effects, eBastion);
-      for (const pe of plan.effects) {
+      const pes = plan.effects;
+      for (let pi = 0; pi < pes.length; pi++) {
+        const pe = pes[pi];
         const eid = pe.eid;
         if (this.isStructure && kind === Kind.Skill && !structureOk.has(eid) && !pe.itemOnly) continue;
         if (pe.usage && !it.boosterSideEffects.includes(eid)) continue;
@@ -413,7 +415,9 @@ export class Fit extends AttrGraph {
           pe.special({ fit: this, item: i, cat });
           continue;
         }
-        for (const m of pe.mods) {
+        const mods = pe.mods;
+        for (let mi = 0; mi < mods.length; mi++) {
+          const m = mods[mi];
           const c = m.bastion ? 6 : cat;
           const ts = this.targets(i, m.func, m.domain, m.extra);
           for (let k = 0; k < ts.length; k++) {
@@ -639,7 +643,8 @@ export class Fit extends AttrGraph {
       if (old === undefined || Math.abs(old.v) < Math.abs(v)) best.set(id, { v, s, target });
     };
     const scan = (f: Fit, local: boolean) => {
-      for (const it of f.items) {
+      for (let n = 0; n < f.items.length; n++) {
+        const it = f.items[n];
         if (it.kind !== Kind.Module || it.state < State.Active) continue;
         for (const [ida, vala] of pairs) {
           const id = f.has(it.idx, ida) ? Math.trunc(f.get(it.idx, ida)) : 0;
@@ -652,7 +657,8 @@ export class Fit extends AttrGraph {
     scan(this, true);
     // abyssal weather / AoE cloud beacons (Pyfa weather_* / aoe_beacon_* effects): warfareBuff1/2 of the environment
     // item join the same pool (strongest |value| per buff id)
-    for (const it of this.items) {
+    for (let n = 0; n < this.items.length; n++) {
+      const it = this.items[n];
       if (it.kind !== Kind.Beacon) continue;
       if (!it.effects.some(([e]) => { const n = ds.effects.get(e)?.name ?? ''; return n.startsWith('weather_') || n.startsWith('aoe_beacon_'); })) continue;
       for (const [ida, vala] of pairs.slice(0, 2)) {
@@ -737,7 +743,8 @@ function applyRah(fit: Fit, req: NormRequest): void {
   const eid = ds.effectId('adaptiveArmorHardener');
   if (eid === 0) return;
   const rahs: number[] = [];
-  for (const it of fit.items) {
+  for (let n = 0; n < fit.items.length; n++) {
+    const it = fit.items[n];
     if (it.kind !== Kind.Module || it.state < State.Active) continue;
     const ef = it.effects;
     for (let k = 0; k < ef.length; k++) if (ef[k][0] === eid) { rahs.push(it.idx); break; }

@@ -17,7 +17,9 @@ export class StatsCtx {
   constructor(readonly fit: Fit, readonly req: NormRequest) {
     this.durAttrs = ['durationHighisGood', 'durationSensorDampeningBurstProjector', 'durationTargetIlluminationBurstProjector',
       'durationECMJammerBurstProjector', 'durationWeaponDisruptionBurstProjector'].map((n) => fit.ds.attrId(n));
-    for (const it of fit.items) {
+    const items = fit.items;
+    for (let n = 0; n < items.length; n++) {
+      const it = items[n];
       if (it.kind === Kind.Module) this.modules.push(it.idx);
       else if (it.kind === Kind.Drone) this.drones.push(it.idx);
       else if (it.kind === Kind.Fighter) this.fighters.push(it.idx);

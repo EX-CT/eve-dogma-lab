@@ -31,7 +31,9 @@ export class TargetIndex {
       if (l) l.push(i);
       else m.set(k, [i]);
     };
-    for (const it of g.items) {
+    const items = g.items;
+    for (let n = 0; n < items.length; n++) {
+      const it = items[n];
       const i = it.idx;
       if (it.loc === Loc.Ship) {
         this.shipLoc.push(i);
@@ -40,7 +42,9 @@ export class TargetIndex {
         this.charLoc.push(i);
         push(this.charByGroup, it.group, i);
       }
-      for (const s of it.reqSkills) {
+      const rs = it.reqSkills;
+      for (let k = 0; k < rs.length; k++) {
+        const s = rs[k];
         if (it.loc === Loc.Ship) push(this.skillShip, s, i);
         if (it.owned) push(this.skillOwned, s, i);
         if ((it.owned || it.loc === Loc.Char) && it.kind !== Kind.Skill) push(this.skillChar, s, i);
