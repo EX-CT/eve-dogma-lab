@@ -2,6 +2,7 @@
 import { capacitor } from "./capacitor.js";
 import { ewar } from "./ewar.js";
 import { damageGraph } from "./damage.js";
+import { applicationProfile } from "./app.js";
 import { remoteReps } from "./rr.js";
 import { lockTime, mobility, shieldRegen, warpTime } from "./simple.js";
 import type { GraphRequest, GraphResult, Primitives } from "./types.js";
@@ -22,6 +23,7 @@ registerGraph("shield_regen", ["time_s", "shield_pct"], ["shield_hp", "shield_re
 registerGraph("ewar", ["distance_m"], ["neut_gj_s", "web_pct", "ecm_strength", "damp_lock_range_pct", "td_optimal_pct", "gd_range_pct", "tp_sig_pct"], ewar);
 registerGraph("remote_reps", ["distance_m", "time_s"], ["rps", "total"], remoteReps);
 registerGraph("damage", ["distance_m", "time_s", "tgt_speed_mps", "tgt_sig_m"], ["dps", "volley", "damage"], damageGraph);
+registerGraph("application_profile", ["distance_m"], ["dps", "volley"], applicationProfile);
 registerGraph("capacitor", ["time_s", "cap_pct"], ["cap_gj", "cap_regen_gj_s"], capacitor);
 
 export function graphs() {

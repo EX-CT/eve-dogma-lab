@@ -291,6 +291,9 @@ func GraphPrimitives(ds *Dataset, line []byte) obj {
 	if gr.Graph == "warp_time" {
 		out["subwarp_speed"] = subwarpSpeed(ds, req)
 	}
+	if gr.Graph == "application_profile" {
+		out["charges"] = chargeVariants(ds, req)
+	}
 	if gr.Target != nil && len(gr.Target.Fit) > 0 && string(gr.Target.Fit) != "null" {
 		var treq FitRequest
 		if err := DecodeRequest(gr.Target.Fit, &treq); err != nil {

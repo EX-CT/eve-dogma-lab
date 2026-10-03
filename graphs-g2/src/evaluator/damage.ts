@@ -380,11 +380,11 @@ export function projectors(p: FitPrim): Projector[] {
   return out;
 }
 
-export function damageGraph(req: GraphRequest, p: Primitives, application = false): Record<string, (number | null)[]> {
+export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> | null = null): Record<string, (number | null)[]> {
   const settings = { ignore_resists: true, apply_projected: true, ignore_lock_range: true, ignore_drone_control_range: false, mobile_drone_mode: "auto", ...(req.settings ?? {}) };
   const prm = req.params ?? {};
   const src = p.source;
-  const ds = dealers(src);
+  const ds = only ? dealers(src).filter((d) => d.item.kind === "module" && only.has(d.item.index as number)) : dealers(src);
   const tgt = targetModel(req, p);
   const projs = settings.apply_projected ? projectors(src) : [];
   const dcr = src.stats.drones?.control_range_m ?? Infinity;
@@ -467,7 +467,19 @@ export function damageGraph(req: GraphRequest, p: Primitives, application = fals
   const out: Record<string, (number | null)[]> = {};
   for (const y of req.y) out[y] = [];
   for (const x of req.x.values) {
-    const pt = point(x);
+    let pt = point(x);
+    // application_profile: the target's speed / signature after projected effects is sampled on a distance grid
+    // and linearly interpolated between grid nodes (observed Pyfa behaviour, see DESIGN.md)
+    const grid: number = (settings as any)._targetGrid ?? 0;
+    if (pt !== null && grid > 0 && req.x.axis === "distance_m" && x % grid !== 0) {
+      const lo = Math.floor(x / grid) * grid;
+      const a = point(lo);
+      const b = point(lo + grid);
+      if (a && b) {
+        const t = (x - lo) / grid;
+        pt = { ...pt, tgtSpeed: a.tgtSpeed + (b.tgtSpeed - a.tgtSpeed) * t, sig: a.sig + (b.sig - a.sig) * t };
+      }
+    }
     if (pt === null) {
       for (const y of req.y) out[y].push(null);
       continue;
@@ -513,6 +525,5 @@ export function damageGraph(req: GraphRequest, p: Primitives, application = fals
       else throw new GraphError("BAD_AXIS", `damage has no series ${y}`, "y");
     }
   }
-  void application;
   return out;
 }
