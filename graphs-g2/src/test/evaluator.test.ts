@@ -24,8 +24,17 @@ test("graph registry lists all nine graphs", () => {
 });
 
 test("unknown graph / axis errors", () => {
-  assert.throws(() => evaluate({ graph: "nope", x: { axis: "distance_m", values: [0] }, y: ["dps"] } as any, {} as any), /unknown graph/);
-  assert.throws(() => evaluate({ graph: "damage", x: { axis: "cap_pct", values: [0] }, y: ["dps"] } as any, {} as any), /no x axis/);
+  assert.throws(() => evaluate({ graph: "nope", fit: {}, x: { axis: "distance_m", values: [0] }, y: ["dps"] } as any, {} as any), /unknown graph/);
+  assert.throws(() => evaluate({ graph: "damage", fit: {}, x: { axis: "cap_pct", values: [0] }, y: ["dps"] } as any, {} as any), /no x axis/);
+});
+
+test("validation order and empty x", () => {
+  assert.throws(() => evaluate({ graph: "nope", x: { axis: "distance_m", values: [0] }, y: ["dps"] } as any, {} as any), /fit missing/);
+  assert.throws(() => evaluate({ graph: "damage", fit: {}, x: { axis: "distance_m", values: [0, null] }, y: ["dps"] } as any, {} as any), /finite/);
+  assert.throws(() => evaluate({ graph: "damage", fit: {}, x: { axis: "distance_m", values: [0] }, y: [] } as any, {} as any), /y missing/);
+  const r = evaluate({ graph: "damage", fit: {}, x: { axis: "distance_m", values: [] }, y: ["dps", "volley"] } as any, {} as any);
+  assert.deepEqual(r.x, []);
+  assert.deepEqual(r.series, { dps: [], volley: [] });
 });
 
 test("golden: evaluator output for stored primitives is unchanged", () => {
