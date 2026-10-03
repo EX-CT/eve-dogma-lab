@@ -32,3 +32,10 @@ Zero-dependency bundle: `tsc` emits one AMD file (tsconfig.browser.json) and `to
 20-line loader (~185 KB unminified). `web/index.html` is a demo page (serve the repo root, e.g.
 `python3 -m http.server`, open `variant-d/web/index.html?dataset=<url of dataset .json.gz>`); `?selftest=1` prints a
 one-line verdict (verified with headless Chrome: same values and dataset sha256 as the CLI).
+
+## License
+
+LGPL-3.0-or-later (`package.json` `"license"`); the texts are in [`../LICENSE`](../LICENSE) and
+[`../LICENSE.GPL-3.0`](../LICENSE.GPL-3.0), the same layout as eve-dogma-rs. The RAH adaptation and the capacitor
+simulator follow the algorithms of Pyfa's `eos` (LGPL-2.0-or-later). EVE Online data © CCP hf., used under the CCP
+developer license; this project is not affiliated with CCP.
