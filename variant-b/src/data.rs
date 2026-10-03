@@ -126,6 +126,8 @@ pub struct MutaInfo {
 }
 
 pub struct Dataset {
+    /// process-unique id of this loaded dataset (keys the per-call-site `attr_id!`/`effect_id!` caches)
+    pub generation: u32,
     pub build: u64,
     pub release_date: Option<String>,
     pub sha256: String,
@@ -269,6 +271,43 @@ fn domain_of(c: i32) -> Domain {
     }
 }
 
+static DS_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+fn next_gen() -> u32 {
+    DS_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Name -> id lookup memoised in a per-call-site static: (dataset gen << 32 | id). A different dataset (other gen)
+/// simply re-resolves, so results are always those of `lookup`.
+#[inline]
+pub fn cached_id(cache: &std::sync::atomic::AtomicU64, ds: &Dataset, name: &str, lookup: fn(&Dataset, &str) -> u32) -> u32 {
+    use std::sync::atomic::Ordering::Relaxed;
+    let c = cache.load(Relaxed);
+    if (c >> 32) as u32 == ds.generation {
+        return c as u32;
+    }
+    let id = lookup(ds, name);
+    cache.store((ds.generation as u64) << 32 | id as u64, Relaxed);
+    id
+}
+
+/// `ds.attr_id("literal")`, resolved once per call site and dataset.
+#[macro_export]
+macro_rules! attr_id {
+    ($ds:expr, $name:literal) => {{
+        static CACHE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        $crate::data::cached_id(&CACHE, $ds, $name, $crate::data::Dataset::attr_id)
+    }};
+}
+
+/// `ds.effect_id("literal")`, resolved once per call site and dataset.
+#[macro_export]
+macro_rules! effect_id {
+    ($ds:expr, $name:literal) => {{
+        static CACHE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        $crate::data::cached_id(&CACHE, $ds, $name, $crate::data::Dataset::effect_id)
+    }};
+}
+
 impl Dataset {
     /// Load a dataset file. Variant B keeps a derived binary snapshot (bincode of the parsed dataset) in a cache
     /// directory keyed by the SHA-256 of the file bytes, so later processes skip gunzip + JSON parsing.
@@ -374,6 +413,7 @@ impl Dataset {
         let prepared = std::sync::OnceLock::new();
         let _ = prepared.set(prep);
         Some(Dataset {
+            generation: next_gen(),
             build: main.build,
             release_date: main.release_date,
             sha256: main.sha256,
@@ -573,6 +613,7 @@ impl Dataset {
             .map(|m| m.0.iter().map(|(k, v)| (*k, v.clone())).collect())
             .unwrap_or_default();
         Ok(Dataset {
+            generation: next_gen(),
             build: raw.sde.build,
             release_date: raw.sde.release_date,
             sha256,

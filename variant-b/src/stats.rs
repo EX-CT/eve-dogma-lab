@@ -138,20 +138,20 @@ fn fx_flags(f: &Fit) -> Vec<u16> {
 fn ids(f: &Fit) -> Ids {
     let a = |n: &str| f.ds.attr_id(n);
     Ids {
-        cpu: a("cpu"),
-        power: a("power"),
-        cpu_out: a("cpuOutput"),
-        power_out: a("powerOutput"),
-        upgrade_cost: a("upgradeCost"),
-        upgrade_cap: a("upgradeCapacity"),
-        speed: a("speed"),
-        duration: a("duration"),
-        cap_need: a("capacitorNeed"),
-        reload: a("reloadTime"),
-        reactivation: a("moduleReactivationDelay"),
-        charge_rate: a("chargeRate"),
-        dmg_mult: a("damageMultiplier"),
-        dmg: [a("emDamage"), a("thermalDamage"), a("kineticDamage"), a("explosiveDamage")],
+        cpu: crate::attr_id!(f.ds, "cpu"),
+        power: crate::attr_id!(f.ds, "power"),
+        cpu_out: crate::attr_id!(f.ds, "cpuOutput"),
+        power_out: crate::attr_id!(f.ds, "powerOutput"),
+        upgrade_cost: crate::attr_id!(f.ds, "upgradeCost"),
+        upgrade_cap: crate::attr_id!(f.ds, "upgradeCapacity"),
+        speed: crate::attr_id!(f.ds, "speed"),
+        duration: crate::attr_id!(f.ds, "duration"),
+        cap_need: crate::attr_id!(f.ds, "capacitorNeed"),
+        reload: crate::attr_id!(f.ds, "reloadTime"),
+        reactivation: crate::attr_id!(f.ds, "moduleReactivationDelay"),
+        charge_rate: crate::attr_id!(f.ds, "chargeRate"),
+        dmg_mult: crate::attr_id!(f.ds, "damageMultiplier"),
+        dmg: [crate::attr_id!(f.ds, "emDamage"), crate::attr_id!(f.ds, "thermalDamage"), crate::attr_id!(f.ds, "kineticDamage"), crate::attr_id!(f.ds, "explosiveDamage")],
         dur_extra: [
             "durationHighisGood",
             "durationSensorDampeningBurstProjector",
@@ -273,12 +273,12 @@ impl<'a> Fit<'a> {
             let r = self.get(i, id.charge_rate);
             return if r > 0.0 { (n as f64 / r).floor() as u32 } else { 0 };
         }
-        let cgd = self.ds.attr_id("crystalsGetDamaged");
+        let cgd = crate::attr_id!(self.ds, "crystalsGetDamaged");
         if n > 0 && self.has(c, cgd) {
             if self.get(c, cgd) == 1.0 {
                 let hp = self.get(c, 9);
-                let chance = self.get(c, self.ds.attr_id("crystalVolatilityChance"));
-                let dmg = self.get(c, self.ds.attr_id("crystalVolatilityDamage"));
+                let chance = self.get(c, crate::attr_id!(self.ds, "crystalVolatilityChance"));
+                let dmg = self.get(c, crate::attr_id!(self.ds, "crystalVolatilityDamage"));
                 if dmg * chance > 0.0 {
                     return ((n as f64 * hp) / (dmg * chance)).floor() as u32;
                 }
@@ -321,7 +321,7 @@ impl<'a> Fit<'a> {
         let mut mult = if self.has(i, id.dmg_mult) { self.get(i, id.dmg_mult) } else { 1.0 };
         if kind == "missile" && it.charge.is_some() {
             // missile damage is scaled by the pilot's missileDamageMultiplier (BCS etc. modify the character)
-            mult *= self.get(self.char, self.ds.attr_id("missileDamageMultiplier"));
+            mult *= self.get(self.char, crate::attr_id!(self.ds, "missileDamageMultiplier"));
         }
         let d = Dmg {
             em: self.get(src, id.dmg[0]) * mult,
@@ -348,7 +348,6 @@ impl<'a> Fit<'a> {
         let id = ids(self);
         let ship = self.ship;
         let ch = self.char;
-        let a = |n: &str| ds.attr_id(n);
         let g = |i: usize, n: &str| self.get(i, ds.attr_id(n));
         let factor_reload = req.options.factor_reload;
         let modules: Vec<usize> = (0..self.items.len()).filter(|&i| self.items[i].kind == Kind::Module).collect();
@@ -362,7 +361,7 @@ impl<'a> Fit<'a> {
         let calib_used: f64 = modules.iter().filter(|&&i| self.items[i].slot == Some(Slot::Rig)).map(|&i| self.get(i, id.upgrade_cost)).sum();
         let drones: Vec<usize> = (0..self.items.len()).filter(|&i| self.items[i].kind == Kind::Drone).collect();
         let fighters: Vec<usize> = (0..self.items.len()).filter(|&i| self.items[i].kind == Kind::Fighter).collect();
-        let bw_used: f64 = drones.iter().map(|&i| g(i, "droneBandwidthUsed") * self.items[i].active_count as f64).sum();
+        let bw_used: f64 = drones.iter().map(|&i| self.get(i, crate::attr_id!(ds, "droneBandwidthUsed")) * self.items[i].active_count as f64).sum();
         let bay_used: f64 = drones.iter().map(|&i| self.get(i, 161) * self.items[i].quantity as f64).sum();
         let fbay_used: f64 = fighters.iter().map(|&i| self.get(i, 161) * self.items[i].quantity as f64).sum();
         let cargo_used: f64 = req.cargo.iter().map(|c| ds.types.get(&c.type_id).map(|t| t.volume).unwrap_or(0.0) * c.quantity as f64).sum();
@@ -372,9 +371,9 @@ impl<'a> Fit<'a> {
         let usage = |u: f64, t: f64| json!({"used": u, "total": t});
         let slot_tot = |n: &str| g(ship, n);
         let fighter_class = |i: usize| -> &'static str {
-            if g(i, "fighterSquadronIsHeavy") > 0.0 {
+            if self.get(i, crate::attr_id!(ds, "fighterSquadronIsHeavy")) > 0.0 {
                 "heavy"
-            } else if g(i, "fighterSquadronIsSupport") > 0.0 {
+            } else if self.get(i, crate::attr_id!(ds, "fighterSquadronIsSupport")) > 0.0 {
                 "support"
             } else {
                 "light"
@@ -386,9 +385,9 @@ impl<'a> Fit<'a> {
             "cpu": usage(cpu_used, self.get(ship, id.cpu_out)),
             "power": usage(pg_used, self.get(ship, id.power_out)),
             "calibration": usage(calib_used, self.get(ship, id.upgrade_cap)),
-            "drone_bandwidth": usage(bw_used, g(ship, "droneBandwidth")),
-            "drone_bay": usage(bay_used, g(ship, "droneCapacity")),
-            "fighter_bay": usage(fbay_used, g(ship, "fighterCapacity")),
+            "drone_bandwidth": usage(bw_used, self.get(ship, crate::attr_id!(ds, "droneBandwidth"))),
+            "drone_bay": usage(bay_used, self.get(ship, crate::attr_id!(ds, "droneCapacity"))),
+            "fighter_bay": usage(fbay_used, self.get(ship, crate::attr_id!(ds, "fighterCapacity"))),
             "cargo": usage(cargo_used, self.get(ship, 38)),
             "slots": {
                 "high": usage(count_slot(Slot::High) as f64, slot_tot("hiSlots")),
@@ -403,10 +402,10 @@ impl<'a> Fit<'a> {
                 "launcher": usage(launchers_used as f64, slot_tot("launcherSlotsLeft")),
             },
             "fighter_tubes": {
-                "total": usage(tubes_used as f64, g(ship, "fighterTubes")),
-                "light": usage(class_used("light"), g(ship, "fighterLightSlots")),
-                "support": usage(class_used("support"), g(ship, "fighterSupportSlots")),
-                "heavy": usage(class_used("heavy"), g(ship, "fighterHeavySlots")),
+                "total": usage(tubes_used as f64, self.get(ship, crate::attr_id!(ds, "fighterTubes"))),
+                "light": usage(class_used("light"), self.get(ship, crate::attr_id!(ds, "fighterLightSlots"))),
+                "support": usage(class_used("support"), self.get(ship, crate::attr_id!(ds, "fighterSupportSlots"))),
+                "heavy": usage(class_used("heavy"), self.get(ship, crate::attr_id!(ds, "fighterHeavySlots"))),
             },
         });
 
@@ -428,17 +427,17 @@ impl<'a> Fit<'a> {
             let cyc = self.avg_cycle_ms(i, &id, factor_reload);
             let raw = self.raw_cycle_ms(i, &id);
             let spool = self.items[i].spool.unwrap_or(default_spool);
-            let (sp, _, _) = spoolup(g(i, "damageMultiplierBonusMax"), g(i, "damageMultiplierBonusPerCycle"), raw / 1000.0, spool);
+            let (sp, _, _) = spoolup(self.get(i, crate::attr_id!(ds, "damageMultiplierBonusMax")), self.get(i, crate::attr_id!(ds, "damageMultiplierBonusPerCycle")), raw / 1000.0, spool);
             let vol_spooled = base.scale(1.0 + sp);
             // doomsdays / lances deal their volley every doomsdayDamageCycleTime during doomsdayDamageDuration
             // (Pyfa getVolleyParameters subcycles; the Reaper slash hits once); volley = one tick
-            let (dd, dsub) = (g(i, "doomsdayDamageDuration"), g(i, "doomsdayDamageCycleTime"));
+            let (dd, dsub) = (self.get(i, crate::attr_id!(ds, "doomsdayDamageDuration")), self.get(i, crate::attr_id!(ds, "doomsdayDamageCycleTime")));
             let subcycles = if dd != 0.0 && dsub != 0.0 && !self.fx(&id, i, FX_DOOMSDAY_SLASH) { float_unerr7(dd / dsub).floor().max(0.0) } else { 1.0 };
             let dps = if cyc > 0.0 { vol_spooled.scale(subcycles * 1000.0 / cyc) } else { Dmg::default() };
             w_vol.add(&vol_spooled); // Pyfa reports spooled volley
             w_dps.add(&dps);
-            let opt = g(i, "maxRange");
-            let fo = g(i, "falloff");
+            let opt = self.get(i, crate::attr_id!(ds, "maxRange"));
+            let fo = self.get(i, crate::attr_id!(ds, "falloff"));
             let mut w = json!({
                 "module_index": self.items[i].req_index, "type_id": self.items[i].type_id,
                 "name": ds.types[&self.items[i].type_id].name, "kind": kind,
@@ -448,17 +447,17 @@ impl<'a> Fit<'a> {
             if kind == "turret" {
                 w["optimal_m"] = json!(opt);
                 w["falloff_m"] = json!(fo);
-                w["tracking"] = json!(g(i, "trackingSpeed"));
+                w["tracking"] = json!(self.get(i, crate::attr_id!(ds, "trackingSpeed")));
             } else if kind == "missile" {
                 if let Some(c) = self.items[i].charge {
                     // Pyfa missileMaxRangeData: flight time + ship radius bonus, acceleration phase,
                     // floor/ceil blend, FoF limit, centre-to-surface (eos/saveddata/module.py, LGPL)
-                    let vel = g(c, "maxVelocity");
+                    let vel = self.get(c, crate::attr_id!(ds, "maxVelocity"));
                     if vel > 0.0 {
-                        let radius = g(ship, "radius");
-                        let ft = g(c, "explosionDelay") / 1000.0 + radius / vel;
+                        let radius = self.get(ship, crate::attr_id!(ds, "radius"));
+                        let ft = self.get(c, crate::attr_id!(ds, "explosionDelay")) / 1000.0 + radius / vel;
                         let ft = (ft * 1e9).round() / 1e9; // floatUnerr
-                        let accel_cap = g(c, "mass") * g(c, "agility") / 1e6;
+                        let accel_cap = self.get(c, crate::attr_id!(ds, "mass")) * self.get(c, crate::attr_id!(ds, "agility")) / 1e6;
                         let range_at = |t: f64| {
                             let acc = t.min(accel_cap);
                             vel / 2.0 * acc + vel * (t - acc)
@@ -466,7 +465,7 @@ impl<'a> Fit<'a> {
                         let (lt, ht) = (ft.floor(), ft.ceil());
                         let (mut lr, mut hr) = (range_at(lt), range_at(ht));
                         if self.fx(&id, c, FX_FOF) {
-                            let lim = g(c, "maxFOFTargetRange");
+                            let lim = self.get(c, crate::attr_id!(ds, "maxFOFTargetRange"));
                             if lim > 0.0 {
                                 lr = lr.min(lim);
                                 hr = hr.min(lim);
@@ -477,11 +476,11 @@ impl<'a> Fit<'a> {
                         let hc = ft - lt;
                         w["range_m"] = json!(lr * (1.0 - hc) + hr * hc);
                     }
-                    w["explosion_radius"] = json!(g(c, "aoeCloudSize"));
-                    w["explosion_velocity"] = json!(g(c, "aoeVelocity"));
+                    w["explosion_radius"] = json!(self.get(c, crate::attr_id!(ds, "aoeCloudSize")));
+                    w["explosion_velocity"] = json!(self.get(c, crate::attr_id!(ds, "aoeVelocity")));
                 }
             } else if kind == "smartbomb" {
-                w["range_m"] = json!(g(i, "empFieldRange"));
+                w["range_m"] = json!(self.get(i, crate::attr_id!(ds, "empFieldRange")));
             }
             if sp > 0.0 {
                 w["spool_multiplier"] = json!(1.0 + sp);
@@ -507,8 +506,8 @@ impl<'a> Fit<'a> {
             d_vol.add(&v);
             d_dps.add(&dps);
             drone_out.push(json!({"drone_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "count": n, "volley": v.json(), "dps": dps.json(),
-                "optimal_m": g(i, "maxRange"), "falloff_m": g(i, "falloff"), "tracking": g(i, "trackingSpeed"),
-                "max_velocity": g(i, "maxVelocity"), "signature_radius": g(i, "signatureRadius")}));
+                "optimal_m": self.get(i, crate::attr_id!(ds, "maxRange")), "falloff_m": self.get(i, crate::attr_id!(ds, "falloff")), "tracking": self.get(i, crate::attr_id!(ds, "trackingSpeed")),
+                "max_velocity": self.get(i, crate::attr_id!(ds, "maxVelocity")), "signature_radius": self.get(i, crate::attr_id!(ds, "signatureRadius"))}));
         }
         let mut f_vol = Dmg::default();
         let mut f_dps = Dmg::default();
@@ -549,7 +548,7 @@ impl<'a> Fit<'a> {
                 f_vol.add(&fv);
                 f_dps.add(&fd);
                 fighter_out.push(json!({"fighter_index": self.items[i].req_index, "type_id": self.items[i].type_id, "name": ds.types[&self.items[i].type_id].name, "squadron_size": n, "volley": fv.json(), "dps": fd.json(),
-                    "max_velocity": g(i, "maxVelocity"), "signature_radius": g(i, "signatureRadius")}));
+                    "max_velocity": self.get(i, crate::attr_id!(ds, "maxVelocity")), "signature_radius": self.get(i, crate::attr_id!(ds, "signatureRadius"))}));
             }
         }
         let mut t_vol = w_vol;
@@ -581,8 +580,8 @@ impl<'a> Fit<'a> {
             if div == 0.0 { amount } else { amount / div }
         };
         let (rs, ra, rh) = (layer_res("shield"), layer_res("armor"), layer_res(""));
-        let hp_s = g(ship, "shieldCapacity");
-        let hp_a = g(ship, "armorHP");
+        let hp_s = self.get(ship, crate::attr_id!(ds, "shieldCapacity"));
+        let hp_a = self.get(ship, crate::attr_id!(ds, "armorHP"));
         let hp_h = self.get(ship, 9);
         let (e_s, e_a, e_h) = (effectivify(hp_s, rs), effectivify(hp_a, ra), effectivify(hp_h, rh));
         let res_json = |r: [f64; 4]| json!({"em": r[0], "thermal": r[1], "kinetic": r[2], "explosive": r[3]});
@@ -599,17 +598,17 @@ impl<'a> Fit<'a> {
                 continue;
             }
             if self.fx(&id, i, FX_SHIELD_BOOST) {
-                shield_rep += g(i, "shieldBonus") / dur;
+                shield_rep += self.get(i, crate::attr_id!(ds, "shieldBonus")) / dur;
             }
             if self.fx(&id, i, FX_ARMOR_REP) {
-                armor_rep += g(i, "armorDamageAmount") / dur;
+                armor_rep += self.get(i, crate::attr_id!(ds, "armorDamageAmount")) / dur;
             }
             if self.fx(&id, i, FX_FUELED_ARMOR_REP) {
                 let paste = self.items[i].charge.map(|c| ds.types[&self.items[c].type_id].name == "Nanite Repair Paste").unwrap_or(false);
-                armor_rep += g(i, "armorDamageAmount") * if paste { 3.0 } else { 1.0 } / dur;
+                armor_rep += self.get(i, crate::attr_id!(ds, "armorDamageAmount")) * if paste { 3.0 } else { 1.0 } / dur;
             }
             if self.fx(&id, i, FX_HULL_REP) {
-                hull_rep += g(i, "structureDamageAmount") / dur;
+                hull_rep += self.get(i, crate::attr_id!(ds, "structureDamageAmount")) / dur;
             }
         }
         // incoming remote repairs (Pyfa __getAppliedRr diminishing-returns formula)
@@ -637,7 +636,7 @@ impl<'a> Fit<'a> {
             armor_rep += applied(&lists[1]);
             hull_rep += applied(&lists[2]);
         }
-        let shield_rr_s = g(ship, "shieldRechargeRate") / 1000.0;
+        let shield_rr_s = self.get(ship, crate::attr_id!(ds, "shieldRechargeRate")) / 1000.0;
         let passive = if shield_rr_s > 0.0 { 10.0 / shield_rr_s * 0.5 * 0.5 * hp_s } else { 0.0 };
         let mut defense = json!({
             "hp": {"shield": hp_s, "armor": hp_a, "hull": hp_h, "total": hp_s + hp_a + hp_h},
@@ -652,8 +651,8 @@ impl<'a> Fit<'a> {
         });
 
         // ---------------- capacitor
-        let cap = g(ship, "capacitorCapacity");
-        let rr = self.get(ship, a("rechargeRate"));
+        let cap = self.get(ship, crate::attr_id!(ds, "capacitorCapacity"));
+        let rr = self.get(ship, crate::attr_id!(ds, "rechargeRate"));
         let peak = if rr > 0.0 { 10.0 / (rr / 1000.0) * 0.5 * 0.5 * cap } else { 0.0 };
         let mut drains = Vec::new();
         let mut cap_used = 0.0;
@@ -664,11 +663,11 @@ impl<'a> Fit<'a> {
             let mut cap_need = self.get(i, id.cap_need);
             let is_inj = booster_grp(i);
             if is_inj {
-                cap_need = -self.items[i].charge.map(|c| g(c, "capacitorBonus")).unwrap_or(0.0);
+                cap_need = -self.items[i].charge.map(|c| self.get(c, crate::attr_id!(ds, "capacitorBonus"))).unwrap_or(0.0);
             }
             if self.fx(&id, i, FX_NOS) && !req.options.nos_no_target_cap {
                 // local nosferatu counts as cap income (assumes the target has cap), like Pyfa
-                cap_need = -g(i, "powerTransferAmount");
+                cap_need = -self.get(i, crate::attr_id!(ds, "powerTransferAmount"));
             }
             let cyc_raw = self.raw_cycle_ms(i, &id);
             let full = cyc_raw + self.get(i, id.reactivation);
@@ -696,14 +695,14 @@ impl<'a> Fit<'a> {
             module_rows.push(row);
         }
         // incoming neuts / nos / cap transfers (Pyfa fit.addDrain): no stagger, after the fit's own modules
-        let sig_now = g(ship, "signatureRadius");
+        let sig_now = self.get(ship, crate::attr_id!(ds, "signatureRadius"));
         for ps in &self.proj_special {
             if let crate::engine::ProjSpecial::Drain { item, amount, duration, factor, resist, sign } = *ps {
                 let mut need = self.get(item, amount) * factor * sign;
                 if resist != 0 {
                     need *= self.get(ship, resist);
                 }
-                let sres = g(item, "energyNeutralizerSignatureResolution");
+                let sres = self.get(item, crate::attr_id!(ds, "energyNeutralizerSignatureResolution"));
                 if sres != 0.0 {
                     need *= (sig_now / sres).min(1.0);
                 }
@@ -775,7 +774,7 @@ impl<'a> Fit<'a> {
                         let paste = charge.map(|c| ds.types[&self.items[c].type_id].name == "Nanite Repair Paste").unwrap_or(false);
                         if cap_use != 0.0 {
                             used -= cap_use;
-                            let mult = if paste { let m = g(i, "chargedArmorDamageMultiplier"); if m == 0.0 { 1.0 } else { m } } else { 1.0 };
+                            let mult = if paste { let m = self.get(i, crate::attr_id!(ds, "chargedArmorDamageMultiplier")); if m == 0.0 { 1.0 } else { m } } else { 1.0 };
                             adj[l] -= amount * mult / (cyc / 1000.0);
                             reps.push((i, l, attr, cap_use));
                         } else if gname == "Ancillary Shield Booster" {
@@ -787,7 +786,7 @@ impl<'a> Fit<'a> {
                     }
                 }
                 let eff = |i: usize, attr: &str| {
-                    let m = g(i, "chargedArmorDamageMultiplier");
+                    let m = self.get(i, crate::attr_id!(ds, "chargedArmorDamageMultiplier"));
                     g(i, attr) * if m == 0.0 { 1.0 } else { m } / self.get(i, id.cap_need)
                 };
                 reps.sort_by(|a, b| eff(b.0, b.2).partial_cmp(&eff(a.0, a.2)).unwrap_or(std::cmp::Ordering::Equal));
@@ -805,7 +804,7 @@ impl<'a> Fit<'a> {
                         adj[l] += sustain * amount / (cyc / 1000.0);
                     } else {
                         let paste = ds.types[&self.items[charge.unwrap()].type_id].name == "Nanite Repair Paste";
-                        let mult = if paste { let m = g(i, "chargedArmorDamageMultiplier"); if m == 0.0 { 1.0 } else { m } } else { 1.0 };
+                        let mult = if paste { let m = self.get(i, crate::attr_id!(ds, "chargedArmorDamageMultiplier")); if m == 0.0 { 1.0 } else { m } } else { 1.0 };
                         let shots = self.num_shots(i, &id).max(1) as f64;
                         let on = shots * cyc / (shots * cyc + reload);
                         adj[l] += sustain * amount * on * mult / (cyc / 1000.0);
@@ -822,20 +821,20 @@ impl<'a> Fit<'a> {
         }
 
         // ---------------- navigation
-        let maxv = g(ship, "maxVelocity");
-        let limit = g(ship, "speedLimit");
+        let maxv = self.get(ship, crate::attr_id!(ds, "maxVelocity"));
+        let limit = self.get(ship, crate::attr_id!(ds, "speedLimit"));
         let max_speed = if limit > 0.0 && maxv > limit { limit } else { maxv };
         let mass = self.get(ship, 4);
-        let agility = g(ship, "agility");
-        let base_warp = { let v = g(ship, "baseWarpSpeed"); if v == 0.0 { 1.0 } else { v } };
-        let warp_mult = { let v = g(ship, "warpSpeedMultiplier"); if v == 0.0 { 1.0 } else { v } };
-        let warp_need = g(ship, "warpCapacitorNeed");
-        let sig = g(ship, "signatureRadius");
+        let agility = self.get(ship, crate::attr_id!(ds, "agility"));
+        let base_warp = { let v = self.get(ship, crate::attr_id!(ds, "baseWarpSpeed")); if v == 0.0 { 1.0 } else { v } };
+        let warp_mult = { let v = self.get(ship, crate::attr_id!(ds, "warpSpeedMultiplier")); if v == 0.0 { 1.0 } else { v } };
+        let warp_need = self.get(ship, crate::attr_id!(ds, "warpCapacitorNeed"));
+        let sig = self.get(ship, crate::attr_id!(ds, "signatureRadius"));
         let navigation = json!({
             "max_velocity": max_speed, "align_time_s": -(0.25f64.ln()) * agility * mass / 1e6, "mass": mass, "agility": agility,
             "signature_radius": sig, "warp_speed_au_s": base_warp * warp_mult,
             "max_warp_distance_au": if warp_need > 0.0 && mass > 0.0 { cap / (mass * warp_need) } else { 0.0 },
-            "warp_scramble_status": g(ship, "warpScrambleStatus"),
+            "warp_scramble_status": self.get(ship, crate::attr_id!(ds, "warpScrambleStatus")),
         });
 
         // ---------------- targeting
@@ -881,13 +880,13 @@ impl<'a> Fit<'a> {
             }
             if any { Some((1.0 - retain) * 100.0) } else { None }
         };
-        let scan_res = g(ship, "scanResolution");
+        let scan_res = self.get(ship, crate::attr_id!(ds, "scanResolution"));
         let lt = |s: f64| lock_time(scan_res, s);
-        let ship_targets = g(ship, "maxLockedTargets");
-        let char_targets = self.get(ch, a("maxLockedTargets"));
+        let ship_targets = self.get(ship, crate::attr_id!(ds, "maxLockedTargets"));
+        let char_targets = self.get(ch, crate::attr_id!(ds, "maxLockedTargets"));
         let targeting = json!({
             "max_targets": ship_targets.min(char_targets.max(0.0)),
-            "max_range_m": g(ship, "maxTargetRange"), "scan_resolution": scan_res,
+            "max_range_m": self.get(ship, crate::attr_id!(ds, "maxTargetRange")), "scan_resolution": scan_res,
             "sensor_strength": best.1, "sensor_type": best.0, "jam_chance_percent": jam.unwrap_or(0.0),
             "probe_size": if best.1 > 0.0 { Some((sig / best.1).max(1.08)) } else { None },
             "lock_time_s": {"sig_25m": lt(25.0), "sig_40m": lt(40.0), "sig_125m": lt(125.0), "sig_400m": lt(400.0), "sig_target_profile": tp.signature_radius.and_then(lt)},
@@ -895,8 +894,8 @@ impl<'a> Fit<'a> {
 
         let drones_j = json!({
             "active": drones.iter().map(|&i| self.items[i].active_count).sum::<u32>(),
-            "max_active": self.get(ch, a("maxActiveDrones")),
-            "control_range_m": self.get(ch, a("droneControlDistance")),
+            "max_active": self.get(ch, crate::attr_id!(ds, "maxActiveDrones")),
+            "control_range_m": self.get(ch, crate::attr_id!(ds, "droneControlDistance")),
         });
 
         let mut out = Map::new();
@@ -956,17 +955,17 @@ impl<'a> Fit<'a> {
         let g = |i: usize, n: &str| self.get(i, ds.attr_id(n));
         let mut v = Vec::new();
         let mut push = |code: &str, msg: String, idx: Option<usize>| v.push(json!({"code": code, "message": msg, "module_index": idx}));
-        if cpu > g(ship, "cpuOutput") + 1e-9 {
-            push("CPU_OVERLOAD", format!("CPU used {cpu:.2} > output {:.2}", g(ship, "cpuOutput")), None);
+        if cpu > self.get(ship, crate::attr_id!(ds, "cpuOutput")) + 1e-9 {
+            push("CPU_OVERLOAD", format!("CPU used {cpu:.2} > output {:.2}", self.get(ship, crate::attr_id!(ds, "cpuOutput"))), None);
         }
-        if pg > g(ship, "powerOutput") + 1e-9 {
-            push("POWER_OVERLOAD", format!("Powergrid used {pg:.2} > output {:.2}", g(ship, "powerOutput")), None);
+        if pg > self.get(ship, crate::attr_id!(ds, "powerOutput")) + 1e-9 {
+            push("POWER_OVERLOAD", format!("Powergrid used {pg:.2} > output {:.2}", self.get(ship, crate::attr_id!(ds, "powerOutput"))), None);
         }
-        if calib > g(ship, "upgradeCapacity") + 1e-9 {
-            push("CALIBRATION_OVERLOAD", format!("Calibration used {calib} > {}", g(ship, "upgradeCapacity")), None);
+        if calib > self.get(ship, crate::attr_id!(ds, "upgradeCapacity")) + 1e-9 {
+            push("CALIBRATION_OVERLOAD", format!("Calibration used {calib} > {}", self.get(ship, crate::attr_id!(ds, "upgradeCapacity"))), None);
         }
-        if bw > g(ship, "droneBandwidth") + 1e-9 {
-            push("DRONE_BANDWIDTH", format!("Drone bandwidth used {bw} > {}", g(ship, "droneBandwidth")), None);
+        if bw > self.get(ship, crate::attr_id!(ds, "droneBandwidth")) + 1e-9 {
+            push("DRONE_BANDWIDTH", format!("Drone bandwidth used {bw} > {}", self.get(ship, crate::attr_id!(ds, "droneBandwidth"))), None);
         }
         let modules: Vec<usize> = (0..self.items.len()).filter(|&i| self.items[i].kind == Kind::Module).collect();
         for (slot, attr) in [(Slot::High, "hiSlots"), (Slot::Mid, "medSlots"), (Slot::Low, "lowSlots"), (Slot::Rig, "rigSlots"), (Slot::Subsystem, "maxSubSystems"), (Slot::Service, "serviceSlots")] {
@@ -976,20 +975,20 @@ impl<'a> Fit<'a> {
             }
         }
         let t = modules.iter().filter(|&&i| self.has_effect_named(i, &["turretFitted"])).count() as f64;
-        if t > g(ship, "turretSlotsLeft") {
-            push("TURRET_HARDPOINTS", format!("turrets {t} > hardpoints {}", g(ship, "turretSlotsLeft")), None);
+        if t > self.get(ship, crate::attr_id!(ds, "turretSlotsLeft")) {
+            push("TURRET_HARDPOINTS", format!("turrets {t} > hardpoints {}", self.get(ship, crate::attr_id!(ds, "turretSlotsLeft"))), None);
         }
         let l = modules.iter().filter(|&&i| self.has_effect_named(i, &["launcherFitted"])).count() as f64;
-        if l > g(ship, "launcherSlotsLeft") {
-            push("LAUNCHER_HARDPOINTS", format!("launchers {l} > hardpoints {}", g(ship, "launcherSlotsLeft")), None);
+        if l > self.get(ship, crate::attr_id!(ds, "launcherSlotsLeft")) {
+            push("LAUNCHER_HARDPOINTS", format!("launchers {l} > hardpoints {}", self.get(ship, crate::attr_id!(ds, "launcherSlotsLeft"))), None);
         }
         let ship_t = &ds.types[&self.items[ship].type_id];
         let vids = &self.prep.vids;
         let groups_attrs = &vids.can_fit_group;
         let types_attrs = &vids.can_fit_type;
         let (a_mgf, a_mtf, a_mgo, a_mga) =
-            (ds.attr_id("maxGroupFitted"), ds.attr_id("maxTypeFitted"), ds.attr_id("maxGroupOnline"), ds.attr_id("maxGroupActive"));
-        let (a_rig, a_csize) = (ds.attr_id("rigSize"), ds.attr_id("chargeSize"));
+            (crate::attr_id!(ds, "maxGroupFitted"), crate::attr_id!(ds, "maxTypeFitted"), crate::attr_id!(ds, "maxGroupOnline"), crate::attr_id!(ds, "maxGroupActive"));
+        let (a_rig, a_csize) = (crate::attr_id!(ds, "rigSize"), crate::attr_id!(ds, "chargeSize"));
         let mut fitted_group: crate::hash::FxHashMap<u32, u32> = Default::default();
         let mut fitted_type: crate::hash::FxHashMap<u32, u32> = Default::default();
         let mut active_group: crate::hash::FxHashMap<u32, u32> = Default::default();
@@ -1009,7 +1008,7 @@ impl<'a> Fit<'a> {
             }
             if it.slot == Some(Slot::Rig) {
                 let rs = mt.attr(a_rig).unwrap_or(0.0);
-                let srs = g(ship, "rigSize");
+                let srs = self.get(ship, crate::attr_id!(ds, "rigSize"));
                 if rs != 0.0 && rs != srs {
                     push("RIG_SIZE", format!("{name} rig size {rs} != ship rig size {srs}"), idx);
                 }

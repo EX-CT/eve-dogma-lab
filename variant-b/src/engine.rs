@@ -397,7 +397,7 @@ impl<'a> Fit<'a> {
         let ch = fit.new_item(1373, Kind::Char, Loc::Char, "/character")?;
         fit.char = ch;
         if let Some(sec) = req.character.security_status {
-            let a = ds.attr_id("pilotSecurityStatus");
+            let a = crate::attr_id!(ds, "pilotSecurityStatus");
             if a != 0 {
                 fit.items[ch].set_base(a, sec);
             }
@@ -460,7 +460,7 @@ impl<'a> Fit<'a> {
             it.state = if it.active_count > 0 { State::Active } else { State::Offline };
             it.req_index = Some(i);
         }
-        let sq = ds.attr_id("fighterSquadronMaxSize");
+        let sq = crate::attr_id!(ds, "fighterSquadronMaxSize");
         for (i, f) in req.fighters.iter().enumerate() {
             let idx = fit.new_item(f.type_id, Kind::Fighter, Loc::Space, &format!("/fighters/{i}"))?;
             let maxsq = fit.items[idx].base_opt(sq).map(|a| a as u32).unwrap_or(1);
@@ -603,7 +603,7 @@ impl<'a> Fit<'a> {
                     "nullSecModifier"
                 }
             };
-            let (src_id, dst_id) = (ds.attr_id(src), ds.attr_id("securityModifier"));
+            let (src_id, dst_id) = (ds.attr_id(src), crate::attr_id!(ds, "securityModifier"));
             for it in fit.items.iter_mut() {
                 if let Some(v) = it.base_opt(src_id) {
                     it.set_base(dst_id, v);
@@ -731,21 +731,21 @@ impl<'a> Fit<'a> {
     fn register_all(&mut self, req: &FitRequest) {
         let ds = self.ds;
         let n = self.items.len();
-        let e_ab = ds.effect_id("moduleBonusAfterburner");
-        let e_mwd = ds.effect_id("moduleBonusMicrowarpdrive");
-        let e_slot = ds.effect_id("slotModifier");
-        let e_hp = ds.effect_id("hardPointModifierEffect");
-        let e_mjd = ds.effect_id("microJumpDrive");
-        let e_bastion = ds.effect_id("moduleBonusBastionModule");
+        let e_ab = crate::effect_id!(ds, "moduleBonusAfterburner");
+        let e_mwd = crate::effect_id!(ds, "moduleBonusMicrowarpdrive");
+        let e_slot = crate::effect_id!(ds, "slotModifier");
+        let e_hp = crate::effect_id!(ds, "hardPointModifierEffect");
+        let e_mjd = crate::effect_id!(ds, "microJumpDrive");
+        let e_bastion = crate::effect_id!(ds, "moduleBonusBastionModule");
         let is_structure = self.is_structure;
         let structure_ok: Vec<u32> = STRUCTURE_SKILL_EFFECT_NAMES.iter().map(|n| ds.effect_id(n)).collect();
-        let a_mass_add = ds.attr_id("massAddition");
-        let a_speed_factor = ds.attr_id("speedFactor");
-        let a_thrust = ds.attr_id("speedBoostFactor");
-        let a_maxv = ds.attr_id("maxVelocity");
-        let a_sig = ds.attr_id("signatureRadius");
-        let a_sigb = ds.attr_id("signatureRadiusBonus");
-        let a_sigbp = ds.attr_id("signatureRadiusBonusPercent");
+        let a_mass_add = crate::attr_id!(ds, "massAddition");
+        let a_speed_factor = crate::attr_id!(ds, "speedFactor");
+        let a_thrust = crate::attr_id!(ds, "speedBoostFactor");
+        let a_maxv = crate::attr_id!(ds, "maxVelocity");
+        let a_sig = crate::attr_id!(ds, "signatureRadius");
+        let a_sigb = crate::attr_id!(ds, "signatureRadiusBonus");
+        let a_sigbp = crate::attr_id!(ds, "signatureRadiusBonusPercent");
         let slot_pairs: Vec<(u32, u32)> = [("hiSlots", "hiSlotModifier"), ("medSlots", "medSlotModifier"), ("lowSlots", "lowSlotModifier")]
             .iter()
             .map(|(t, s)| (ds.attr_id(t), ds.attr_id(s)))
@@ -931,8 +931,8 @@ impl<'a> Fit<'a> {
         match name {
             "superWeaponAmarr" | "superWeaponCaldari" | "superWeaponGallente" | "superWeaponMinmatar" | "doomsdaySlash"
             | "doomsdayBeamDOT" | "doomsdayConeDOT" | "doomsdayHOG" | "debuffLance" => {
-                self.push_mod(ship, a("maxVelocity"), 6, Src::Attr { item: iu, attr: a("speedFactor") }, src_cat);
-                self.push_mod(ship, a("warpScrambleStatus"), 2, Src::Attr { item: iu, attr: a("siegeModeWarpStatus") }, src_cat);
+                self.push_mod(ship, crate::attr_id!(ds, "maxVelocity"), 6, Src::Attr { item: iu, attr: crate::attr_id!(ds, "speedFactor") }, src_cat);
+                self.push_mod(ship, crate::attr_id!(ds, "warpScrambleStatus"), 2, Src::Attr { item: iu, attr: crate::attr_id!(ds, "siegeModeWarpStatus") }, src_cat);
             }
             "emergencyHullEnergizer" => {
                 for t in ["Em", "Thermal", "Kinetic", "Explosive"] {
@@ -941,22 +941,22 @@ impl<'a> Fit<'a> {
                 }
             }
             "entosisLink" => {
-                self.push_mod(ship, a("disallowAssistance"), 7, Src::Attr { item: iu, attr: a("disallowAssistance") }, 6);
+                self.push_mod(ship, crate::attr_id!(ds, "disallowAssistance"), 7, Src::Attr { item: iu, attr: crate::attr_id!(ds, "disallowAssistance") }, 6);
                 for t in ["Gravimetric", "Magnetometric", "Radar", "Ladar"] {
                     self.push_mod(ship, a(&format!("scan{t}Strength")), 6, Src::Attr { item: iu, attr: a(&format!("scan{t}StrengthPercent")) }, src_cat);
                 }
             }
             "moduleBonusBreacherPodDamageControl" => {
-                self.push_mod(ship, a("breacherPodDamageResistance"), 6, Src::Attr { item: iu, attr: a("breacherPodActivatedDamageReceivedPercentage") }, 6);
+                self.push_mod(ship, crate::attr_id!(ds, "breacherPodDamageResistance"), 6, Src::Attr { item: iu, attr: crate::attr_id!(ds, "breacherPodActivatedDamageReceivedPercentage") }, 6);
             }
             "microJumpPortalDrive" | "microJumpPortalDriveCapital" => {
-                self.push_mod(ship, a("signatureRadius"), 6, Src::Attr { item: iu, attr: a("signatureRadiusBonusPercent") }, src_cat);
+                self.push_mod(ship, crate::attr_id!(ds, "signatureRadius"), 6, Src::Attr { item: iu, attr: crate::attr_id!(ds, "signatureRadiusBonusPercent") }, src_cat);
             }
             "warpDisruptSphere" => {
-                self.push_mod(ship, a("disallowAssistance"), 7, Src::Const(1.0), 6);
+                self.push_mod(ship, crate::attr_id!(ds, "disallowAssistance"), 7, Src::Const(1.0), 6);
                 if self.items[i].charge.is_none() {
-                    self.push_mod(ship, 4, 6, Src::Attr { item: iu, attr: a("massBonusPercentage") }, 6);
-                    self.push_mod(ship, a("signatureRadius"), 6, Src::Attr { item: iu, attr: a("signatureRadiusBonus") }, 6);
+                    self.push_mod(ship, 4, 6, Src::Attr { item: iu, attr: crate::attr_id!(ds, "massBonusPercentage") }, 6);
+                    self.push_mod(ship, crate::attr_id!(ds, "signatureRadius"), 6, Src::Attr { item: iu, attr: crate::attr_id!(ds, "signatureRadiusBonus") }, 6);
                     let props: Vec<usize> = (0..self.items.len())
                         .filter(|&t| {
                             let it = &self.items[t];
@@ -964,8 +964,8 @@ impl<'a> Fit<'a> {
                         })
                         .collect();
                     for t in props {
-                        self.push_mod(t, a("speedBoostFactor"), 6, Src::Attr { item: iu, attr: a("speedBoostFactorBonus") }, 6);
-                        self.push_mod(t, a("speedFactor"), 6, Src::Attr { item: iu, attr: a("speedFactorBonus") }, 6);
+                        self.push_mod(t, crate::attr_id!(ds, "speedBoostFactor"), 6, Src::Attr { item: iu, attr: crate::attr_id!(ds, "speedBoostFactorBonus") }, 6);
+                        self.push_mod(t, crate::attr_id!(ds, "speedFactor"), 6, Src::Attr { item: iu, attr: crate::attr_id!(ds, "speedFactorBonus") }, 6);
                     }
                 }
             }
@@ -982,7 +982,7 @@ impl<'a> Fit<'a> {
         let a = |n: &str| ds.attr_id(n);
         let ship = self.ship;
         let bu = b as u32;
-        let red = a("systemEffectDamageReduction");
+        let red = crate::attr_id!(ds, "systemEffectDamageReduction");
         let mls = ds.type_by_name("Missile Launcher Operation").unwrap_or(0);
         let gunnery = ds.type_by_name("Gunnery").unwrap_or(0);
         let smartbomb = ds.groups.iter().find(|(_, g)| g.name == "Smart Bomb").map(|(k, _)| k).unwrap_or(0);
@@ -1009,7 +1009,7 @@ impl<'a> Fit<'a> {
                 }
             }
             if mult {
-                self.push_mod(t, a("damageMultiplier"), 6, Src::Attr { item: bu, attr: red }, 6);
+                self.push_mod(t, crate::attr_id!(ds, "damageMultiplier"), 6, Src::Attr { item: bu, attr: red }, 6);
             }
         }
         for d in ["Em", "Thermal", "Kinetic", "Explosive"] {
@@ -1028,12 +1028,12 @@ impl<'a> Fit<'a> {
         let dist = it.distance;
         let falloff_factor = || crate::stats::range_factor(base("maxRange"), base("falloffEffectiveness"), dist, true);
         let gate = |opt: f64| if opt < dist.unwrap_or(0.0) { 0.0 } else { 1.0 };
-        let no_assist = self.items[self.ship].base_opt(a("disallowAssistance")).map(|x| x != 0.0).unwrap_or(false);
+        let no_assist = self.items[self.ship].base_opt(crate::attr_id!(ds, "disallowAssistance")).map(|x| x != 0.0).unwrap_or(false);
         let rep = |layer: u8, amt: &str, mult: f64, factor: f64| {
             if no_assist { vec![] } else { vec![ProjSpecial::Rep { item: i, layer, amount: a(amt), mult, factor }] }
         };
         let drain = |amt: &str, dur: &str, factor: f64, sign: f64| vec![ProjSpecial::Drain { item: i, amount: a(amt), duration: a(dur), factor, resist, sign }];
-        let no_offense = self.items[self.ship].base_opt(a("disallowOffensiveModifiers")).map(|x| x != 0.0).unwrap_or(false);
+        let no_offense = self.items[self.ship].base_opt(crate::attr_id!(ds, "disallowOffensiveModifiers")).map(|x| x != 0.0).unwrap_or(false);
         let ecm = |fighter: bool, factor: f64| if no_offense { vec![] } else { vec![ProjSpecial::Ecm { item: i, fighter, factor, resist }] };
         let paste = it.charge.map(|c| ds.types.get(&self.items[c].type_id).map(|t| t.name == "Nanite Repair Paste").unwrap_or(false)).unwrap_or(false);
         Some(match name {
@@ -1108,7 +1108,7 @@ impl<'a> Fit<'a> {
                     look("remoteResistanceID")
                 }
             });
-            let target_offense_ok = self.items[ship].base_opt(ds.attr_id("disallowOffensiveModifiers")).map(|a| a == 0.0).unwrap_or(true);
+            let target_offense_ok = self.items[ship].base_opt(crate::attr_id!(ds, "disallowOffensiveModifiers")).map(|a| a == 0.0).unwrap_or(true);
             let push = |fit: &mut Fit<'a>, target_attr: u32, src_attr: u32, op: i32| {
                 let mul = op == 4 || op == 0;
                 fit.push_mod(
@@ -1135,15 +1135,15 @@ impl<'a> Fit<'a> {
             if name == "fighterAbilityStasisWebifier" {
                 if target_offense_ok {
                     let f = crate::stats::range_factor(pbase("fighterAbilityStasisWebifierOptimalRange"), pbase("fighterAbilityStasisWebifierFalloffRange"), self.items[i].distance, true) * qty;
-                    let src = Src::Projected { item: i as u32, attr: ds.attr_id("fighterAbilityStasisWebifierSpeedPenalty"), factor: f, target: ship as u32, resist, mul: false };
-                    self.push_mod(ship, ds.attr_id("maxVelocity"), 6, src, src_cat);
+                    let src = Src::Projected { item: i as u32, attr: crate::attr_id!(ds, "fighterAbilityStasisWebifierSpeedPenalty"), factor: f, target: ship as u32, resist, mul: false };
+                    self.push_mod(ship, crate::attr_id!(ds, "maxVelocity"), 6, src, src_cat);
                 }
                 continue;
             }
             if name == "fighterAbilityWarpDisruption" {
                 if target_offense_ok && pbase("fighterAbilityWarpDisruptionRange") >= self.items[i].distance.unwrap_or(0.0) {
-                    let src = Src::Projected { item: i as u32, attr: ds.attr_id("fighterAbilityWarpDisruptionPointStrength"), factor: qty, target: ship as u32, resist, mul: false };
-                    self.push_mod(ship, ds.attr_id("warpScrambleStatus"), 2, src, src_cat);
+                    let src = Src::Projected { item: i as u32, attr: crate::attr_id!(ds, "fighterAbilityWarpDisruptionPointStrength"), factor: qty, target: ship as u32, resist, mul: false };
+                    self.push_mod(ship, crate::attr_id!(ds, "warpScrambleStatus"), 2, src, src_cat);
                 }
                 continue;
             }
@@ -1166,7 +1166,7 @@ impl<'a> Fit<'a> {
                     continue;
                 }
                 "doomsdayAOENeut" => {
-                    self.proj_special.push(ProjSpecial::Drain { item: i, amount: ds.attr_id("energyNeutralizerAmount"), duration: ds.attr_id("duration"), factor: 1.0, resist, sign: 1.0 });
+                    self.proj_special.push(ProjSpecial::Drain { item: i, amount: crate::attr_id!(ds, "energyNeutralizerAmount"), duration: crate::attr_id!(ds, "duration"), factor: 1.0, resist, sign: 1.0 });
                     continue;
                 }
                 "doomsdayAOEECM" => {
@@ -1180,15 +1180,15 @@ impl<'a> Fit<'a> {
             }
             let weapon_disruption = name == "doomsdayAOETrack" || name == "structureModuleEffectWeaponDisruption";
             if name.starts_with("remoteWebifier") || name == "structureModuleEffectStasisWebifier" {
-                push(self, ds.attr_id("maxVelocity"), ds.attr_id("speedFactor"), 6);
+                push(self, crate::attr_id!(ds, "maxVelocity"), crate::attr_id!(ds, "speedFactor"), 6);
             } else if name.starts_with("remoteTargetPaint") || name == "structureModuleEffectTargetPainter" {
-                push(self, ds.attr_id("signatureRadius"), ds.attr_id("signatureRadiusBonus"), 6);
+                push(self, crate::attr_id!(ds, "signatureRadius"), crate::attr_id!(ds, "signatureRadiusBonus"), 6);
             } else if name.starts_with("remoteSensorDamp")
                 || name == "structureModuleEffectRemoteSensorDampener"
                 || name.starts_with("remoteSensorBoost")
             {
-                push(self, ds.attr_id("maxTargetRange"), ds.attr_id("maxTargetRangeBonus"), 6);
-                push(self, ds.attr_id("scanResolution"), ds.attr_id("scanResolutionBonus"), 6);
+                push(self, crate::attr_id!(ds, "maxTargetRange"), crate::attr_id!(ds, "maxTargetRangeBonus"), 6);
+                push(self, crate::attr_id!(ds, "scanResolution"), crate::attr_id!(ds, "scanResolutionBonus"), 6);
                 if name.starts_with("remoteSensorBoost") {
                     for t in ["Gravimetric", "Ladar", "Magnetometric", "Radar"] {
                         push(self, ds.attr_id(&format!("scan{t}Strength")), ds.attr_id(&format!("scan{t}StrengthPercent")), 6);
@@ -1201,7 +1201,7 @@ impl<'a> Fit<'a> {
                         1.0
                     } else {
                         let it = &self.items[i];
-                        crate::stats::range_factor(it.base_opt(ds.attr_id("maxRange")).unwrap_or(0.0), it.base_opt(ds.attr_id("falloffEffectiveness")).unwrap_or(0.0), it.distance, true)
+                        crate::stats::range_factor(it.base_opt(crate::attr_id!(ds, "maxRange")).unwrap_or(0.0), it.base_opt(crate::attr_id!(ds, "falloffEffectiveness")).unwrap_or(0.0), it.distance, true)
                     };
                     let (gun, mls) = (ds.type_by_name("Gunnery").unwrap_or(0), ds.type_by_name("Missile Launcher Operation").unwrap_or(0));
                     let n = self.items.len();
@@ -1226,7 +1226,7 @@ impl<'a> Fit<'a> {
                 // Pyfa Effect6424 / Effect6423 / shipModuleRemoteTrackingComputer: boost the target's gunnery modules
                 // (TD, remote tracking computer) / missile charges (GD)
                 let allowed = if name == "shipModuleRemoteTrackingComputer" {
-                    self.items[ship].base_opt(ds.attr_id("disallowAssistance")).map(|a| a == 0.0).unwrap_or(true)
+                    self.items[ship].base_opt(crate::attr_id!(ds, "disallowAssistance")).map(|a| a == 0.0).unwrap_or(true)
                 } else {
                     target_offense_ok
                 };
@@ -1240,10 +1240,10 @@ impl<'a> Fit<'a> {
                     let tf = if name == "npcEntityWeaponDisruptor" {
                         // TD drones (Pyfa Effect6694): full strength inside maxRange, nothing beyond
                         let it = &self.items[i];
-                        if it.base_opt(ds.attr_id("maxRange")).unwrap_or(0.0) < it.distance.unwrap_or(0.0) { 0.0 } else { 1.0 }
+                        if it.base_opt(crate::attr_id!(ds, "maxRange")).unwrap_or(0.0) < it.distance.unwrap_or(0.0) { 0.0 } else { 1.0 }
                     } else {
                         let it = &self.items[i];
-                        crate::stats::range_factor(it.base_opt(ds.attr_id("maxRange")).unwrap_or(0.0), it.base_opt(ds.attr_id("falloffEffectiveness")).unwrap_or(0.0), it.distance, true)
+                        crate::stats::range_factor(it.base_opt(crate::attr_id!(ds, "maxRange")).unwrap_or(0.0), it.base_opt(crate::attr_id!(ds, "falloffEffectiveness")).unwrap_or(0.0), it.distance, true)
                     };
                     let targets: Vec<usize> = (0..self.items.len())
                         .filter(|&t| {
@@ -1429,13 +1429,13 @@ impl<'a> Fit<'a> {
     /// the adapted resonances as modifiers and recompile.
     fn apply_rah(&mut self, req: &FitRequest) {
         let ds = self.ds;
-        let eid = ds.effect_id("adaptiveArmorHardener");
+        let eid = crate::effect_id!(ds, "adaptiveArmorHardener");
         if eid == 0 {
             return;
         }
         let names = ["armorEmDamageResonance", "armorThermalDamageResonance", "armorKineticDamageResonance", "armorExplosiveDamageResonance"];
         let attrs: Vec<u32> = names.iter().map(|n| ds.attr_id(n)).collect();
-        let shift_attr = ds.attr_id("resistanceShiftAmount");
+        let shift_attr = crate::attr_id!(ds, "resistanceShiftAmount");
         let rahs: Vec<usize> = (0..self.items.len())
             .filter(|&i| self.items[i].kind == Kind::Module && self.items[i].state >= State::Active && self.items[i].effects.iter().any(|(e, _)| *e == eid))
             .collect();
