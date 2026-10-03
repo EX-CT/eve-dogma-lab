@@ -559,6 +559,167 @@ struct Calc {
   }
 
   void run(JW& w);
+
+  // ---- graph primitives (graphs.cpp): full-precision dumps of what the graph evaluator needs
+  void effect_names(JW& w, uint32_t i) {
+    w.arr();
+    for (const TEff& e : f.items[i].effs)
+      if (const EffRec* er = ds.effect(e.id)) w.str(ds.effect_name(*er));
+    w.end_arr();
+  }
+  void raw_attrs(JW& w, uint32_t i) {
+    std::vector<std::pair<std::string_view, uint32_t>> kv;
+    for (uint32_t k : f.attr_keys(i))
+      if (const AttrRec* a = ds.attr(k)) kv.push_back({ds.attr_name(*a), k});
+    std::stable_sort(kv.begin(), kv.end(), [](auto& a, auto& b) { return a.first < b.first; });
+    w.obj();
+    for (size_t j = 0; j < kv.size(); j++) {
+      if (j + 1 < kv.size() && kv[j + 1].first == kv[j].first) continue;
+      w.key(kv[j].first).num_raw(g(i, kv[j].second));
+    }
+    w.end_obj();
+  }
+  void type_info(JW& w, uint32_t i) {
+    const Item& it = f.items[i];
+    w.ki("type_id", it.type_id).ks("name", tname(i)).ki("group_id", it.group).ki("category_id", it.category);
+    if (const GroupRec* gr = ds.group(it.group)) w.ks("group", ds.group_name(*gr));
+  }
+  void item_prim(JW& w, uint32_t i) {
+    const Item& it = f.items[i];
+    w.obj();
+    type_info(w, i);
+    w.key("index");
+    idx_or_null(w, it.req_index);
+    w.ks("state", state_name(it.state));
+    w.key("effects");
+    effect_names(w, i);
+    w.key("attrs");
+    raw_attrs(w, i);
+    w.key("effect_ranges").obj();
+    for (const TEff& te : it.effs) {
+      const EffRec* e = ds.effect(te.id);
+      if (!e || (e->range_attr == 0 && e->falloff_attr == 0)) continue;
+      w.key(ds.effect_name(*e)).obj().ki("category", e->category).kb("offensive", e->is_offensive).kb("assistance", e->is_assistance);
+      if (e->range_attr) w.key("range").num_raw(g(i, e->range_attr));
+      if (e->falloff_attr) w.key("falloff").num_raw(g(i, e->falloff_attr));
+      if (e->tracking_attr) w.key("tracking").num_raw(g(i, e->tracking_attr));
+      if (e->resistance_attr)
+        if (const AttrRec* a = ds.attr(e->resistance_attr)) w.ks("resistance_attr", ds.attr_name(*a));
+      w.end_obj();
+    }
+    w.end_obj();
+    if (it.kind == Kind::Module) {
+      const char* kind = weapon_kind(i);
+      Dmg d = module_volley(i, kind);
+      w.ks("kind", "module").ks("weapon_kind", kind);
+      w.key("volley").arr().num_raw(d.em).num_raw(d.th).num_raw(d.ki).num_raw(d.ex).end_arr();
+      w.key("cycle").obj();
+      w.key("raw_ms").num_raw(raw_cycle_ms(i)).key("reactivation_ms").num_raw(g(i, K.moduleReactivationDelay));
+      w.key("reload_ms").num_raw(g(i, K.reloadTime)).ki("shots", num_shots(i)).ki("charges", num_charges(i));
+      w.key("avg_ms").num_raw(avg_cycle_ms(i, false)).key("avg_reload_ms").num_raw(avg_cycle_ms(i, true)).end_obj();
+      if (it.charge >= 0) {
+        const uint32_t c = (uint32_t)it.charge;
+        w.key("charge").obj();
+        type_info(w, c);
+        w.key("attrs");
+        raw_attrs(w, c);
+        w.key("effects");
+        effect_names(w, c);
+        w.end_obj();
+      }
+      if (it.spool) {
+        static const char* names[] = {"spool_scale", "cycle_scale", "time", "cycles"};
+        w.key("spool").obj().ks("type", names[(int)it.spool->kind]).key("amount").num_raw(it.spool->amount).end_obj();
+      }
+    } else {
+      w.ks("kind", it.kind == Kind::Drone ? "drone" : "fighter").ki("quantity", it.quantity).ki("active", it.active_count);
+      if (it.kind == Kind::Fighter) {
+        w.key("abilities").arr();
+        if (it.fighter_abilities)
+          for (uint32_t a : *it.fighter_abilities)
+            if (const EffRec* e = ds.effect(a)) w.str(ds.effect_name(*e));
+        w.end_arr();
+      }
+    }
+    w.end_obj();
+  }
+  void stack_prim(JW& w, uint32_t i, uint32_t attr) {
+    std::vector<Fit::StackMod> mods;
+    const double base = f.stack_inputs(i, attr, mods);
+    w.obj().key("base").num_raw(base).key("mods").arr();
+    for (auto& m : mods) w.obj().ki("op", m.op).key("value").num_raw(m.value).kb("penalized", m.penalized).end_obj();
+    w.end_arr().key("value").num_raw(g(i, attr));
+    const AttrRec* a = ds.attr(attr);
+    if (a && a->max_attr) w.key("max").num_raw(g(i, a->max_attr));
+    if (a && a->min_attr) w.key("min").num_raw(g(i, a->min_attr));
+    w.kb("high_is_good", a ? a->high_is_good : true).end_obj();
+  }
+  void cap_drains(JW& w) {
+    w.arr();
+    for (uint32_t i = 0; i < f.items.size(); i++) {
+      if (f.items[i].kind != Kind::Module) continue;
+      double cap_need = g(i, K.capacitorNeed);
+      const GroupRec* gr = ds.group(f.items[i].group);
+      bool is_inj = gr && ds.group_name(*gr) == "Capacitor Booster";
+      if (is_inj) cap_need = -(f.items[i].charge >= 0 ? g(f.items[i].charge, K.capacitorBonus) : 0.0);
+      if (has_eff(i, K.e_nos) && !req.nos_no_target_cap) cap_need = -g(i, K.powerTransferAmount);
+      double full = raw_cycle_ms(i) + g(i, K.moduleReactivationDelay);
+      if (f.items[i].state >= State::Active && cap_need != 0.0 && full > 0.0) {
+        w.obj().key("index");
+        idx_or_null(w, f.items[i].req_index);
+        w.key("duration_ms").num_raw(std::trunc(full)).key("cap_need").num_raw(cap_need).ki("clip_size", num_shots(i));
+        w.key("reload_ms").num_raw(g(i, K.reloadTime)).kb("is_injector", is_inj).kb("disable_stagger", has_eff(i, K.e_turret)).end_obj();
+      }
+    }
+    double sig_now = g(f.ship, K.signatureRadius);
+    for (auto& ps : f.proj_special) {
+      if (ps.rep || ps.ecm) continue;
+      double need = g(ps.item, ps.amount) * ps.factor * ps.sign;
+      if (ps.resist != 0) need *= g(f.ship, ps.resist);
+      double sres = g(ps.item, K.energyNeutralizerSignatureResolution);
+      if (sres != 0.0) need *= std::min(sig_now / sres, 1.0);
+      double dur = g(ps.item, ps.duration);
+      if (need != 0.0 && dur > 0.0)
+        w.obj().key("duration_ms").num_raw(std::trunc(dur)).key("cap_need").num_raw(need).ki("clip_size", 0).key("reload_ms").num_raw(0)
+            .kb("is_injector", false).kb("disable_stagger", false).kb("projected", true).end_obj();
+    }
+    w.end_arr();
+  }
+  void fit_prim(JW& w) {
+    w.obj().key("ship").obj();
+    type_info(w, f.ship);
+    w.key("attrs");
+    raw_attrs(w, f.ship);
+    w.key("effects");
+    effect_names(w, f.ship);
+    w.key("character");
+    raw_attrs(w, f.chr);
+    w.key("stack").obj().key("maxVelocity");
+    stack_prim(w, f.ship, K.maxVelocity);
+    w.key("signatureRadius");
+    stack_prim(w, f.ship, K.signatureRadius);
+    w.end_obj().end_obj();
+    w.key("items").arr();
+    for (uint32_t i = 0; i < f.items.size(); i++) {
+      Kind k = f.items[i].kind;
+      if (k == Kind::Module || k == Kind::Drone || k == Kind::Fighter) item_prim(w, i);
+    }
+    w.end_arr().key("cap_drains");
+    cap_drains(w);
+    JW st;
+    run(st);
+    w.key("stats").raw(st.s).end_obj();
+  }
+  // application_profile charge variant: only what changes with the charge (the group's modules, the stats)
+  void variant_prim(JW& w, const std::vector<int32_t>& idx) {
+    w.obj().key("items").arr();
+    for (uint32_t i = 0; i < f.items.size(); i++)
+      if (f.items[i].kind == Kind::Module && std::find(idx.begin(), idx.end(), f.items[i].req_index) != idx.end()) item_prim(w, i);
+    w.end_arr();
+    JW st;
+    run(st);
+    w.key("stats").raw(st.s).end_obj();
+  }
 };
 
 void Calc::run(JW& w) {
@@ -1297,6 +1458,21 @@ void Calc::run(JW& w) {
 void compute_stats(Fit& fit, const FitRequest& req, JW& out) {
   Calc c(fit, req);
   c.run(out);
+}
+
+void graph_fit_prim(Fit& fit, const FitRequest& req, JW& out) {
+  Calc c(fit, req);
+  c.fit_prim(out);
+}
+
+void graph_variant_prim(Fit& fit, const FitRequest& req, const std::vector<int32_t>& idx, JW& out) {
+  Calc c(fit, req);
+  c.variant_prim(out, idx);
+}
+
+const char* graph_weapon_kind(Fit& fit, const FitRequest& req, uint32_t i) {
+  Calc c(fit, req);
+  return c.weapon_kind(i);
 }
 
 }  // namespace evej

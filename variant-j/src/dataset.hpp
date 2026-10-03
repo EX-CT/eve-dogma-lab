@@ -32,6 +32,7 @@ struct TypeRec {
   int32_t meta_level;
   uint32_t has_meta_level;
   uint32_t market_group, has_market_group;
+  uint32_t meta_group, has_meta_group;
 };
 struct ModRec {
   int32_t func, domain, op;
@@ -87,7 +88,7 @@ struct Header {
   SecEnt sec[S_COUNT];
 };
 
-constexpr uint32_t CACHE_VERSION = 7;
+constexpr uint32_t CACHE_VERSION = 8;
 
 class Dataset {
  public:

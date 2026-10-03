@@ -388,6 +388,9 @@ bool Dataset::build_image(const std::vector<uint8_t>& src, std::vector<uint8_t>&
       simdjson::dom::element mg;
       t.has_market_group = v["market_group"].get(mg) == simdjson::SUCCESS && !mg.is_null() && mg.is_number();
       t.market_group = t.has_market_group ? opt_u32(mg) : 0;
+      simdjson::dom::element mgr;
+      t.has_meta_group = v["meta_group"].get(mgr) == simdjson::SUCCESS && !mgr.is_null() && mgr.is_number();
+      t.meta_group = t.has_meta_group ? opt_u32(mgr) : 0;
       t.attr_off = (uint32_t)tattrs.size();
       simdjson::dom::object ao;
       if (!v["attrs"].get_object().get(ao))

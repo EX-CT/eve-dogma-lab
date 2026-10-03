@@ -147,6 +147,14 @@ class Fit {
   double base(uint32_t item, uint32_t attr) const;
   // all attribute ids present on an item (sorted)
   std::vector<uint32_t> attr_keys(uint32_t item) const;
+  // Stacking inputs of (item, attr): base value and every registered modifier (op, source value, penalised), so a
+  // graph evaluator can re-fold the attribute with extra multipliers (graphs: a target fit under webs / painters).
+  struct StackMod {
+    int op;
+    double value;
+    bool penalized;
+  };
+  double stack_inputs(uint32_t item, uint32_t attr, std::vector<StackMod>& mods);
 
   const Dataset& ds;
   const Ids& K;

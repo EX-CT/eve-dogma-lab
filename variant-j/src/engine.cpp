@@ -411,6 +411,19 @@ std::vector<uint32_t> Fit::attr_keys(uint32_t item) const {
   return k;
 }
 
+double Fit::stack_inputs(uint32_t item, uint32_t attr, std::vector<StackMod>& mods) {
+  mods.clear();
+  int32_t f = find(item, attr);
+  if (f < 0) {
+    double v;
+    return type_base(item, attr, v) ? v : ds.attr_default(attr);
+  }
+  const double b = lbase((uint32_t)f);
+  for (uint32_t m = la_[(uint32_t)f].head; m != UINT32_MAX; m = mods_[m].next)
+    mods.push_back({mods_[m].op, src_value(mods_[m].src), mods_[m].pen != 0});
+  return b;
+}
+
 void Fit::clear_cache() {
   for (auto& a : la_) a.st = 0;
 }
