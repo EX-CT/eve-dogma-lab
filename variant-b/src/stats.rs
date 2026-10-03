@@ -1057,11 +1057,8 @@ impl<'a> Fit<'a> {
             }
         }
         // skills
-        let mut have: crate::hash::FxHashMap<u32, f64> =
-            crate::hash::FxHashMap::with_capacity_and_hasher(self.skills.len(), Default::default());
-        for &(s, l) in &self.skills {
-            have.insert(s, l as f64);
-        }
+        // self.skills is sorted by id and unique: binary search instead of building a map per fit
+        let have = |s: u32| -> f64 { self.skills.binary_search_by_key(&s, |x| x.0).map(|p| self.skills[p].1 as f64).unwrap_or(0.0) };
         let mut missing: Vec<(u32, f64, u32)> = Vec::new();
         for it in &self.items {
             if !matches!(it.kind, Kind::Ship | Kind::Module | Kind::Charge | Kind::Drone | Kind::Fighter | Kind::Implant | Kind::Booster) {
@@ -1074,7 +1071,7 @@ impl<'a> Fit<'a> {
                     continue;
                 }
                 let need = t.attr(la).unwrap_or(1.0);
-                if *have.get(&s).unwrap_or(&0.0) < need && !missing.iter().any(|m| m.0 == s && m.1 >= need) {
+                if have(s) < need && !missing.iter().any(|m| m.0 == s && m.1 >= need) {
                     missing.push((s, need, it.type_id));
                 }
             }
