@@ -1,12 +1,15 @@
 # graphs-g2 — Pyfa graphs via engine primitives + portable evaluator
 
-Round 2, approach G2 (see `DESIGN.md`). Score: **111/111 cases, 1843/1843 values** (`bench/scorecard.md`).
+Round 2, approach G2 (see `DESIGN.md`). Score on contract 0.2: **178/178 cases, 2437/2437 values**
+(`bench/scorecard.md`; also via RPC `scorecard-rpc.md`, single `scorecard-single.md`, WASM `scorecard-wasm.md`).
 
 ```bash
 npm ci && npm run build                                   # evaluator -> dist/
 (cd ../variant-c && go build -trimpath -o bin/eve-dogma-go ./cmd/eve-dogma-go)
 ./bin/graph-batch --dataset $D < requests.jsonl           # GraphRequest JSONL -> GraphResult JSONL
-./score.sh /path/to/eve-dogma-bench@graphs-round2         # scorer
+./bin/serve-stdio --dataset $D                            # RPC: {"id","method":"graph","params":GraphRequest} + engine methods
+./bin/graph --dataset $D request.json                     # single request; exit 2 with {"error":…}
+./score.sh /path/to/eve-dogma-bench@graphs-round2         # scorer (G2_MODE=rpc|single for the other interfaces)
 npm test                                                  # unit + golden tests
 # fully portable pipeline (engine as WebAssembly):
 (cd ../variant-c && GOOS=js GOARCH=wasm go build -trimpath -o bin/eve-dogma.wasm ./cmd/eve-dogma-go)

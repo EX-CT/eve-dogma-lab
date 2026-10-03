@@ -1,9 +1,9 @@
-# Graph scorecard: G2-wasm
+# Graph scorecard: G2-single
 
 - cases fully correct: **178/178**
 - sample values correct: **2437/2437** (100.00 %)
 - informational charge ids matching Pyfa: 72/120
-- wall time: 6.57 s
+- wall time: 69.50 s
 
 | graph | cases | ok | total | % |
 |---|---|---|---|---|
