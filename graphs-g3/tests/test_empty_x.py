@@ -32,6 +32,8 @@ def check(req, res):
 
 reqs = []
 for f in sorted(glob.glob(os.path.join(CASES, "*.json"))):
+    if os.path.basename(f).startswith("err_"):  # contract 0.2 error cases: invalid requests stay errors
+        continue
     r = json.load(open(f))
     r["x"]["values"] = []
     reqs.append(r)

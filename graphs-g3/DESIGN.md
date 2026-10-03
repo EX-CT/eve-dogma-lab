@@ -110,6 +110,23 @@ f7aa4cb..3357471 returned `INTERNAL` (an AxisError) on the time-axis and time-pa
 `--no-cache`), through `graph-batch`, `graph` and `serve-stdio`. Every non-empty request is unchanged: the identity
 check still passes all 3285 stress requests.
 
+## Contract 0.2
+
+- Validation follows the 0.2 precedence: structural `BAD_REQUEST` (graph / fit / x / x.values / y, empty y), then
+  `UNKNOWN_GRAPH`, `BAD_AXIS` (axis, y, and (x, y) pairs such as `ecm_burst` `tgt_dps` × `tgt_lock_time_s`), the enums
+  (`target.resist_mode`, `settings.mobile_drone_mode`, `params.ammo_quality` → `BAD_REQUEST`), and last
+  `UNKNOWN_TYPE` (source fit first, then `target.fit`).
+- `target.fit` is built once per request through the fit cache under its own key (the canonical target
+  FitRequest), so source and target contexts never alias. ewar: per-y resistance attribute
+  (`clamp(1 − attr, 0, 1)`, 0 / missing → 1), explicit `params.resist` wins, `disallowOffensiveModifiers` zeroes all
+  but `neut_gj_s`. remote_reps: × `remoteRepairImpedance`, 0 with `disallowAssistance`.
+- Clamps: ewar `resist` 0..1 and the `time_s` param 0..2500 (damage, remote_reps). These were 0.1 bugs too.
+- Damage `tgt_speed_pct` / `tgt_sig_pct` are normalised to m/s and m and then follow the absolute-axis paths.
+  An infinite-signature target gives `null` for `tgt_sig_pct`.
+- `ecm_burst` (`simple.ecm_burst`): damp multiplier `calculateMultiplier` over modules/drones (range ignored), and
+  stats-panel EHP / weapon dps / drone + fighter dps from variant G's `FitStats`.
+- Identity: the 3285 stress requests (all 0.1-valid) are still byte-identical to f7aa4cb.
+
 ## Known limits / next steps
 
 - The cold path is dominated by variant G's fit calculation, which is not modified on this branch.

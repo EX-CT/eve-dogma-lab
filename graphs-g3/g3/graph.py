@@ -18,6 +18,7 @@ AXES = {
     "mobility": {"time_s": ("speed_mps", "distance_m", "momentum_kg_mps", "bump_speed_mps", "bump_distance_m")},
     "warp_time": {"distance_m": ("time_s",)},
     "lock_time": {"tgt_sig_m": ("time_s",)},
+    "ecm_burst": {"tgt_scan_res_mm": simple.ECM_Y, "tgt_dps": ("src_damage",)},
 }
 RESIST_MODES = ("auto", "shield", "armor", "hull", "weighted_average")
 DRONE_MODES = ("auto", "follow_attacker", "follow_target")
@@ -126,6 +127,8 @@ class Engine:
             out = simple.shield_regen(self, fit, c, xs, ys, params, settings, axis)
         elif gname == "capacitor":
             out = simple.capacitor(self, fit, c, xs, ys, params, settings, axis)
+        elif gname == "ecm_burst":
+            out = simple.ecm_burst(self, fit, c, xs, ys, params, settings, axis)
         elif gname == "ewar":
             out = simple.ewar(self, fit, c, xs, ys, params, settings, tctx)
         elif gname == "remote_reps":

@@ -1,11 +1,11 @@
 # G3: vectorised grid engine for the Pyfa graphs (round 2)
 
-G3 implements the round-2 graph contract (`eve-dogma-bench@graphs-round2`, `graphs/CONTRACT-GRAPHS.md`, draft 0.1)
-on top of variant G's dogma engine (`../variant-g`, untouched). It covers all 9 Pyfa graphs: damage,
-application_profile, mobility, lock_time, warp_time, shield_regen, capacitor, ewar and remote_reps.
+G3 implements the round-2 graph contract (`eve-dogma-bench@graphs-round2`, `graphs/CONTRACT-GRAPHS.md`, revision 0.2)
+on top of variant G's dogma engine (`../variant-g`, untouched). It covers all 10 graphs: damage,
+application_profile, mobility, lock_time, warp_time, shield_regen, capacitor, ewar, remote_reps and ecm_burst.
 
-**Status: 111/111 cases and 1843/1843 sample values correct** (bench `graphs-round2` @ b010e97). The details are
-in `bench/scorecard.md`.
+**Status: 178/178 cases and 2437/2437 sample values correct** (contract 0.2, bench `graphs-round2` @ fbcfd2d; 0.1:
+111/111 @ b010e97). The details are in `bench/scorecard.md`.
 
 ## Usage
 

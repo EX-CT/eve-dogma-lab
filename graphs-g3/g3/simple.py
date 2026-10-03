@@ -639,3 +639,66 @@ def remote_reps(eng, req, c, xs, ys, params, settings, axis, tctx=None):
             imp = 1.0 if imp is None else float(imp)
         out = {k: v * imp for k, v in out.items()}
     return {k: np.where(bad, NAN, out[k]) for k in ys}
+
+
+# ---------------------------------------------------------------- ecm burst (contract 0.2)
+ECM_DAMP_EFFECTS = ("remoteSensorDampFalloff", "structureModuleEffectRemoteSensorDampener", "doomsdayAOEDamp")
+ECM_Y = ("src_damage", "tgt_lock_time_s", "tgt_lock_uptime_s")
+
+
+def _damp_mult_scanres(c):
+    """Pyfa Fit.getDampMultScanRes: one stacking group, range ignored"""
+    rows = []
+    for i in c.active_modules():
+        if any(e in c.effs(i) for e in ECM_DAMP_EFFECTS):
+            rows.append(1 + c.g(i, "scanResolutionBonus") / 100.0)
+    for i, n in c.active_drones():
+        if "remoteSensorDampEntity" in c.effs(i):
+            rows.extend([1 + c.g(i, "scanResolutionBonus") / 100.0] * n)
+    if not rows:
+        return 1.0
+    return float(stack_mult(np.array(rows, float).reshape(-1, 1))[0])
+
+
+def ecm_burst(eng, req, c, xs, ys, params, settings, axis):
+    x = np.asarray(xs, float)
+    n = len(x)
+    apply_damps = params.get("apply_damps", True) is not False
+    apply_drones = params.get("apply_drones", True) is not False
+    m = _damp_mult_scanres(c) if apply_damps else 1.0
+    sig = c.g(c.ship, "signatureRadius")
+    if axis == "tgt_scan_res_mm":
+        sr, dps = x, np.full(n, _num(params, "tgt_dps", 200.0))
+        bad = x < 1
+    else:
+        sr, dps = np.full(n, _num(params, "tgt_scan_res_mm", 700.0)), x
+        bad = np.zeros(n, bool)
+    bad = bad | (sr < 1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        lock = np.minimum(40000.0 / (np.where(bad, 1.0, sr) * m) / math.asinh(sig) ** 2, 1800.0)
+    out = {"tgt_lock_time_s": np.where(bad, NAN, lock),
+           "tgt_lock_uptime_s": np.where(bad, NAN, np.maximum(0.0, 30.0 - lock))}
+    if "src_damage" in ys:
+        st = c.stats()
+        ehp = st["defense"]["ehp"]["total"]
+        off = st["offense"]["total"]
+        wdps = off["weapon_dps"]
+        ddps = (off["drone_dps"] + off["fighter_dps"]) if apply_drones else 0.0
+        adj = _num(params, "uptime_adj_s", 1.0)
+        reps = int(_num(params, "uptime_amount_limit", 3.0))
+        dmg = np.full(n, NAN)
+        for k in range(n):
+            if bad[k] or not dps[k] > 0:
+                continue
+            up = max(0.0, 30.0 - lock[k] - adj)
+            down = 30.0 - up
+            rem, tot = ehp, 0.0
+            for _ in range(reps):
+                alive = down + min(up, rem / dps[k])
+                rem -= up * dps[k]
+                tot += alive * wdps + max(0.0, alive - 3) * ddps
+                if rem <= 0:
+                    break
+            dmg[k] = tot
+        out["src_damage"] = dmg
+    return {k: out[k] for k in ys}
