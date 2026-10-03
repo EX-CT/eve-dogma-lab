@@ -821,7 +821,7 @@ def application(c, tgt, settings, D, d, tv, sig, n, atk_speed, atk_angle, tgt_an
             df = np.ones(n) if d is None else np.where(d <= lo, 1.0, np.where(d <= hi, hc, 0.0))
             rm = 1.0
             if tgt.fit is not None:
-                rm = tgt.fit.g(tgt.fit.ship, "breacherPodDamageResistance") if tgt.fit.has(tgt.fit.ship, "breacherPodDamageResistance") else 1.0
+                rm = _ship_attr_or(tgt.fit, "breacherPodDamageResistance", 1.0)
             a = np.where(lock, df * rm, 0.0)
     elif k == "smartbomb":
         r = c.max_range(i)
@@ -875,6 +875,19 @@ def application(c, tgt, settings, D, d, tv, sig, n, atk_speed, atk_angle, tgt_an
     else:
         return np.zeros(n)
     return unerr(a)
+
+
+def _ship_attr_or(f, name, default):
+    """Pyfa ship.getModifiedItemAttr(name, default): a type without the attribute still gets the attribute's SDE
+    default value (e.g. fighterAbilityAntiCapitalMissileResistance 0.1 on sub-capitals); `default` only when the
+    attribute is unknown"""
+    if f.has(f.ship, name):
+        return f.g(f.ship, name)
+    aid = f.ds.attr_by_name.get(name)
+    if aid is None:
+        return default
+    v = f.v.get(f.ship, aid)
+    return default if v is None else v
 
 
 def _bomb_factor(er, sig):
@@ -947,7 +960,7 @@ def _fighter_mult(c, tgt, settings, D, d, tv, sig, n):
         if rid:
             nm = c.ds.attr_name.get(int(rid))
             if nm is not None:
-                rm = tgt.fit.g(tgt.fit.ship, nm) if tgt.fit.has(tgt.fit.ship, nm) else 1.0
+                rm = _ship_attr_or(tgt.fit, nm, 1.0)
     return rfv * mf * rm
 
 

@@ -147,6 +147,11 @@ bonuses, so the wrong torpedo won against resist-weighted targets. Such a type i
 it, with that charge loaded through the fit cache. Stress outputs are unchanged. `tests/test_fuzz_regressions.py` pins both
 findings to the Pyfa oracle values.
 
+Third fuzz finding (fz0468-9fcc3817): a target-fit resistance attribute the target type doesn't carry was taken
+as 1. Pyfa's `getModifiedItemAttr(name, 1)` returns the attribute's SDE default, e.g.
+`fighterAbilityAntiCapitalMissileResistance` = 0.1 for Mantis torpedo salvos against sub-capitals
+(`damage._ship_attr_or`). 9 stress outputs changed, and 9/9 now match the Pyfa oracle (0/9 before).
+
 ## Known limits / next steps
 
 - The cold path is dominated by variant G's fit calculation, which is not modified on this branch.
