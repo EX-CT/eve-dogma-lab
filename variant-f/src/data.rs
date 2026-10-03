@@ -95,6 +95,10 @@ pub fn type_by_name(name: &str) -> Option<u32> {
 }
 
 #[inline]
+/// Size of the attribute-id space (max id + 1).
+pub fn attr_space() -> usize {
+    ATTR_DEFAULT.len()
+}
 pub fn attr_default(a: u16) -> f64 {
     ATTR_DEFAULT.get(a as usize).copied().unwrap_or(0.0)
 }

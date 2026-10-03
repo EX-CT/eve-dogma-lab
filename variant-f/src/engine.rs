@@ -138,6 +138,8 @@ pub struct Fit {
     folded: Vec<(u16, u8)>,
     /// projected fits: (fit, amount, distance)
     ext: Vec<(Fit, u32, Option<f64>)>,
+    /// direct attr -> slot table for items 0 and 1 (ship, character: ~160 modified attrs each); NONE = absent
+    dense: Vec<u32>,
     /// incoming remote repairs (Pyfa RR lists): kind 0 shield / 1 armor / 2 hull, amount per cycle, cycle s
     pub rr: Vec<(u8, f64, f64)>,
     /// incoming cap drains/fills (neuts, nos, transfers) for the cap simulation
@@ -221,6 +223,33 @@ fn range_of(v: &[(u32, u32)], key: u32) -> std::ops::Range<usize> {
     lo..hi
 }
 
+thread_local! {
+    /// recycled `Fit::dense` tables (all entries NONE): a fresh 2 x attr_space table per calc would cost a 52 KB memset
+    static DENSE_POOL: std::cell::RefCell<Vec<Vec<u32>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn take_dense() -> Vec<u32> {
+    DENSE_POOL.with(|p| p.borrow_mut().pop()).unwrap_or_else(|| vec![NONE; 2 * d::attr_space()])
+}
+
+impl Drop for Fit {
+    fn drop(&mut self) {
+        let mut dense = std::mem::take(&mut self.dense);
+        if dense.is_empty() {
+            return;
+        }
+        let sp = d::attr_space();
+        for i in 0..self.items.len().min(2) {
+            for &(attr, _) in &self.items[i].dyn_attrs {
+                if (attr as usize) < sp {
+                    dense[i * sp + attr as usize] = NONE;
+                }
+            }
+        }
+        let _ = DENSE_POOL.try_with(|p| p.borrow_mut().push(dense));
+    }
+}
+
 impl Fit {
     fn new_item(&mut self, type_id: u32, kind: Kind, loc: Loc, path: &str) -> Result<usize, EngineError> {
         let ty = d::type_index(type_id).ok_or_else(|| EngineError {
@@ -259,6 +288,14 @@ impl Fit {
     // ------------------------------------------------------------ attribute storage
     #[inline]
     fn slot_of(&self, i: usize, attr: u16) -> Option<u32> {
+        if i < 2 {
+            let sp = d::attr_space();
+            if (attr as usize) < sp {
+                let s = self.dense[i * sp + attr as usize];
+                return if s == NONE { None } else { Some(s) };
+            }
+            return self.items[i].dyn_attrs.iter().find(|x| x.0 == attr).map(|x| x.1);
+        }
         let v = &self.items[i].dyn_attrs;
         if v.is_empty() {
             return None;
@@ -268,6 +305,19 @@ impl Fit {
 
     /// Set (or replace) the base value of an attribute on an item.
     pub fn set_base(&mut self, i: usize, attr: u16, base: f64) {
+        if i < 2 {
+            match self.slot_of(i, attr) {
+                Some(s) => {
+                    self.slots[s as usize] = Slot_ { base, head: NONE, n: 0, val: Cell::new(0.0), st: Cell::new(0) };
+                }
+                None => {
+                    self.slots.push(Slot_ { base, head: NONE, n: 0, val: Cell::new(0.0), st: Cell::new(0) });
+                    let s = (self.slots.len() - 1) as u32;
+                    self.dense_insert(i, attr, s);
+                }
+            }
+            return;
+        }
         match self.items[i].dyn_attrs.binary_search_by_key(&attr, |x| x.0) {
             Ok(k) => {
                 let s = self.items[i].dyn_attrs[k].1 as usize;
@@ -281,7 +331,31 @@ impl Fit {
         }
     }
 
+    /// Record a new slot for item 0/1: dense table (+ unsorted id list for `attr_ids`).
+    fn dense_insert(&mut self, i: usize, attr: u16, s: u32) {
+        let sp = d::attr_space();
+        if (attr as usize) < sp {
+            self.dense[i * sp + attr as usize] = s;
+        }
+        let da = &mut self.items[i].dyn_attrs;
+        if da.capacity() == 0 {
+            da.reserve(160);
+        }
+        da.push((attr, s));
+    }
+
+    #[inline]
     fn ensure(&mut self, i: usize, attr: u16) -> usize {
+        if i < 2 {
+            if let Some(s) = self.slot_of(i, attr) {
+                return s as usize;
+            }
+            let base = d::type_attr(self.items[i].ty, attr).unwrap_or_else(|| d::attr_default(attr));
+            self.slots.push(Slot_ { base, head: NONE, n: 0, val: Cell::new(0.0), st: Cell::new(0) });
+            let s = self.slots.len() - 1;
+            self.dense_insert(i, attr, s as u32);
+            return s;
+        }
         match self.items[i].dyn_attrs.binary_search_by_key(&attr, |x| x.0) {
             Ok(k) => self.items[i].dyn_attrs[k].1 as usize,
             Err(k) => {
@@ -290,7 +364,7 @@ impl Fit {
                 let s = self.slots.len() - 1;
                 let da = &mut self.items[i].dyn_attrs;
                 if da.capacity() == 0 {
-                    da.reserve(if i < 2 { 160 } else { 24 });
+                    da.reserve(24);
                 }
                 da.insert(k, (attr, s as u32));
                 s
@@ -794,6 +868,7 @@ impl Fit {
             restrict: false,
             folded: Vec::with_capacity(d::PUBLISHED_SKILLS.len()),
             ext: Vec::new(),
+            dense: take_dense(),
             rr: Vec::new(),
             ext_drains: Vec::new(),
             ext_ecm: Vec::new(),
