@@ -1,5 +1,6 @@
-a) corpus: 111 requests, 1274 points; cold-cache 318 ms = 4,010 points/s; warm-cache 45.2 ms = 28,214 points/s
-b) dense damage/distance 500 pts (kronos): cold fit 3.3 ms, warm fit 0.42 ms
-d) damage/distance 100k pts warm: 52 ms = 1,905,090 points/s (incl. JSON-ready lists)
-c) cold start + one damage request (process wall): 184 ms
+a) corpus: 111 requests, 1274 points; cold-cache 254 ms = 5,025 points/s; warm-cache 28.6 ms = 44,566 points/s
+b) dense damage/distance 500 pts (kronos): cold fit 3.2 ms, warm fit 0.33 ms
+d) damage/distance 100k pts warm: 32 ms = 3,135,439 points/s (incl. JSON-ready lists)
+f) time axis, 500 points, warm fit: 33 requests, total 12.3 ms = 1,337,073 points/s; slowest dmg_time_kestrel_breacher 2.2 ms, dmg_time_hyperion_reload 1.4 ms, dmg_time_rifter 1.2 ms
+c) cold start + one damage request (process wall): 181 ms
 e) --no-cache identical output: 111/111

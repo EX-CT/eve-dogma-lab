@@ -72,8 +72,35 @@ Application profile specifics:
 Kernels use the same IEEE operations as the scalar formulas, in the same order (`**` → C `pow`, `floor`, `sin`), so
 results match Pyfa well within the 1e-4 relative tolerance. `unerr` reproduces G's `float_unerr` exactly, branch-free.
 
+## Time-axis evaluation (vectorised)
+
+The schedule of each dealer is still built once by a scalar walk over the cycles, since reload and spool are
+sequential. That walk memoises identical (volleys, duration) segments and their comparison keys, and skips spool
+work for modules that don't spool. Everything after it is array code, cached per time cache in `Ctx.memo`:
+
+- `_Entries` holds one dealer column: the change times (pre-`unerr`ed), the entry 4-vectors (dps, volley, or
+  running damage sums) and the resisted vectors per resist profile.
+  - Running sums use the same left-to-right float additions as chaining `Dmg.plus`.
+  - They are built in one pass instead of materialising one `Dmg` per entry.
+- A query is one `searchsorted` per dealer on the shared `unerr(t)`, a row gather of the resisted table, and
+  `sum(axis=1) * application`.
+- Breacher ticks become [entries × ticks × L] tensors (absolute, relative, present).
+  - For running sums they are filled incrementally: each increment sets its slot for all later entries.
+  - Per request, each dealer's ticks are evaluated as one [points × ticks] block. Python `min`/`max` semantics are
+    kept with `where(y < x, y, x)`, which matters for NaN when hp is infinite.
+  - Ticks merge into a global [points × ticks] matrix with a running max.
+  - Tick columns are summed in first-visit order via `add.accumulate`, the same sequential order as the scalar loop.
+- Application-profile bisections for all charge changes run as one batch per bisection step. This is valid because
+  the current charge at grid point j is always the grid best at j−1.
+
+Output identity was the rule for this work: every change is checked byte-for-byte against f7aa4cb on 3285 stress
+requests, plus the corpus and the 1.8.0 stats gate.
+
 ## Known limits / next steps
 
-- Small time-axis requests (~6–10 ms warm) are dominated by Python-level schedule handling. They could be moved to
-  NumPy event arrays.
+- The cold path is dominated by variant G's fit calculation, which is not modified on this branch.
+- The mobile-drone web speed model (drones chasing the target) still loops over points in Python, but costs well
+  under 1 ms at 500 points.
+- An empty `x.values` list on a time axis still returns `INTERNAL` (an AxisError), as in f7aa4cb. It was kept for
+  output identity and can be fixed once identity with the old version is no longer required.
 - The extra 2-D `x2` heat-map axis from the plan is not implemented. The scorer ignores it.

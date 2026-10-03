@@ -32,19 +32,24 @@ python3 <lab>/graphs-g3/bench/perf.py <dataset.json.gz> graphs/cases   # perf fi
 ## Performance
 
 Measured 2026-10-03 on the shared 8-core box (Python 3.13, NumPy 2.5), taking the CPU-time minimum of several runs.
+Before/after figures and the commit list are in `bench/perf-history.md`; the raw output is in
+`bench/perf-latest.txt`.
 
 | metric | value |
 |---|---|
-| corpus, 111 requests / 1274 points, cold fit cache (in-process) | 318 ms → ~4.0 k points/s |
-| corpus, warm fit cache | 45 ms → ~28 k points/s |
-| `run_graphs.py` wall time, one `graph-batch` process incl. start-up | 0.55 s |
-| dense damage vs distance, 500 points (Kronos): cold fit / warm fit | 3.3 ms / 0.42 ms |
-| damage vs distance, 100 k points, warm fit | 52 ms → ~1.9 M points/s |
-| cold start + one damage request (process wall) | ~180 ms |
-| `--no-cache` output identical to cached output | 111/111 |
+| corpus, 111 requests / 1274 points, cold fit cache (in-process) | 254 ms → ~5.0 k points/s |
+| corpus, warm fit cache | 29 ms → ~45 k points/s |
+| dense damage vs distance, 500 points (Kronos): cold fit / warm fit | 3.2 ms / 0.33 ms |
+| damage vs distance, 100 k points, warm fit | 31 ms → ~3.2 M points/s |
+| all 33 time-axis cases at 500 points, warm fit | 12.3 ms → ~1.3 M points/s (was 156 k) |
+| cold start + one damage request (process wall; NumPy import ≈ 170 ms) | ~180 ms |
+| `--no-cache` output identical to cached output | 111/111 (plus 3285 stress requests) |
 
-Small requests are dominated by per-request overhead such as validation, target set-up and time-axis schedules.
-Large distance, speed and signature grids run at NumPy speed.
+Cold requests are dominated by variant G's fit calculation (~3–4 ms per fit). Warm small requests are dominated by
+per-request overhead (validation, fit-key hashing, target set-up).
+
+`bench/identity_check.sh DATASET CASES [BASE]` is the output-identity gate used for the perf work: it compares
+3285 stress requests against a base commit, with byte-identical output required.
 
 Architecture, the cache and the Pyfa mapping are described in `DESIGN.md`. This is a behavioural reimplementation:
 no Pyfa code is copied.
