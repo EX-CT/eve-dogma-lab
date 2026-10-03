@@ -15,7 +15,7 @@ This produces one self-contained native executable, `bin/eve-dogma-k` (about 4.7
 ## Run
 
 ```sh
-DS=/workspace/exct-eve/data/dataset-3569502.json.gz
+DS=/path/to/dataset-3569502.json.gz      # release asset of EX-CT/eve-sde-pipeline
 ./bin/eve-dogma-k --dataset $DS calc < request.json > response.json     # one FitRequest -> FitStats
 ./bin/eve-dogma-k --dataset $DS batch < requests.jsonl > stats.jsonl    # JSONL in, JSONL out (one line per request)
 ./bin/eve-dogma-k --dataset $DS serve-stdio                             # JSONL RPC: calc | eft_parse | eft_export | search | type | meta
@@ -42,6 +42,6 @@ Bench integration is in `bench.yaml` (`build`, `cmd`, `batch_cmd`, `rpc_cmd` wit
 
 ## License
 
-This is an LGPL-3.0-or-later derivative (see `LICENSE`). The engine logic is ported from the reference engine eve-dogma-rs (LGPL).
+This is an LGPL-3.0-or-later derivative (see `LICENSE`; the GPL-3.0 text it builds on is in `LICENSE.GPL-3.0`). The engine logic is ported from the reference engine eve-dogma-rs (LGPL).
 The Reactive Armor Hardener, capacitor simulator, missile range, remote-repair diminishing returns and sustainable tank formulas
 re-implement Pyfa/eos (LGPL) through that reference. No GPL code was copied.

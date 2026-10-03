@@ -2,15 +2,18 @@
 """Full-output diff of variant K against the reference engine (variant A), over a set of FitRequest JSON files.
    python3 tools/compare_ref.py [--k CMD] [--ref CMD] [glob ...]
 Compares every field (numbers with the bench tolerance), prints a per-case summary and the first diffs."""
-import argparse, glob, json, subprocess, sys
+import argparse, glob, json, os, subprocess, sys
 
-DS = "/workspace/exct-eve/data/dataset-3569502.json.gz"
+# Paths come from the environment (no machine-specific defaults): EVE_DOGMA_DATASET, EVE_DOGMA_REF_BIN, EVE_DOGMA_BENCH.
+DS = os.environ.get("EVE_DOGMA_DATASET", "dataset-3569502.json.gz")
+REF = os.environ.get("EVE_DOGMA_REF_BIN", "eve-dogma")
+BENCH = os.environ.get("EVE_DOGMA_BENCH", "../eve-dogma-bench")
 ap = argparse.ArgumentParser()
 ap.add_argument("--k", default=f"./bin/eve-dogma-k --dataset {DS} batch")
-ap.add_argument("--ref", default=f"/workspace/exct-eve/eve-dogma-rs/target/release/eve-dogma --dataset {DS} batch")
+ap.add_argument("--ref", default=f"{REF} --dataset {DS} batch")
 ap.add_argument("--show", type=int, default=8)
 ap.add_argument("--ignore", default="/meta/engine")
-ap.add_argument("globs", nargs="*", default=["/workspace/exct-eve/eve-dogma-bench/cases/*.json"])
+ap.add_argument("globs", nargs="*", default=[os.path.join(BENCH, "cases", "*.json")])
 a = ap.parse_args()
 files = sorted(f for g in a.globs for f in glob.glob(g))
 reqs = [json.dumps(json.load(open(f))) for f in files]
