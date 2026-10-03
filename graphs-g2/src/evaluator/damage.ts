@@ -36,7 +36,7 @@ const drfExp = (rf?: number, rs?: number) => (rf && rs && rs !== 1 ? Math.log(rf
 const v4 = (o: any) => [o?.em ?? 0, o?.thermal ?? 0, o?.kinetic ?? 0, o?.explosive ?? 0];
 
 /** Missile flight range data: lower / higher range and the chance to reach the higher one. */
-function missileRanges(ship: FitPrim, charge: Record<string, number>, fofLimit: number | null) {
+export function missileRanges(ship: FitPrim, charge: Record<string, number>, fofLimit: number | null) {
   const vel = charge.maxVelocity ?? 0;
   if (vel <= 0) return { lo: 0, hi: 0, chance: 0 };
   const radius = ship.ship.attrs.radius ?? 0;
@@ -413,6 +413,11 @@ function mergeDealers(ds: Dealer[]): Dealer[] {
 }
 
 export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> | null = null): Record<string, (number | null)[]> {
+  return prepareDamage(req, p, only)(req.x.values);
+}
+
+/** Damage model set up once for (request, primitives); the returned function evaluates any distance list. */
+export function prepareDamage(req: GraphRequest, p: Primitives, only: Set<number> | null = null): (xs: number[]) => Record<string, (number | null)[]> {
   const settings = { ignore_resists: true, apply_projected: true, ignore_lock_range: true, ignore_drone_control_range: false, mobile_drone_mode: "auto", ...(req.settings ?? {}) };
   const prm = req.params ?? {};
   const src = p.source;
@@ -529,9 +534,10 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
     if (!ptCache.has(x)) ptCache.set(x, point(x));
     return ptCache.get(x)!;
   };
+  return (xs: number[]) => {
   const out: Record<string, (number | null)[]> = {};
   for (const y of req.y) out[y] = [];
-  for (const x of req.x.values) {
+  for (const x of xs) {
     let pt = pointC(x);
     // application_profile: the target's speed / signature after projected effects is sampled on a distance grid
     // and linearly interpolated between grid nodes (observed Pyfa behaviour, see DESIGN.md)
@@ -592,4 +598,5 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
     }
   }
   return out;
+  };
 }

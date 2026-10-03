@@ -71,23 +71,31 @@ fit* with the correct stacking penalty (Pyfa's "extended" attributes) without th
   those modules count (drones, smartbombs, bombs, vorton projectors and other weapons are excluded; command
   bursts and scripted EWAR modules are not weapons). Spool-up weapons count unspooled; lock range is ignored.
 - Candidates: published, on-market charges of the module's charge groups with matching charge size and volume ≤
-  capacity. Tiers: `t1` = Tech I meta group; `navy` = everything except the top faction tier (the +20 % damage
-  pirate charges: Dread Guristas, Guardian, True Sansha, Dark Blood, Domination), so Tech II, empire navy (+15 %)
-  and the lower pirate tier (+10 %, e.g. Shadow, Guristas, Arch Angel; the only faction XL hybrids besides the top
-  tier) stay; `all` = everything.
+  capacity. Tiers (the bench's 0.3 proposal, graphs/pending.md item 6, confirmed with the oracle): `t1` = meta group 1
+  or none (e.g. Baryon Exotic Plasma, Triglavian XL); `navy` = t1 + Tech II + faction charges whose name starts with
+  "Imperial Navy " / "Republic Fleet " / "Caldari Navy " / "Federation Navy ", or for "… XL" charges "Sansha " /
+  "Arch Angel " / "Shadow " (so "Sanshas Radio XL", Blood XL and the lower pirate sub-cap tier are *not* navy);
+  `all` = everything; if no candidate has a meta group the tier filter is skipped.
 - The engine rebuilds the fit with each candidate loaded into every module of the group and exports the changed
-  module primitives and offense stats; the evaluator runs the damage model per variant and keeps the max.
-- The target's speed and signature after the source's webs / painters are **sampled on a distance grid** and
-  interpolated linearly between grid nodes: a 0-falloff web ending at 10 km fades out linearly up to the next node.
-  Grid = 250 steps over the profile's reach rounded up to 25 km; reach = the longest turret optimal + 2 × falloff
-  over every loadable charge, or for launchers the longest missile flight (velocity × flight time) over the
-  charges of the requested tier. This was derived from black-box probes of the oracle and is checked by `tools/check_probes.py`
-  (`testdata/oracle-probes.jsonl`: 319 extra 0.1 oracle requests, 7493 values: web ranges, other webs, overheat,
-  tiers, random application profiles, random damage requests (all axes, settings, drone modes, targets) and
-  random requests of the other seven graphs on every corpus fit): 7486/7493 correct; the 7 misses are the crossover case below.
-- Known deviation: very close to a charge crossover inside an interpolated stretch Pyfa sometimes keeps the
-  previous charge for a few metres (e.g. Hyperion navy tier at 10 006–10 011 m it keeps Void, we switch to Caldari
-  Navy Antimatter at 10 006 m, which is 1 % higher). Not in the corpus; noted for the contract discussion.
+  module primitives and offense stats; the evaluator runs the damage model per variant.
+- **Charge choice is not a per-point max** (observed, matches the oracle exactly; `chargeTransitions` in app.ts):
+  per module type, the best charge by applied volley is determined at 0, step, 2·step … up to the type's reach, with
+  step = max(100, ⌈reach/300/100⌉·100) m; turret reach = trunc(max charged optimal + max charged falloff × 3.1),
+  launcher reach = the longest "higher" flight range (⌈flight time⌉, minus ship radius). When the best charge changes
+  between two scan points, the switch distance is bisected to ≤ 10 m (integer midpoints) and the new charge applies
+  from the upper bound; beyond the reach the last charge stays (Revelation at 150 km keeps Radio XL); for launchers
+  the scan stops, and damage is 0 from there, once the best volley is < 0.01. A charge that is only best between
+  two scan points is never picked. This replaces 0.1's per-point max and removes its known deviation (Hyperion navy
+  at 10 006–10 011 m).
+- The target's speed and signature after the source's webs / painters / scram are **sampled on a distance grid** and
+  interpolated linearly between grid nodes: step = max(100, ⌈R/300/100⌉·100) m with R = max over the dominant
+  modules of trunc(base optimal × the tier's longest weaponRangeMultiplier + base falloff × 3.1) (base = the
+  module's value with the loaded charge's multipliers divided out) for turrets, or the longest higher flight range for
+  launchers (pending.md item 5). (0.1 used ⌈X/25 km⌉·100 m, which coincides for short-reach fits.)
+- Checked by `tools/check_probes.py` (`testdata/oracle-probes.jsonl`, 583 extra oracle requests / 11 094 values:
+  319 from 0.1 (web ranges, other webs, overheat, tiers, random application profiles, random damage and other-graph
+  requests on every corpus fit) + 264 for 0.2): **all correct**, and the bench's `graphs/pending/probes-0.3.jsonl`
+  (48 probes / 1367 values: sentries, breachers, bombs, fighters, app grid, navy tier): **1367/1367**.
 - `<y>_charge_type_id`: the first (lowest type id) charge with the best value; informational (ties).
 
 ### Contract 0.2 additions
@@ -138,17 +146,17 @@ observation of the Pyfa oracle; no Pyfa (GPL) graph code was copied or translate
 
 | metric | value |
 |---|---|
-| corpus via `graph-batch` (0.2: 178 requests, 2437 points; engine + evaluator, incl. process start) | 1.3 s |
-| corpus via RPC `graph` (`bin/serve-stdio`, one session) | 1.1 s |
-| corpus via single `bin/graph` (one engine start + dataset load per request) | 70 s |
+| corpus via `graph-batch` (0.2: 178 requests, 2437 points; engine + evaluator, incl. process start) | 0.9 s |
+| corpus via RPC `graph` (`bin/serve-stdio`, one session) | 0.8 s |
+| corpus via single `bin/graph` (one engine start + dataset load per request) | 34–70 s |
 | engine `graph-primitives` for the corpus (incl. dataset load) | 0.55 s |
 | evaluator only, replaying cached primitives (`--eval-only`) | 0.33 s incl. Node start |
-| evaluator only, in-process (`bench/perf.mjs`) | ~90 k points/s, ~5.5 k requests/s |
-| dense interactive: `damage` vs distance, 500 points, evaluator only | ~0.45 ms |
-| dense `application_profile`, 500 points, 50 charges | ~14–19 ms (identical weapons merged, target geometry shared across charges) |
+| evaluator only, in-process (`bench/perf.mjs`, 0.2 corpus) | ~38 k points/s, ~2.4 k requests/s (0.1 corpus: ~90 k points/s); application_profile charge scans dominate |
+| dense interactive: `damage` vs distance, 500 points, evaluator only | ~0.35–0.45 ms |
+| dense `application_profile`, 500 points, 50 charges | ~8 ms (damage model prepared once per charge, charge scan per weapon type, only the chosen charge evaluated per point) |
 | cold start + one dense damage request (engine + Node) | ~190 ms |
 | primitives JSON size | median 41 KB per request; application_profile up to 1.1 MB (one module set per charge) |
-| WASM engine (`GOOS=js GOARCH=wasm`, 11.6 MB) + evaluator, whole corpus | 0.2: 178/178, 6.6 s (WASM start + dataset load per batch) |
+| WASM engine (`GOOS=js GOARCH=wasm`, 11.6 MB) + evaluator, whole corpus | 0.2: 178/178, 6.9 s (WASM start + dataset load per batch) |
 
 ## Layout / commands
 
