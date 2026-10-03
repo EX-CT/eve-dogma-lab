@@ -24,6 +24,31 @@ export function dampMultScanRes(p: Primitives): number {
   return stackMultiply(l);
 }
 
+/**
+ * Weapon dps as the ECM burst graph sees it (black-box Pyfa behaviour, see DESIGN.md): the stats-panel module dps
+ * without spool-up (whatever the module's spool option), plus breacher pods at the largest active pod's
+ * dotMaxDamagePerTick per second (one DoT applies at a time; the %-of-HP part needs a target and is not counted).
+ */
+export function ecmWeaponDps(p: Primitives): number {
+  const off: any = p.source.stats.offense ?? {};
+  let dps: number = off.total?.weapon_dps ?? 0;
+  const byIndex = new Map(p.source.items.filter((it) => it.kind === "module").map((it) => [it.index, it]));
+  for (const w of off.weapons ?? []) {
+    const it = byIndex.get(w.module_index);
+    if (!it || !((it.attrs.damageMultiplierBonusMax ?? 0) > 0) || !it.volley || !(w.volley?.total > 0)) continue;
+    const unspooled = it.volley.reduce((a: number, b: number) => a + b, 0);
+    dps -= w.dps.total * (1 - unspooled / w.volley.total);
+  }
+  let breach = 0;
+  for (const it of p.source.items) {
+    if (it.kind !== "module" || (it.state !== "active" && it.state !== "overheated")) continue;
+    const c: any = (it as any).charge;
+    if (!c || !(c.effects ?? []).includes("dotMissileLaunching")) continue;
+    breach = Math.max(breach, c.attrs?.dotMaxDamagePerTick ?? 0);
+  }
+  return dps + breach;
+}
+
 export function ecmBurst(req: GraphRequest, p: Primitives): Record<string, (number | null)[]> {
   const prm = req.params ?? {};
   const scanResP: number = prm.tgt_scan_res_mm ?? 700;
@@ -34,7 +59,7 @@ export function ecmBurst(req: GraphRequest, p: Primitives): Record<string, (numb
   const sig = p.source.ship.attrs.signatureRadius ?? 0;
   const lock = (sr: number) => Math.min(40000 / (sr * m) / Math.asinh(sig) ** 2, 1800);
   const off: any = p.source.stats.offense?.total ?? {};
-  const weaponDps: number = off.weapon_dps ?? 0;
+  const weaponDps = ecmWeaponDps(p);
   const droneDps: number = (prm.apply_drones ?? true) ? (off.drone_dps ?? 0) + (off.fighter_dps ?? 0) : 0;
   const ehp: number = p.source.stats.defense?.ehp?.total ?? 0;
   const srcDamage = (sr: number, dps: number) => {

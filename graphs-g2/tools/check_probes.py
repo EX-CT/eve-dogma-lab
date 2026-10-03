@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Replay extra oracle probes (testdata/oracle-probes.jsonl: GraphRequest + Pyfa graph-oracle result per line,
-application_profile around web ranges/tiers plus random application_profile and damage requests on every corpus fit) through ./bin/graph-batch.
+application_profile around web ranges/tiers, random application_profile and damage requests on every corpus fit, and 0.2 sweeps: ecm_burst, damage %-axes, ewar/remote_reps vs target fits) through ./bin/graph-batch.
 Usage: tools/check_probes.py [--dataset D]   Tolerance as in the bench: max(1e-3, 1e-4*|want|)."""
 import json, subprocess, sys, os
 here = os.path.dirname(os.path.abspath(__file__))

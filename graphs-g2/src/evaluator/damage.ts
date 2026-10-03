@@ -499,7 +499,11 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
       void sl;
       const speedPct = tgtSpeedAbs !== null ? null : (prm.tgt_speed_pct ?? 100) / 100;
       const tgtSpeed = speedPct !== null ? maxSpeed * speedPct : tgtSpeedAbs! * (mv0 > 0 ? maxSpeed / mv0 : 1);
-      sig = req.x.axis === "tgt_sig_m" || req.x.axis === "tgt_sig_pct" ? tgtSigBase * stackMultiply(tpM) : foldExtended(fit.ship.stack.signatureRadius, tpM);
+      // tgt_sig_pct vs a fit: % of the target's signature in its current (e.g. scrammed) state, painted
+      sig =
+        req.x.axis === "tgt_sig_m" ? tgtSigBase * stackMultiply(tpM)
+        : req.x.axis === "tgt_sig_pct" ? (x / 100) * foldExtended(fit.ship.stack.signatureRadius, tpM)
+        : foldExtended(fit.ship.stack.signatureRadius, tpM);
       return { distance, time, tgtSpeed, sig };
     }
     const baseSpeed = tgtSpeedAbs !== null ? tgtSpeedAbs : ((prm.tgt_speed_pct ?? 100) / 100) * maxSpeed;
