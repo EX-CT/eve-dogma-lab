@@ -996,10 +996,15 @@ impl<'a> Fit<'a> {
             }
         }
         // skills
-        let mut have: rustc_hash::FxHashMap<u32, f64> = rustc_hash::FxHashMap::with_capacity_and_hasher(self.items.len(), Default::default());
-        for it in self.items.iter().filter(|i| i.kind == Kind::Skill) {
-            have.insert(it.type_id, it.base(crate::spec::ATTR_SKILL_LEVEL).unwrap_or(0.0));
+        // trained levels by skill type id (skills are registered in type-id order; sorted lookups)
+        let mut have: Vec<(u32, f64)> = self.items.iter().filter(|i| i.kind == Kind::Skill).map(|it| (it.type_id, it.base(crate::spec::ATTR_SKILL_LEVEL).unwrap_or(0.0))).collect();
+        if !have.windows(2).all(|w| w[0].0 < w[1].0) {
+            // keep the last entry per skill, like repeated map inserts
+            have.reverse();
+            have.sort_by_key(|x| x.0);
+            have.dedup_by_key(|x| x.0);
         }
+        let have_of = |s: u32| have.binary_search_by_key(&s, |x| x.0).map(|i| have[i].1).unwrap_or(0.0);
         let mut missing: Vec<(u32, f64, u32)> = Vec::new();
         for it in &self.items {
             if !matches!(it.kind, Kind::Ship | Kind::Module | Kind::Charge | Kind::Drone | Kind::Fighter | Kind::Implant | Kind::Booster) {
@@ -1012,7 +1017,7 @@ impl<'a> Fit<'a> {
                     continue;
                 }
                 let need = t.attr(*la).unwrap_or(1.0);
-                if *have.get(&s).unwrap_or(&0.0) < need && !missing.iter().any(|m| m.0 == s && m.1 >= need) {
+                if have_of(s) < need && !missing.iter().any(|m| m.0 == s && m.1 >= need) {
                     missing.push((s, need, it.type_id));
                 }
             }

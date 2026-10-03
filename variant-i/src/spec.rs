@@ -103,6 +103,8 @@ pub struct SpecCache {
     /// per skill: conditions under which one of its modifiers can reach an item (see `skill_relevant`)
     reach: FxHashMap<u32, Arc<Reach>>,
     levels: Option<(u8, Vec<(String, u8)>, Arc<Vec<(u32, u8, Arc<Reach>)>>)>,
+    level_specs: Vec<Option<Arc<ItemSpec>>>,
+    level_specs_for: Option<Arc<Vec<(u32, u8, Arc<Reach>)>>>,
 }
 
 /// When can a skill's modifiers reach something? `always`, or any listed group present / skill required.
@@ -414,7 +416,12 @@ pub fn build(ds: &Dataset, cache: &mut SpecCache, req: &FitRequest, proj_fit: &m
         }
     };
     let (need, groups) = fit_skill_context(ds, req);
-    for (s, l, r) in lv.iter() {
+    // resolved skill specs for this level list (parallel to `lv`), memoised with it
+    if b.cache.level_specs.len() != lv.len() || !b.cache.level_specs_for.as_ref().is_some_and(|p| Arc::ptr_eq(p, &lv)) {
+        b.cache.level_specs = vec![None; lv.len()];
+        b.cache.level_specs_for = Some(lv.clone());
+    }
+    for (li, (s, l, r)) in lv.iter().enumerate() {
         let (s, l) = (*s, *l);
         // perf (as Variant A): a skill whose modifiers can reach nothing in this fit is not instantiated
         if !need.contains(&s) {
@@ -423,6 +430,11 @@ pub fn build(ds: &Dataset, cache: &mut SpecCache, req: &FitRequest, proj_fit: &m
             }
         }
         let lvl = l.min(5);
+        if let Some(sp) = &b.cache.level_specs[li] {
+            b.items.push(sp.clone());
+            b.keys.push(ItemKey::Skill(s));
+            continue;
+        }
         let sp = match b.cache.skills.get(&(s, lvl)) {
             Some(sp) => sp.clone(),
             None => {
@@ -435,6 +447,7 @@ pub fn build(ds: &Dataset, cache: &mut SpecCache, req: &FitRequest, proj_fit: &m
                 sp
             }
         };
+        b.cache.level_specs[li] = Some(sp.clone());
         b.items.push(sp);
         b.keys.push(ItemKey::Skill(s));
     }
