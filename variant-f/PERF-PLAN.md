@@ -130,3 +130,19 @@ Lessons:
 | P15 | capsim: reuse the `key()` buffers on period wrap, the `good` Vec, and pre-size `EvHeap` | allocs in the hot loop; corpus capsim 23 % | corpus −2…−4 % | none |
 | P4 | mimalloc (native only) after P3/P12–P15, keep only if ≥ 3 % | measured −5…−7 % before | | none |
 | P2 | full streaming JSON writer | biggest remaining JSON cost: tree build + drop | −8…−12 µs rifter | low; larger refactor of `stats.rs` (44 `jv!` sites): do last |
+
+### Designs prepared during the quiet window (10:15–10:50 CST, code reading only)
+
+- **P14 (`jv!` exact capacity).** In the profile, the `RawVec<…>::grow_one` callers (≈ 133 grows per calc, ~5 % Ir with
+  `finish_grow` + realloc) are identical-code-folded `Vec` pushes. Most come from the `jv!{}` objects (`Vec::new()` + push per key).
+  Rewrite `jv_obj!`/`jv_arr!` as accumulators: munch `key: value` pairs into a token list, then emit one `vec![…]`,
+  which allocates once at the exact size. Values are still evaluated left to right, as before.
+- **P13 (`J::write` sorted check).** First test `o.windows(2).all(|w| w[0].0 < w[1].0)` (strict, so duplicate keys fall back to the
+  existing sort). If it holds, write in place without building the index array.
+- **P3 (`Fit` buffer pool).** Same pattern as the P1 table: `Drop for Fit` already exists. Recycle `items` (cleared), `slots` and `mods`
+  (capacities 700 / 2048 / 4096, ≈ 300 KB together, allocated and page-touched each calc) and `by_skill`/`by_group` through the
+  `thread_local!` pool. Nested `ext` fits use the same pool.
+- **P5b (skill loop).** `Fit::build` does `d::type_index(s)` + `PUBLISHED_SKILLS.binary_search(&s)` + an `overrides` scan for each of
+  ~435 skills. When `levels` is the untouched published list, `k` is the position. Small (≈ 1 %), zero risk.
+- **Not doing:** skipping skill modifiers that target ship attributes the hull doesn't read. Those slots appear in `attr_ids`
+  (`include_attributes` output), so eliding them would change output.
