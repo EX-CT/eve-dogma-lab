@@ -78,6 +78,8 @@ damage axes, ewar/RR target fits, empty `x.values`, and the error codes. Code: `
 
 Extra oracle probes (not part of 0.2 scoring), no code change needed:
 - G2's random probes (`graphs-g2/testdata/oracle-probes.jsonl`): 7493/7493.
+- The bench's unreleased 0.3 draft corpus (`graphs/draft-0.3/run_draft.py`, 191 cases / 2680 values): 191/191, 2680/2680
+  (batch and RPC).
 - The bench's pending 0.3 probes (`graphs/pending/probes-0.3.jsonl`: sentries in follow_target, breacher range, bomb
   reactivation gaps, fighters vs fast targets, application-profile projected-cache grid, XL navy tier): 1367/1367.
 
