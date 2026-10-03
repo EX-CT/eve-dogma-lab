@@ -135,3 +135,10 @@ database per request (INC_OK, FRESH_OK); EFT export 326/326; deterministic outpu
 - Callgrind for corpus x5: 4.617G -> 4.502G Ir (-2.5%). Wall time for corpus x5 was about 3-4% faster. Dev bench: 2077 fits/s.
 - Gates: 1.8.0 326/326 with byte-identical batch output, INC_OK and FRESH_OK, EFT 326/326. 1.9.0 331/331.
   Mutated suite 93/93, EFT export 93/93, EFT import 99/99.
+
+## 2026-10-03 ~11:05 CST: speed step 2
+- Salsa frame-keep threshold changed from 512 to 1024. Callgrind Ir for corpus x5: 4.502G -> 4.414G (-2.0%).
+  Measured thresholds: 64 4.538G, 256 4.538G, 384 4.538G, 512 4.502G, 1024 4.414G, 2048 4.580G, 4096 4.580G.
+- Wall-clock numbers are unreliable right now because the box is loaded (other agents are running).
+- Gates: 1.8.0 (own clone at 33db85a) 326/326 with byte-identical batch output, INC_OK and FRESH_OK, EFT 326/326.
+  1.9.0 331/331, EFT 331/331. Mutated suite 93/93, EFT export 93/93, EFT import 99/99.
