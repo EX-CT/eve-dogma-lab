@@ -20,6 +20,7 @@ AXES = {
     "lock_time": {"tgt_sig_m": ("time_s",)},
     "ecm_burst": {"tgt_scan_res_mm": simple.ECM_Y, "tgt_dps": ("src_damage",)},
 }
+TARGET_GRAPHS = ("damage", "application_profile", "ewar", "remote_reps")
 RESIST_MODES = ("auto", "shield", "armor", "hull", "weighted_average")
 DRONE_MODES = ("auto", "follow_attacker", "follow_target")
 AMMO_QUALITIES = ("t1", "navy", "all")
@@ -109,7 +110,7 @@ class Engine:
             if val is not None and val not in allowed:
                 raise GraphError("BAD_REQUEST", f"{val!r} is not one of {', '.join(allowed)}", path)
         c = self.cache.get(fit)
-        tfit = tgt.get("fit")
+        tfit = tgt.get("fit") if gname in TARGET_GRAPHS else None  # other graphs ignore `target`
         if tfit is not None:
             if not isinstance(tfit, dict):
                 raise GraphError("BAD_REQUEST", "target.fit must be a FitRequest object", "/target/fit")

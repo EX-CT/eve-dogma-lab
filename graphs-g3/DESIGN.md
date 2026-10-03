@@ -115,7 +115,8 @@ check still passes all 3285 stress requests.
 - Validation follows the 0.2 precedence: structural `BAD_REQUEST` (graph / fit / x / x.values / y, empty y), then
   `UNKNOWN_GRAPH`, `BAD_AXIS` (axis, y, and (x, y) pairs such as `ecm_burst` `tgt_dps` × `tgt_lock_time_s`), the enums
   (`target.resist_mode`, `settings.mobile_drone_mode`, `params.ammo_quality` → `BAD_REQUEST`), and last
-  `UNKNOWN_TYPE` (source fit first, then `target.fit`).
+  `UNKNOWN_TYPE` (source fit first, then `target.fit` — only for damage, application_profile, ewar and remote_reps;
+  other graphs ignore `target`, bench 0397d95).
 - `target.fit` is built once per request through the fit cache under its own key (the canonical target
   FitRequest), so source and target contexts never alias. ewar: per-y resistance attribute
   (`clamp(1 − attr, 0, 1)`, 0 / missing → 1), explicit `params.resist` wins, `disallowOffensiveModifiers` zeroes all
