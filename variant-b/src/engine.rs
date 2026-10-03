@@ -250,12 +250,13 @@ fn state_ok(category: u8, state: State) -> bool {
 }
 
 impl<'a> Fit<'a> {
-    fn new_item(&mut self, type_id: u32, kind: Kind, loc: Loc, path: &str) -> Result<usize, EngineError> {
+    /// `path` (JSON pointer of the request field) is only built when the type is unknown.
+    fn new_item(&mut self, type_id: u32, kind: Kind, loc: Loc, path: impl FnOnce() -> String) -> Result<usize, EngineError> {
         let ds = self.ds;
         let t = ds.types.get(&type_id).ok_or_else(|| EngineError {
             code: "UNKNOWN_TYPE",
             message: format!("unknown type_id {type_id}"),
-            path: path.to_string(),
+            path: path(),
         })?;
         let mut item = Item {
             type_id,
@@ -344,8 +345,8 @@ impl<'a> Fit<'a> {
         }
     }
 
-    fn add_module(&mut self, i: usize, m: &ModuleReq, path: &str) -> Result<usize, EngineError> {
-        let idx = self.new_item(m.type_id, Kind::Module, Loc::Ship, path)?;
+    fn add_module(&mut self, i: usize, m: &ModuleReq, path: impl Fn() -> String) -> Result<usize, EngineError> {
+        let idx = self.new_item(m.type_id, Kind::Module, Loc::Ship, &path)?;
         let slot = m.slot.or_else(|| infer_slot(self.ds, &self.ds.types[&m.type_id]));
         let it = &mut self.items[idx];
         it.slot = slot;
@@ -359,7 +360,7 @@ impl<'a> Fit<'a> {
             self.apply_mutation(idx, mu);
         }
         if let Some(c) = m.charge_type_id {
-            let cidx = self.new_item(c, Kind::Charge, Loc::Ship, &format!("{path}/charge_type_id"))?;
+            let cidx = self.new_item(c, Kind::Charge, Loc::Ship, || format!("{}/charge_type_id", path()))?;
             self.items[cidx].parent = Some(idx);
             self.items[cidx].req_index = Some(i);
             self.items[idx].charge = Some(cidx);
@@ -391,10 +392,10 @@ impl<'a> Fit<'a> {
             folded: false,
         };
         prof_start();
-        let ship = fit.new_item(req.ship.type_id, Kind::Ship, Loc::Ship, "/ship/type_id")?;
+        let ship = fit.new_item(req.ship.type_id, Kind::Ship, Loc::Ship, || "/ship/type_id".to_string())?;
         fit.ship = ship;
         fit.is_structure = fit.items[ship].category == 65;
-        let ch = fit.new_item(1373, Kind::Char, Loc::Char, "/character")?;
+        let ch = fit.new_item(1373, Kind::Char, Loc::Char, || "/character".to_string())?;
         fit.char = ch;
         if let Some(sec) = req.character.security_status {
             let a = crate::attr_id!(ds, "pilotSecurityStatus");
@@ -430,7 +431,7 @@ impl<'a> Fit<'a> {
         fit.folded = prep.skills_foldable && !req.overrides.iter().any(|o| ds.types.get(&o.type_id).map(|t| t.category == 16).unwrap_or(false));
         if !fit.folded {
             for &(s, l) in &skill_ids {
-                let idx = fit.new_item(s, Kind::Skill, Loc::Char, "/character/skills")?;
+                let idx = fit.new_item(s, Kind::Skill, Loc::Char, || "/character/skills".to_string())?;
                 fit.items[idx].set_base(ATTR_SKILL_LEVEL, l as f64);
                 fit.items[idx].owned = false;
             }
@@ -443,14 +444,14 @@ impl<'a> Fit<'a> {
             Some(m)
         });
         if let Some(mode) = mode_id {
-            let idx = fit.new_item(mode, Kind::Mode, Loc::Nowhere, "/ship/mode_type_id")?;
+            let idx = fit.new_item(mode, Kind::Mode, Loc::Nowhere, || "/ship/mode_type_id".to_string())?;
             fit.items[idx].owned = false;
         }
         for (i, m) in req.modules.iter().enumerate() {
-            fit.add_module(i, m, &format!("/modules/{i}"))?;
+            fit.add_module(i, m, || format!("/modules/{i}"))?;
         }
         for (i, d) in req.drones.iter().enumerate() {
-            let idx = fit.new_item(d.type_id, Kind::Drone, Loc::Space, &format!("/drones/{i}"))?;
+            let idx = fit.new_item(d.type_id, Kind::Drone, Loc::Space, || format!("/drones/{i}"))?;
             if let Some(mu) = &d.mutation {
                 fit.apply_mutation(idx, mu);
             }
@@ -462,7 +463,7 @@ impl<'a> Fit<'a> {
         }
         let sq = crate::attr_id!(ds, "fighterSquadronMaxSize");
         for (i, f) in req.fighters.iter().enumerate() {
-            let idx = fit.new_item(f.type_id, Kind::Fighter, Loc::Space, &format!("/fighters/{i}"))?;
+            let idx = fit.new_item(f.type_id, Kind::Fighter, Loc::Space, || format!("/fighters/{i}"))?;
             let maxsq = fit.items[idx].base_opt(sq).map(|a| a as u32).unwrap_or(1);
             if f.quantity.unwrap_or(0) > maxsq {
                 fit.warnings.push(format!("fighters/{i}: squadron size {} capped to {maxsq}", f.quantity.unwrap_or(0)));
@@ -475,18 +476,18 @@ impl<'a> Fit<'a> {
             it.req_index = Some(i);
         }
         for (i, imp) in req.implants.iter().enumerate() {
-            let idx = fit.new_item(*imp, Kind::Implant, Loc::Char, &format!("/implants/{i}"))?;
+            let idx = fit.new_item(*imp, Kind::Implant, Loc::Char, || format!("/implants/{i}"))?;
             fit.items[idx].owned = false;
             fit.items[idx].req_index = Some(i);
         }
         for (i, b) in req.boosters.iter().enumerate() {
-            let idx = fit.new_item(b.type_id, Kind::Booster, Loc::Char, &format!("/boosters/{i}"))?;
+            let idx = fit.new_item(b.type_id, Kind::Booster, Loc::Char, || format!("/boosters/{i}"))?;
             fit.items[idx].owned = false;
             fit.items[idx].booster_side_effects = b.side_effects.clone();
             fit.items[idx].req_index = Some(i);
         }
         for (i, e) in req.environment.effect_type_ids.iter().enumerate() {
-            let idx = fit.new_item(*e, Kind::Beacon, Loc::Nowhere, &format!("/environment/effect_type_ids/{i}"))?;
+            let idx = fit.new_item(*e, Kind::Beacon, Loc::Nowhere, || format!("/environment/effect_type_ids/{i}"))?;
             fit.items[idx].owned = false;
         }
         for (i, p) in req.projected.iter().enumerate() {
@@ -494,14 +495,14 @@ impl<'a> Fit<'a> {
                 "module" => {
                     if let Some(m) = &p.module {
                         for _ in 0..p.amount.max(1) {
-                            let idx = fit.new_item(m.type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
+                            let idx = fit.new_item(m.type_id, Kind::Projected, Loc::Nowhere, || format!("/projected/{i}"))?;
                             let it = &mut fit.items[idx];
                             it.owned = false;
                             it.state = m.state.unwrap_or(State::Active);
                             it.distance = p.distance_m;
                             it.req_index = Some(i);
                             if let Some(c) = m.charge_type_id {
-                                let cidx = fit.new_item(c, Kind::Charge, Loc::Nowhere, &format!("/projected/{i}/module/charge_type_id"))?;
+                                let cidx = fit.new_item(c, Kind::Charge, Loc::Nowhere, || format!("/projected/{i}/module/charge_type_id"))?;
                                 fit.items[cidx].parent = Some(idx);
                                 fit.items[cidx].owned = false;
                                 fit.items[idx].charge = Some(cidx);
@@ -512,7 +513,7 @@ impl<'a> Fit<'a> {
                 "drone" => {
                     if let Some(d) = &p.drone {
                         for _ in 0..(p.amount.max(1) * d.quantity.max(1)) {
-                            let idx = fit.new_item(d.type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
+                            let idx = fit.new_item(d.type_id, Kind::Projected, Loc::Nowhere, || format!("/projected/{i}"))?;
                             let it = &mut fit.items[idx];
                             it.owned = false;
                             it.state = State::Active;
@@ -523,7 +524,7 @@ impl<'a> Fit<'a> {
                 "fighter" => {
                     if let Some(f) = &p.fighter {
                         for _ in 0..p.amount.max(1) {
-                            let idx = fit.new_item(f.type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
+                            let idx = fit.new_item(f.type_id, Kind::Projected, Loc::Nowhere, || format!("/projected/{i}"))?;
                             let maxsq = fit.items[idx].base_opt(sq).map(|a| a as u32).unwrap_or(1).max(1);
                             let it = &mut fit.items[idx];
                             it.owned = false;
@@ -565,7 +566,7 @@ impl<'a> Fit<'a> {
                         }
                         for (type_id, copies, vals, kind, qty, abil) in frozen {
                             for _ in 0..copies * p.amount.max(1) {
-                                let idx = fit.new_item(type_id, Kind::Projected, Loc::Nowhere, &format!("/projected/{i}"))?;
+                                let idx = fit.new_item(type_id, Kind::Projected, Loc::Nowhere, || format!("/projected/{i}"))?;
                                 let it = &mut fit.items[idx];
                                 it.owned = false;
                                 it.state = State::Active;
@@ -2277,7 +2278,7 @@ impl<'a> Fit<'a> {
             skills: Vec::new(),
             folded: false,
         };
-        let idx = fit.new_item(s, Kind::Skill, Loc::Char, "").expect("skill type");
+        let idx = fit.new_item(s, Kind::Skill, Loc::Char, || "".to_string()).expect("skill type");
         fit.items[idx].set_base(ATTR_SKILL_LEVEL, level as f64);
         fit.items[idx].owned = false;
         let structure_ok_ids: Vec<u32> = STRUCTURE_SKILL_EFFECT_NAMES.iter().map(|n| ds.effect_id(n)).collect();
