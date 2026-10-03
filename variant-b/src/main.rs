@@ -1,7 +1,37 @@
 //! eve-dogma CLI — stateless: JSON FitRequest in, JSON FitStats out.
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: Alloc = Alloc;
+
+/// mimalloc, but word-aligned layouts (nearly all of them) take the plain `mi_malloc` fast path:
+/// `mimalloc::MiMalloc` always calls `mi_malloc_aligned`, whose generic path showed up as ~9% of
+/// per-calc instructions. Every mimalloc block is at least 8-byte aligned.
+struct Alloc;
+
+unsafe extern "C" {
+    fn mi_malloc(size: usize) -> *mut std::ffi::c_void;
+    fn mi_zalloc(size: usize) -> *mut std::ffi::c_void;
+    fn mi_realloc(p: *mut std::ffi::c_void, size: usize) -> *mut std::ffi::c_void;
+}
+
+unsafe impl std::alloc::GlobalAlloc for Alloc {
+    #[inline]
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        if l.align() <= 8 { unsafe { mi_malloc(l.size()) as *mut u8 } } else { unsafe { mimalloc::MiMalloc.alloc(l) } }
+    }
+    #[inline]
+    unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
+        if l.align() <= 8 { unsafe { mi_zalloc(l.size()) as *mut u8 } } else { unsafe { mimalloc::MiMalloc.alloc_zeroed(l) } }
+    }
+    #[inline]
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        unsafe { mimalloc::MiMalloc.dealloc(p, l) }
+    }
+    #[inline]
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
+        if l.align() <= 8 { unsafe { mi_realloc(p as *mut std::ffi::c_void, n) as *mut u8 } } else { unsafe { mimalloc::MiMalloc.realloc(p, l, n) } }
+    }
+}
 use eve_dogma::{calc, eft, Dataset, FitRequest};
 use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
