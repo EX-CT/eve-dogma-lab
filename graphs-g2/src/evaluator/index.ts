@@ -1,4 +1,5 @@
 // Portable graph evaluator (approach G2): GraphRequest + engine primitives -> GraphResult. No I/O, no deps.
+import { ecmBurst } from "./ecm.js";
 import { capacitor } from "./capacitor.js";
 import { ewar } from "./ewar.js";
 import { damageGraph } from "./damage.js";
@@ -22,6 +23,8 @@ registerGraph("mobility", ["time_s"], ["speed_mps", "distance_m", "momentum_kg_m
 registerGraph("shield_regen", ["time_s", "shield_pct"], ["shield_hp", "shield_regen_hp_s"], shieldRegen);
 registerGraph("ewar", ["distance_m"], ["neut_gj_s", "web_pct", "ecm_strength", "damp_lock_range_pct", "td_optimal_pct", "gd_range_pct", "tp_sig_pct"], ewar);
 registerGraph("remote_reps", ["distance_m", "time_s"], ["rps", "total"], remoteReps);
+registerGraph("ecm_burst", ["tgt_scan_res_mm", "tgt_dps"], ["src_damage", "tgt_lock_time_s", "tgt_lock_uptime_s"], ecmBurst,
+  (x, y) => x === "tgt_scan_res_mm" || y === "src_damage");
 registerGraph("damage", ["distance_m", "time_s", "tgt_speed_mps", "tgt_sig_m", "tgt_speed_pct", "tgt_sig_pct"], ["dps", "volley", "damage"], damageGraph);
 registerGraph("application_profile", ["distance_m"], ["dps", "volley"], applicationProfile);
 registerGraph("capacitor", ["time_s", "cap_pct"], ["cap_gj", "cap_regen_gj_s"], capacitor);
