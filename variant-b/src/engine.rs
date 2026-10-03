@@ -168,6 +168,8 @@ struct Graph {
     /// 0 = not evaluated, 1 = on stack, 2 = done
     state: RefCell<Vec<u8>>,
     vals: RefCell<Vec<f64>>,
+    /// eval_node scratch (work stack, dependency list), reused across evaluations (eval_node never re-enters)
+    scratch: RefCell<(Vec<(u32, bool)>, Vec<u32>)>,
 }
 
 pub struct Fit<'a> {
@@ -1613,7 +1615,7 @@ impl<'a> Fit<'a> {
             mod_start[n + 1] += mod_start[n];
         }
         let nn = meta.len();
-        self.g = Graph { meta, mod_start, mods, state: RefCell::new(vec![0; nn]), vals: RefCell::new(vec![0.0; nn]) };
+        self.g = Graph { meta, mod_start, mods, state: RefCell::new(vec![0; nn]), vals: RefCell::new(vec![0.0; nn]), scratch: Default::default() };
     }
 
     // ---------------------------------------------------------------- evaluation
@@ -1659,8 +1661,10 @@ impl<'a> Fit<'a> {
             }
         }
         // stack of (node, deps pushed?)
-        let mut stack: Vec<(u32, bool)> = vec![(root, false)];
-        let mut deps = Vec::with_capacity(16);
+        let mut scratch = self.g.scratch.borrow_mut();
+        let (stack, deps) = &mut *scratch;
+        stack.clear();
+        stack.push((root, false));
         while let Some(&(n, expanded)) = stack.last() {
             if expanded {
                 stack.pop();
@@ -1679,7 +1683,7 @@ impl<'a> Fit<'a> {
             }
             stack.last_mut().unwrap().1 = true;
             deps.clear();
-            self.deps(n, &mut deps);
+            self.deps(n, deps);
             let st = self.g.state.borrow();
             // reverse so the first dependency is evaluated first (same order as lazy recursion)
             for &d in deps.iter().rev() {
@@ -1715,8 +1719,10 @@ impl<'a> Fit<'a> {
         let mut val = m.base;
         let mods = &g.mods[g.mod_start[n as usize] as usize..g.mod_start[n as usize + 1] as usize];
         let mut i = 0;
-        let mut pos: [f64; 32] = [0.0; 32];
-        let mut neg: [f64; 32] = [0.0; 32];
+        // penalised factors of one op group; more than PEN spill to posv/negv (same order, same result)
+        const PEN: usize = 8;
+        let mut pos: [f64; PEN] = [0.0; PEN];
+        let mut neg: [f64; PEN] = [0.0; PEN];
         let mut posv: Vec<f64> = Vec::new();
         let mut negv: Vec<f64> = Vec::new();
         while i < mods.len() {
@@ -1773,7 +1779,7 @@ impl<'a> Fit<'a> {
                         };
                         if c.penalized {
                             if k > 1.0 {
-                                if np < 32 {
+                                if np < PEN {
                                     pos[np] = k;
                                     np += 1
                                 } else {
@@ -1783,7 +1789,7 @@ impl<'a> Fit<'a> {
                                     posv.push(k)
                                 }
                             } else if k < 1.0 {
-                                if nn < 32 {
+                                if nn < PEN {
                                     neg[nn] = k;
                                     nn += 1
                                 } else {
@@ -1802,7 +1808,7 @@ impl<'a> Fit<'a> {
             if let Some(v) = assign {
                 val = v;
             }
-            // >32 penalised modifiers of one op spill to the heap (never seen in practice)
+            // more than PEN penalised modifiers of one op spill to the heap
             if posv.is_empty() { penalize(&mut val, &mut pos[..np]) } else { penalize(&mut val, &mut posv) }
             if negv.is_empty() { penalize(&mut val, &mut neg[..nn]) } else { penalize(&mut val, &mut negv) }
         }
