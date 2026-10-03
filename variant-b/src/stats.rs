@@ -2,7 +2,8 @@
 use crate::capsim::{self, Drain};
 use crate::engine::{Fit, Kind};
 use crate::request::{FitRequest, Resists, Slot, Spool, SpoolType, State};
-use serde_json::{json, Map, Value};
+use crate::jv as json;
+use crate::out::{Obj as Map, J as Value};
 
 pub fn range_factor(optimal: f64, falloff: f64, distance: Option<f64>, restricted: bool) -> f64 {
     let Some(d) = distance else { return 1.0 };
@@ -166,33 +167,8 @@ fn ids(f: &Fit) -> Ids {
     }
 }
 
-fn round6(v: f64) -> f64 {
+pub(crate) fn round6(v: f64) -> f64 {
     if v.is_finite() { (v * 1e6).round() / 1e6 } else { v }
-}
-
-/// Recursively round floats for stable, readable output.
-/// JSON formatter that applies `tidy`'s rounding while writing (saves building a rounded copy).
-struct RoundFmt;
-impl serde_json::ser::Formatter for RoundFmt {
-    #[inline]
-    fn write_f64<W: ?Sized + std::io::Write>(&mut self, w: &mut W, v: f64) -> std::io::Result<()> {
-        // tidy: json!(round6(f)); a non-finite result becomes null
-        let r = round6(v);
-        if r.is_finite() {
-            serde_json::ser::CompactFormatter.write_f64(w, r)
-        } else {
-            w.write_all(b"null")
-        }
-    }
-}
-
-/// `serde_json::to_string(&tidy(v))` without the intermediate rounded tree.
-pub fn write_rounded(v: &Value) -> String {
-    use serde::Serialize;
-    let mut out = Vec::with_capacity(16 * 1024);
-    let mut ser = serde_json::Serializer::with_formatter(&mut out, RoundFmt);
-    v.serialize(&mut ser).expect("serialize");
-    String::from_utf8(out).expect("utf8")
 }
 
 /// Pyfa eos.utils.float.floatUnerr: round away float noise, keeping 7 significant digits
@@ -223,23 +199,23 @@ pub fn py_round2(v: f64) -> f64 {
     format!("{v:.2}").parse().unwrap_or(v)
 }
 
-fn tidy(mut v: Value) -> Value {
+fn tidy(mut v: serde_json::Value) -> serde_json::Value {
     tidy_mut(&mut v);
     v
 }
 
 /// In-place rounding (no map rebuilds).
-fn tidy_mut(v: &mut Value) {
+fn tidy_mut(v: &mut serde_json::Value) {
     match v {
-        Value::Number(n) => {
+        serde_json::Value::Number(n) => {
             if n.is_f64() {
                 if let Some(f) = n.as_f64() {
-                    *v = json!(round6(f));
+                    *v = serde_json::json!(round6(f));
                 }
             }
         }
-        Value::Array(a) => a.iter_mut().for_each(tidy_mut),
-        Value::Object(o) => o.values_mut().for_each(tidy_mut),
+        serde_json::Value::Array(a) => a.iter_mut().for_each(tidy_mut),
+        serde_json::Value::Object(o) => o.values_mut().for_each(tidy_mut),
         _ => {}
     }
 }
@@ -358,14 +334,14 @@ impl<'a> Fit<'a> {
 
     /// Full stats with every float rounded to 6 decimals.
 
-    pub fn compute_stats(&self, req: &FitRequest) -> Value {
+    pub fn compute_stats(&self, req: &FitRequest) -> serde_json::Value {
 
-        tidy(self.compute_stats_raw(req))
+        tidy(self.compute_stats_raw(req).to_value())
 
     }
 
 
-    /// Stats before rounding: serialize with [`write_rounded`] to get exactly the bytes of `compute_stats`.
+    /// Stats before rounding: `J::to_string` writes exactly the bytes of `compute_stats` (rounded, sorted keys).
 
     pub fn compute_stats_raw(&self, req: &FitRequest) -> Value {
         let ds = self.ds;
@@ -924,40 +900,40 @@ impl<'a> Fit<'a> {
         });
 
         let mut out = Map::new();
-        out.insert("meta".into(), json!({"schema_version": 1, "engine": concat!("eve-dogma-vb ", env!("CARGO_PKG_VERSION")),
+        out.insert("meta", json!({"schema_version": 1, "engine": concat!("eve-dogma-vb ", env!("CARGO_PKG_VERSION")),
             "sde_build": ds.build, "dataset_sha256": ds.sha256}));
         let st = &ds.types[&self.items[ship].type_id];
-        out.insert("ship".into(), json!({"type_id": st.id, "name": st.name, "group": ds.groups.get(&st.group).map(|g| g.name.clone())}));
-        out.insert("resources".into(), resources);
-        out.insert("offense".into(), offense);
-        out.insert("defense".into(), defense);
-        out.insert("capacitor".into(), capj);
-        out.insert("navigation".into(), navigation);
-        out.insert("targeting".into(), targeting);
-        out.insert("drones".into(), drones_j);
-        out.insert("modules".into(), Value::Array(module_rows));
+        out.insert("ship", json!({"type_id": st.id, "name": st.name, "group": ds.groups.get(&st.group).map(|g| g.name.clone())}));
+        out.insert("resources", resources);
+        out.insert("offense", offense);
+        out.insert("defense", defense);
+        out.insert("capacitor", capj);
+        out.insert("navigation", navigation);
+        out.insert("targeting", targeting);
+        out.insert("drones", drones_j);
+        out.insert("modules", Value::Array(module_rows));
         if req.options.validate {
-            out.insert("violations".into(), Value::Array(self.validate(req, cpu_used, pg_used, calib_used, bw_used)));
+            out.insert("violations", Value::Array(self.validate(req, cpu_used, pg_used, calib_used, bw_used)));
         }
         if !self.warnings.is_empty() {
-            out.insert("warnings".into(), json!(self.warnings));
+            out.insert("warnings", json!(self.warnings));
         }
         match req.options.include_attributes.as_deref() {
             Some("ship") => {
-                out.insert("attributes".into(), json!({"ship": self.dump_attrs(ship)}));
+                out.insert("attributes", json!({"ship": self.dump_attrs(ship)}));
             }
             Some("all") => {
                 let mut m = Map::new();
-                m.insert("ship".into(), self.dump_attrs(ship));
-                m.insert("character".into(), self.dump_attrs(ch));
+                m.insert("ship", self.dump_attrs(ship));
+                m.insert("character", self.dump_attrs(ch));
                 let mods: Vec<Value> = modules.iter().map(|&i| {
                     json!({"module_index": self.items[i].req_index, "type_id": self.items[i].type_id, "attributes": self.dump_attrs(i),
                            "charge": self.items[i].charge.map(|c| self.dump_attrs(c))})
                 }).collect();
-                m.insert("modules".into(), Value::Array(mods));
+                m.insert("modules", Value::Array(mods));
                 let dr: Vec<Value> = drones.iter().map(|&i| json!({"drone_index": self.items[i].req_index, "attributes": self.dump_attrs(i)})).collect();
-                m.insert("drones".into(), Value::Array(dr));
-                out.insert("attributes".into(), Value::Object(m));
+                m.insert("drones", Value::Array(dr));
+                out.insert("attributes", Value::Object(m));
             }
             _ => {}
         }

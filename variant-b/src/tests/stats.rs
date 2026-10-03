@@ -62,12 +62,32 @@ fn py_round2_matches_python_round() {
 }
 
 #[test]
-fn write_rounded_is_tidy_compact_json() {
-    let v = json!({"b": [1, -2, 3.5, 0.1234567891, 1e300, null, true], "a": {"z": 1.0, "y": -0.0, "s": "q\"\n"}, "c": []});
-    let s = write_rounded(&v);
+fn output_doc_writes_tidy_compact_json() {
+    // the same document as J (jv!) and as serde_json::Value: J::to_string == to_string(tidy(value))
+    let name = String::from("Rifter");
+    let j = json!({"b": [1, -2, 3.5, 0.1234567891, 1e300, null, true, f64::NAN], "a": {"z": 1.0, "y": -0.0, "s": "q\"\n\u{1}"},
+        "c": [], "d": {}, "n": name, "o": Option::<f64>::None, "big": 1.7e308, "neg": -7i32});
+    let v = serde_json::json!({"b": [1, -2, 3.5, 0.1234567891, 1e300, null, true, f64::NAN], "a": {"z": 1.0, "y": -0.0, "s": "q\"\n\u{1}"},
+        "c": [], "d": {}, "n": name, "o": Option::<f64>::None, "big": 1.7e308, "neg": -7i32});
+    assert_eq!(j.to_value(), v);
+    let s = j.to_string();
     assert_eq!(s, serde_json::to_string(&tidy(v)).unwrap());
     assert!(s.contains("0.123457"), "{s}");
     assert!(s.starts_with("{\"a\":"), "keys are sorted: {s}");
+}
+
+#[test]
+fn output_doc_index_and_insert() {
+    let mut j = json!({"x": 1});
+    j["y"]["z"] = json!(2.5);
+    j["x"] = json!("replaced");
+    let mut m = Map::new();
+    assert!(m.insert("k", json!(1)).is_none());
+    assert_eq!(m.insert("k", json!(2)), Some(json!(1)));
+    j["m"] = Value::Object(m);
+    assert_eq!(j["y"]["z"], json!(2.5));
+    assert_eq!(j["missing"], Value::Null);
+    assert_eq!(j.to_string(), r#"{"m":{"k":2},"x":"replaced","y":{"z":2.5}}"#);
 }
 
 #[test]
