@@ -1525,14 +1525,16 @@ impl<'a> Fit<'a> {
                 }
             }
         }
+        // modifiers in compile order, copied once so the passes below read sequentially
+        let sorted: Vec<RawMod> = order.iter().map(|&k| self.raw[k as usize]).collect();
+        drop(order);
         // 2. nodes
         // exact node count per item first, so the per-item node lists and the node table never regrow
         let mut per_item: Vec<u32> = vec![0; self.items.len()];
         let mut total_nodes = 0usize;
         {
             let mut last: Option<(u32, u32)> = None;
-            for &k in &order {
-                let r = &self.raw[k as usize];
+            for r in &sorted {
                 if last != Some((r.item, r.attr)) {
                     last = Some((r.item, r.attr));
                     per_item[r.item as usize] += 1;
@@ -1545,10 +1547,9 @@ impl<'a> Fit<'a> {
             it.nodes.reserve_exact(c as usize);
         }
         let mut meta: Vec<NodeMeta> = Vec::with_capacity(total_nodes);
-        let mut node_of_mod: Vec<u32> = Vec::with_capacity(order.len());
+        let mut node_of_mod: Vec<u32> = Vec::with_capacity(sorted.len());
         let mut last: Option<(u32, u32)> = None;
-        for &k in &order {
-            let r = self.raw[k as usize];
+        for r in &sorted {
             if last != Some((r.item, r.attr)) {
                 last = Some((r.item, r.attr));
                 let nid = meta.len() as u32;
@@ -1589,10 +1590,9 @@ impl<'a> Fit<'a> {
                 m.max = Some(resolve(&self.items, item, am.max));
             }
         }
-        let mut mods: Vec<CMod> = Vec::with_capacity(order.len());
+        let mut mods: Vec<CMod> = Vec::with_capacity(sorted.len());
         let mut mod_start: Vec<u32> = vec![0; meta.len() + 1];
-        for (pos, &k) in order.iter().enumerate() {
-            let r = self.raw[k as usize];
+        for (pos, r) in sorted.iter().enumerate() {
             let src = match r.src {
                 Src::Attr { item, attr } => CSrc::Val(resolve(&self.items, item, attr)),
                 Src::Const(v) => CSrc::Val(Ref::Const(v)),
