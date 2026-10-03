@@ -94,3 +94,11 @@ database per request (INC_OK, FRESH_OK); EFT export 326/326; deterministic outpu
   and the cache is reused. Still, two dev reruns of the same binary straight afterwards gave 0.146 and 0.194 ms/fit.
   Use ~0.15–0.2 ms for comparisons.
 - Copied to `bench/official/` (scorecard and combined.md).
+
+## 2026-10-03 08:50 CST — bench 1.9.0 (staged branch bench-1.9.0 @ 29c1f2b), parked
+- Head 9a4844a scored in a temporary bench clone: 329/331 cases, 22,037/22,046 values (`bench/bench-1.9.0/`).
+- Two cases are missing:
+  - `breacher_kestrel`: breacher pod `pure` damage (one `dotMaxDamagePerTick` tick, strongest pod only).
+  - `overheat_order_tengu`: per-module overheat order. A hardener reads `overloadHardeningBonus` before a Defensive
+    subsystem listed after it has boosted it.
+- No code has been ported yet. This was parked when I was reassigned to the mutated-modules suite.

@@ -1,0 +1,48 @@
+{
+ "breacher_kestrel": {
+  "error": null,
+  "mismatches": {
+   "weapon_dps": {
+    "got": 0.0,
+    "want": 250.0
+   },
+   "weapon_pure_dps": {
+    "got": 0.0,
+    "want": 250.0
+   },
+   "weapon_pure_volley": {
+    "got": 0.0,
+    "want": 250.0
+   },
+   "weapon_volley": {
+    "got": 0.0,
+    "want": 250.0
+   }
+  }
+ },
+ "overheat_order_tengu": {
+  "error": null,
+  "mismatches": {
+   "ehp.shield": {
+    "got": 63534.76143,
+    "want": 60835.81513784621
+   },
+   "res.shield.em": {
+    "got": 0.176892,
+    "want": 0.19666035422763387
+   },
+   "res.shield.explosive": {
+    "got": 0.259766,
+    "want": 0.266875
+   },
+   "res.shield.kinetic": {
+    "got": 0.233789,
+    "want": 0.2401875
+   },
+   "res.shield.thermal": {
+    "got": 0.207813,
+    "want": 0.21350000000000002
+   }
+  }
+ }
+}
