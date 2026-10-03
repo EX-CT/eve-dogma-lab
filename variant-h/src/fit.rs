@@ -243,16 +243,8 @@ impl<'a> Fit<'a> {
         if matches!(slot, Some(Slot::Rig) | Some(Slot::Subsystem)) && state != State::Offline {
             state = State::Online;
         }
-        // Pyfa isValidState: active needs an active-type effect, overheated an overload effect; an invalid
-        // requested state falls back to online (not to the highest valid state)
-        if let Some(t) = t {
-            // (the `online` effect is SDE category 1, but Pyfa types it 'online', not 'active')
-            let online = self.ds.e.online;
-            let cat = |c: &[u8]| t.effects.iter().any(|&(eid, _)| eid != online && self.ds.effects.get(&eid).map(|x| c.contains(&x.category)).unwrap_or(false));
-            if (state == State::Overheated && !cat(&[5])) || (state >= State::Active && !cat(&[1, 2, 3])) {
-                state = State::Online;
-            }
-        }
+        // a state the module cannot take (active without an active effect, overheated without an overload effect)
+        // is kept as requested, like the reference implementation (A): state-gated effects simply do not exist
         let e = self.spawn_item(m.type_id, Kind::Module, Loc::Ship, state, &path)?;
         if let Some(mu) = &m.mutation {
             self.apply_mutation(e, mu);

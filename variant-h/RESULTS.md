@@ -84,7 +84,7 @@ Types that are missing from Pyfa's eve.db (newer than Pyfa's data) can't be comp
 
 Bugs these sweeps found, all fixed: Pyfa evaluation order (pre-assign, additions, one unpenalized product, penalized
 chains, post-assign) for capsim `int()` truncation; capital MJFG; superweapon, slash, cone-DoT and HOG speed / warp
-handlers; projected mutadaptive RR at full spool; module state fallback (`isValidState`); the damage cycle of web
+handlers; projected mutadaptive RR at full spool; the damage cycle of web
 drones (Orbweaver: `speed`, not the web `duration`); breacher pods (`pure` damage, `kind: "breacher"`, only the strongest pod
 in fit totals); attribute caps that apply only to calculated values (a mutated DC with hull resonance above 1); and
 overheat effects that read `overload*` attributes in fit order (pending-1.9.0 Tengu case).
@@ -112,6 +112,18 @@ Every output leaf was compared, abs 1e-6 / rel 1e-9, against A's working-tree bu
 
 - Bench 1.4.0 corpus: **289/289 identical**.
 - The 23 newest cases: **23/23 identical**.
+
+**Module states (08:40 CST, A at a6b3720).** A requested state the module cannot take (`active` without an active effect,
+`overheated` without an overload effect) is now kept as requested, as A does. Before, H fell back to `online` like Pyfa's
+`isValidState`. Rigs and subsystems are still `online` unless `offline`. A request that is valid JSON but not a FitRequest
+(unknown state string such as `"ACTIVE"` / `"bogus"`, wrong type, duplicate field) is `BAD_REQUEST` with the same message
+as A, line/column included. Malformed JSON stays `BAD_JSON` (contract code; A reports `BAD_REQUEST`). Checks:
+- every bench case with all modules at each of offline / online / active / overheated or with no state, projected
+  modules at each state, and 13 bogus `state` values: all identical to A except 34 overheated capacitor-simulation details
+  (`depletes_in_s`, `stable_percent`; the two simulators step differently once overheat changes cycle times);
+- ISA (90475) and cynos (21096, 28646, 52694) at every state, with and without stabs, on 10 hulls: 400/400 identical to A
+  (warp status included);
+- the 13 038 sweep requests: 250 differ from A (was 7 005), and none is a new difference.
 
 ## Instruction counts (callgrind, 249-fit batch incl. startup)
 

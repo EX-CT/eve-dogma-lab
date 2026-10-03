@@ -30,15 +30,15 @@ pub fn calc(ds: &Dataset, req: &FitRequest) -> Value {
 
 pub fn calc_json(ds: &Dataset, request_json: &str) -> String {
     // fast path: straight into the typed request; on any error, redo it in two steps to classify the error
-    if let Ok(req) = serde_json::from_str::<FitRequest>(request_json) {
-        return serde_json::to_string(&calc(ds, &req)).unwrap();
-    }
-    let v = match serde_json::from_str::<Value>(request_json) {
+    let typed = match serde_json::from_str::<FitRequest>(request_json) {
+        Ok(req) => return serde_json::to_string(&calc(ds, &req)).unwrap(),
+        Err(e) => e,
+    };
+    // malformed JSON is BAD_JSON; valid JSON that is not a FitRequest is BAD_REQUEST, with the message of the
+    // direct parse (it carries the line/column, the same text as the reference implementation)
+    let v = match serde_json::from_str::<serde::de::IgnoredAny>(request_json) {
         Err(e) => json!({"error": {"code": "BAD_JSON", "message": e.to_string(), "path": ""}}),
-        Ok(raw) => match serde_json::from_value::<FitRequest>(raw) {
-            Ok(req) => calc(ds, &req),
-            Err(e) => json!({"error": {"code": "BAD_REQUEST", "message": e.to_string(), "path": ""}}),
-        },
+        Ok(_) => json!({"error": {"code": "BAD_REQUEST", "message": typed.to_string(), "path": ""}}),
     };
     serde_json::to_string(&v).unwrap()
 }
