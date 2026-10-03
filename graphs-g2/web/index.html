@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- G2 demo: the portable evaluator in a browser. Primitives are fetched once; sliders re-evaluate locally.
+     Serve graphs-g2/ over HTTP after `npm run build` (e.g. `python3 -m http.server`) and open /web/. -->
+<meta charset="utf-8">
+<title>G2 damage vs distance</title>
+<style>body{font:14px sans-serif;margin:1em} label{display:inline-block;width:16em} canvas{border:1px solid #ccc}</style>
+<h3 id="title">loading…</h3>
+<div><label>target speed <span id="vs"></span> m/s</label><input id="spd" type="range" min="0" max="3000" value="300"></div>
+<div><label>target signature <span id="vg"></span> m</label><input id="sig" type="range" min="10" max="1000" value="35"></div>
+<div><label>target angle <span id="va"></span>°</label><input id="ang" type="range" min="0" max="180" value="90"></div>
+<div><label>graph</label><select id="g"><option>damage</option><option>application_profile</option></select> <span id="ms"></span></div>
+<canvas id="c" width="900" height="360"></canvas>
+<script type="module">
+import { evaluate } from "../dist/evaluator/index.js";
+const { request, primitives } = await (await fetch("sample-rifter.json")).json();
+const $ = (id) => document.getElementById(id);
+$("title").textContent = `${primitives.source.ship.name}: dps vs distance (evaluated in the browser)`;
+const xs = Array.from({ length: 500 }, (_, i) => i * 100);
+function draw() {
+  const target = { profile: { max_velocity: +$("spd").value, signature_radius: +$("sig").value, radius: 50 } };
+  const graph = $("g").value;
+  const req = { ...request, graph, target, x: { axis: "distance_m", values: xs }, y: ["dps"],
+    params: { tgt_speed_pct: 100, tgt_angle_deg: +$("ang").value } };
+  const t = performance.now();
+  let ys;
+  try { ys = evaluate(req, primitives).series.dps; } catch (e) { $("ms").textContent = String(e); return; }
+  $("ms").textContent = `${(performance.now() - t).toFixed(2)} ms for ${xs.length} points` + (graph === "application_profile" && !primitives.charges ? " (needs primitives exported for application_profile)" : "");
+  ["vs", "vg", "va"].forEach((k, i) => ($(k).textContent = [$("spd"), $("sig"), $("ang")][i].value));
+  const c = $("c").getContext("2d"), W = 900, H = 360, max = Math.max(1, ...ys.map((y) => y ?? 0));
+  c.clearRect(0, 0, W, H); c.beginPath();
+  ys.forEach((y, i) => { const px = (i / xs.length) * W, py = H - ((y ?? 0) / max) * (H - 20); i ? c.lineTo(px, py) : c.moveTo(px, py); });
+  c.stroke(); c.fillText(`max ${max.toFixed(1)} dps; x 0–${xs.at(-1) / 1000} km`, 10, 14);
+}
+for (const id of ["spd", "sig", "ang", "g"]) $(id).addEventListener("input", draw);
+draw();
+</script>
