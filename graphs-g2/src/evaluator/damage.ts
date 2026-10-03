@@ -384,7 +384,14 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
   const settings = { ignore_resists: true, apply_projected: true, ignore_lock_range: true, ignore_drone_control_range: false, mobile_drone_mode: "auto", ...(req.settings ?? {}) };
   const prm = req.params ?? {};
   const src = p.source;
-  const ds = only ? dealers(src).filter((d) => d.item.kind === "module" && only.has(d.item.index as number)) : dealers(src);
+  let ds = only ? dealers(src).filter((d) => d.item.kind === "module" && only.has(d.item.index as number)) : dealers(src);
+  if ((settings as any)._app) {
+    // application profile: turrets and missiles only, without spool-up
+    ds = ds.filter((d) => d.kind === "turret" || d.kind === "missile").map((d) => {
+      const mb = d.item.attrs.damageMultiplierBonusMax ?? 0;
+      return mb > 0 ? { ...d, dps: d.dps.map((v) => v / (1 + mb)), volley: d.volley.map((v) => v / (1 + mb)) } : d;
+    });
+  }
   const tgt = targetModel(req, p);
   const projs = settings.apply_projected ? projectors(src) : [];
   const dcr = src.stats.drones?.control_range_m ?? Infinity;

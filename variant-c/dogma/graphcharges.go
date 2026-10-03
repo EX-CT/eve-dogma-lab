@@ -16,7 +16,7 @@ func dominantWeaponGroup(f *Fit) (uint32, []int) {
 		if it.Kind != KModule || it.ReqIndex < 0 || it.State < Active {
 			continue
 		}
-		if _, kind := f.moduleVolley(i); kind == "" {
+		if _, kind := f.moduleVolley(i); kind != "turret" && kind != "missile" {
 			continue
 		}
 		if !moduleTakesCharges(f.DS, it.T) {

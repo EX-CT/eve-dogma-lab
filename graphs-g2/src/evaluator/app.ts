@@ -11,8 +11,9 @@ function inTier(v: Variant, tier: string): boolean {
   const mg = v.meta_group ?? 1;
   if (tier === "all") return true;
   if (tier === "t1") return mg === 1;
-  // navy: everything except pirate-faction charges (empire navy faction charges stay)
-  if (tier === "navy") return mg !== 4 || /\b(Navy|Republic Fleet)\b/.test(v.name);
+  // navy: everything except the top faction tier (+20 % damage pirate charges: Dread Guristas, Guardian,
+  // True Sansha, Dark Blood, Domination); empire navy (+15 %) and the lower pirate tier (+10 %) stay
+  if (tier === "navy") return mg !== 4 || !/^(Dread Guristas|Guardian|True Sanshas?|Dark Blood|Domination) /.test(v.name);
   throw new GraphError("BAD_PARAM", `unknown ammo_quality ${tier}`, "params.ammo_quality");
 }
 
@@ -50,7 +51,7 @@ export function applicationProfile(req: GraphRequest, p: Primitives): Record<str
     out[y] = req.x.values.map((x) => (x < 0 ? null : 0));
     out[`${y}_charge_type_id`] = req.x.values.map(() => null);
   }
-  const dreq: GraphRequest = { ...req, graph: "damage", y: req.y, settings: { ...(req.settings ?? {}), _targetGrid: targetGrid(ch, tier) } as any };
+  const dreq: GraphRequest = { ...req, graph: "damage", y: req.y, settings: { ...(req.settings ?? {}), ignore_lock_range: true, _app: true, _targetGrid: targetGrid(ch, tier) } as any };
   for (const v of ch?.variants ?? []) {
     if (!inTier(v, tier)) continue;
     // the variant carries only what the charge changes: the dominant modules and the offense stats

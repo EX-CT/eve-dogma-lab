@@ -54,19 +54,24 @@ fit* with the correct stacking penalty (Pyfa's "extended" attributes) without th
 
 ### application_profile (observed behaviour)
 
-- Dominant weapon group: the module group with the most active charge-using weapons; only those modules count
-  (drones and other weapons are excluded).
+- Dominant weapon group: the module group with the most active charge-using turrets / missile launchers; only
+  those modules count (drones, smartbombs, bombs, vorton projectors and other weapons are excluded; command
+  bursts and scripted EWAR modules are not weapons). Spool-up weapons count unspooled; lock range is ignored.
 - Candidates: published, on-market charges of the module's charge groups with matching charge size and volume ≤
-  capacity. Tiers: `t1` = Tech I meta group; `navy` = everything except pirate-faction charges (empire navy /
-  Republic Fleet faction charges stay, Tech II stays); `all` = everything.
+  capacity. Tiers: `t1` = Tech I meta group; `navy` = everything except the top faction tier (the +20 % damage
+  pirate charges: Dread Guristas, Guardian, True Sansha, Dark Blood, Domination), so Tech II, empire navy (+15 %)
+  and the lower pirate tier (+10 %, e.g. Shadow, Guristas, Arch Angel; the only faction XL hybrids besides the top
+  tier) stay; `all` = everything.
 - The engine rebuilds the fit with each candidate loaded into every module of the group and exports the changed
   module primitives and offense stats; the evaluator runs the damage model per variant and keeps the max.
 - The target's speed and signature after the source's webs / painters are **sampled on a distance grid** and
   interpolated linearly between grid nodes: a 0-falloff web ending at 10 km fades out linearly up to the next node.
   Grid = 250 steps over the profile's reach rounded up to 25 km; reach = the longest turret optimal + 2 × falloff
   over every loadable charge, or for launchers the longest missile flight (velocity × flight time) over the
-  charges of the requested tier. This was derived from black-box probes of the oracle (≈1000 extra points around
-  web ranges, different webs, overheat, tiers and fits) and reproduces all of them but one (below).
+  charges of the requested tier. This was derived from black-box probes of the oracle and is checked by `tools/check_probes.py`
+  (`testdata/app-probes.jsonl`: 110 extra oracle requests, 3324 values: web ranges, other webs, overheat, tiers,
+  and random application profiles of every corpus fit with random targets/settings): 3317/3324 correct; the 7
+  misses are the crossover case below.
 - Known deviation: very close to a charge crossover inside an interpolated stretch Pyfa sometimes keeps the
   previous charge for a few metres (e.g. Hyperion navy tier at 10 006–10 011 m it keeps Void, we switch to Caldari
   Navy Antimatter at 10 006 m, which is 1 % higher). Not in the corpus; noted for the contract discussion.
