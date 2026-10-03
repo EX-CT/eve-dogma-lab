@@ -108,6 +108,12 @@ impl std::ops::IndexMut<&'static str> for J {
 fn write_str(out: &mut String, s: &str) {
     out.push('"');
     let b = s.as_bytes();
+    // fast path: nearly every key/value needs no escaping (tight, branch-light scan, then one copy)
+    if b.iter().all(|&c| c >= 0x20 && c != b'"' && c != b'\\') {
+        out.push_str(s);
+        out.push('"');
+        return;
+    }
     let mut start = 0;
     for (i, &c) in b.iter().enumerate() {
         let esc: &str = match c {
