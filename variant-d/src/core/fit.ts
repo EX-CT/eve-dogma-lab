@@ -736,9 +736,15 @@ function applyRah(fit: Fit, req: NormRequest): void {
   const ds = fit.ds;
   const eid = ds.effectId('adaptiveArmorHardener');
   if (eid === 0) return;
+  const rahs: number[] = [];
+  for (const it of fit.items) {
+    if (it.kind !== Kind.Module || it.state < State.Active) continue;
+    const ef = it.effects;
+    for (let k = 0; k < ef.length; k++) if (ef[k][0] === eid) { rahs.push(it.idx); break; }
+  }
+  if (rahs.length === 0) { fit.invalidate(); return; }
   const attrs = ['armorEmDamageResonance', 'armorThermalDamageResonance', 'armorKineticDamageResonance', 'armorExplosiveDamageResonance'].map((n) => ds.attrId(n));
   const shiftAttr = ds.attrId('resistanceShiftAmount');
-  const rahs = fit.items.filter((it) => it.kind === Kind.Module && it.state >= State.Active && it.effects.some(([e]) => e === eid)).map((it) => it.idx);
   const disable = req.options.rah === 'disable';
   const dp = req.damage_pattern ?? { em: 25, thermal: 25, kinetic: 25, explosive: 25 };
   const pattern = [dp.em, dp.thermal, dp.kinetic, dp.explosive];
