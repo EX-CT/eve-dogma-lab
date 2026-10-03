@@ -439,7 +439,7 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
 
   const point = (x: number) => {
     let distance: number | null = prm.distance_m ?? null;
-    let time: number | null = prm.time_s ?? null;
+    let time: number | null = prm.time_s === undefined || prm.time_s === null ? null : Math.min(2500, Math.max(0, prm.time_s));
     let tgtSpeedAbs: number | null = prm.tgt_speed_mps ?? null;
     let tgtSigBase = tgt.sig;
     switch (req.x.axis) {
@@ -458,6 +458,17 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
       case "tgt_sig_m":
         if (!(x > 0)) return null;
         tgtSigBase = x;
+        break;
+      case "tgt_speed_pct": {
+        if (x < 0) return null;
+        const mv = tgt.fit ? tgt.fit.stats.navigation.max_velocity : tgt.maxSpeed;
+        tgtSpeedAbs = (x / 100) * mv;
+        break;
+      }
+      case "tgt_sig_pct":
+        if (!(x > 0) || tgt.sig === Infinity) return null;
+        tgtSigBase = (x / 100) * tgt.sig;
+        if (!(tgtSigBase > 0)) return null;
         break;
       default:
         throw new GraphError("BAD_AXIS", `damage has no x axis ${req.x.axis}`, "x.axis");
@@ -487,8 +498,8 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
       const sl = fit.stats.navigation; // speed limit not modelled for targets
       void sl;
       const speedPct = tgtSpeedAbs !== null ? null : (prm.tgt_speed_pct ?? 100) / 100;
-      const tgtSpeed = speedPct !== null ? maxSpeed * speedPct : Math.min(tgtSpeedAbs!, mv0) * (mv0 > 0 ? maxSpeed / mv0 : 1);
-      sig = req.x.axis === "tgt_sig_m" ? tgtSigBase * stackMultiply(tpM) : foldExtended(fit.ship.stack.signatureRadius, tpM);
+      const tgtSpeed = speedPct !== null ? maxSpeed * speedPct : tgtSpeedAbs! * (mv0 > 0 ? maxSpeed / mv0 : 1);
+      sig = req.x.axis === "tgt_sig_m" || req.x.axis === "tgt_sig_pct" ? tgtSigBase * stackMultiply(tpM) : foldExtended(fit.ship.stack.signatureRadius, tpM);
       return { distance, time, tgtSpeed, sig };
     }
     const baseSpeed = tgtSpeedAbs !== null ? tgtSpeedAbs : ((prm.tgt_speed_pct ?? 100) / 100) * maxSpeed;
@@ -499,7 +510,7 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
 
   const resMul = settings.ignore_resists ? [1, 1, 1, 1] : tgt.resists.map((r) => 1 - r);
   const dmgOf = (v: number[]) => v.reduce((s, x, i) => s + x * resMul[i], 0);
-  const tMax = req.x.axis === "time_s" ? Math.max(0, ...req.x.values.filter((v) => v <= 2500)) : (prm.time_s ?? 0);
+  const tMax = req.x.axis === "time_s" ? Math.max(0, ...req.x.values.filter((v) => v <= 2500)) : Math.min(2500, Math.max(0, prm.time_s ?? 0));
   const schedules = new Map<Dealer, TimeState>();
   const sched = (d: Dealer) => {
     let s = schedules.get(d);
