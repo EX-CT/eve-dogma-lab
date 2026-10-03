@@ -262,6 +262,21 @@ fn domain_of(c: i32) -> Domain {
     }
 }
 
+/// Effects whose SDE modifiers disagree with Pyfa's hand-written handlers (CONTRACT-MUTATED §3.3).
+/// `boosterMissileExplosionCloudPenaltyFixed` (Exile/Mindflood side effect): the SDE filters charges requiring
+/// skill 3452 (Acceleration Control); Pyfa uses Missile Launcher Operation (3319).
+fn pyfa_effect_overrides(effects: &mut FxHashMap<u32, EffectInfo>) {
+    for e in effects.values_mut() {
+        if e.name == "boosterMissileExplosionCloudPenaltyFixed" {
+            for m in &mut e.mods {
+                if m.extra == 3452 {
+                    m.extra = 3319;
+                }
+            }
+        }
+    }
+}
+
 impl Dataset {
     pub fn load_path(path: &str) -> Result<Dataset, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
@@ -299,6 +314,8 @@ impl Dataset {
         type_by_name: FxHashMap<String, u32>,
         skills: Vec<u32>,
     ) -> Dataset {
+        let mut effects = effects;
+        pyfa_effect_overrides(&mut effects);
         let attr_by_name = attrs.values().map(|a| (a.name.clone(), a.id)).collect();
         let effect_by_name = effects.values().map(|e| (e.name.clone(), e.id)).collect();
         Dataset { build, release_date, sha256, types, groups, categories, attrs, effects, dbuffs, mutaplasmids, names_zh, attr_by_name, effect_by_name, type_by_name, skills }
@@ -430,6 +447,8 @@ impl Dataset {
             .get("zh")
             .map(|m| m.iter().map(|(k, v)| (k.parse().unwrap_or(0), v.clone())).collect())
             .unwrap_or_default();
+        let mut effects = effects;
+        pyfa_effect_overrides(&mut effects);
         Ok(Dataset {
             build: raw.sde.build,
             release_date: raw.sde.release_date,

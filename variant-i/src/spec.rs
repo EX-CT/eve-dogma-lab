@@ -6,6 +6,7 @@ use crate::request::{FitRequest, ModuleReq, Slot, State};
 use crate::data::Func;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
+use smallvec::SmallVec;
 
 /// requiredSkill1..6
 pub const REQ_SKILL_ATTRS: [u32; 6] = [182, 183, 184, 1285, 1289, 1290];
@@ -199,6 +200,48 @@ fn fit_skill_context(ds: &Dataset, req: &FitRequest) -> (FxHashSet<u32>, FxHashS
     (need, groups)
 }
 
+/// Effective rolled values of a mutation (CONTRACT-MUTATED §2.4, Pyfa `Mutator`): every attribute the mutaplasmid
+/// lists and the base type has, starting from the base type's value; a given value is kept when value/base lies within
+/// the 3-decimal-rounded [min, max] multipliers and clamped to that range otherwise; base 0 gives 0; attributes the
+/// mutaplasmid does not list are ignored. Without a known mutaplasmid the given values are used as they are.
+pub fn mutated_values(ds: &Dataset, m: &crate::request::Mutation) -> Vec<(u32, f64)> {
+    let muta = m.mutaplasmid_type_id.and_then(|id| ds.mutaplasmids.get(&id));
+    let base_t = ds.types.get(&m.base_type_id);
+    let (Some(mu), Some(bt)) = (muta, base_t) else {
+        let mut v: Vec<(u32, f64)> = m.attributes.iter().filter_map(|(k, v)| k.parse::<u32>().ok().map(|a| (a, *v))).collect();
+        v.sort_unstable_by_key(|x| x.0);
+        return v;
+    };
+    let mut out: Vec<(u32, f64)> = Vec::with_capacity(mu.attrs.len());
+    for (k, (lo, hi)) in &mu.attrs {
+        let Ok(aid) = k.parse::<u32>() else { continue };
+        let bv = if aid == 4 { Some(bt.mass) } else { bt.attr(aid) };
+        let Some(bv) = bv else { continue };
+        let v = m.attributes.get(k).copied().unwrap_or(bv);
+        let (lo, hi) = (round3(*lo), round3(*hi));
+        let val = if bv == 0.0 {
+            0.0
+        } else {
+            let r = v / bv;
+            if lo <= r && r <= hi {
+                v
+            } else {
+                let (a, b) = (lo * bv, hi * bv);
+                let (mn, mx) = if a < b { (a, b) } else { (b, a) };
+                v.clamp(mn, mx)
+            }
+        };
+        out.push((aid, val));
+    }
+    out.sort_unstable_by_key(|x| x.0);
+    out
+}
+
+/// Python round(x, 3) for the mutaplasmid multipliers (they have at most a few decimals, so no tie issues)
+fn round3(x: f64) -> f64 {
+    (x * 1000.0).round() / 1000.0
+}
+
 struct B<'a> {
     ds: &'a Dataset,
     cache: &'a mut SpecCache,
@@ -301,20 +344,7 @@ impl<'a> B<'a> {
             v.sort_unstable_by_key(|x| x.0);
             item.attrs = v;
         }
-        let muta = m.mutaplasmid_type_id.and_then(|id| ds.mutaplasmids.get(&id));
-        let base_t = ds.types.get(&m.base_type_id);
-        for (k, v) in &m.attributes {
-            let Ok(aid) = k.parse::<u32>() else { continue };
-            let mut val = *v;
-            if let (Some(mu), Some(bt)) = (muta, base_t) {
-                if let (Some((lo, hi)), Some(bv)) = (mu.attrs.get(k), bt.attr(aid)) {
-                    let (a, b) = (bv * lo, bv * hi);
-                    let (mn, mx) = if a < b { (a, b) } else { (b, a) };
-                    if bv != 0.0 {
-                        val = val.clamp(mn, mx);
-                    }
-                }
-            }
+        for (aid, val) in mutated_values(ds, m) {
             self.m(idx).set(aid, val);
         }
     }
@@ -496,12 +526,29 @@ pub fn build(ds: &Dataset, cache: &mut SpecCache, req: &FitRequest, proj_fit: &m
         it.fighter_abilities = f.abilities.clone().or_else(|| Some(default_fighter_abilities(ds, &it.effects)));
         it.req_index = Some(i);
     }
+    // Pyfa HandledImplantList/HandledBoosterList.append: an entry whose slot (implantness 331 / boosterness 1087)
+    // is already taken by an earlier entry is ignored (CONTRACT-MUTATED §3.1)
+    let slot_of = |t: u32, a: u32| ds.types.get(&t).and_then(|ti| ti.attr(a)).map(|v| v.to_bits());
+    let mut taken: SmallVec<[u64; 8]> = SmallVec::new();
     for (i, imp) in req.implants.iter().enumerate() {
+        if let Some(s) = slot_of(*imp, 331) {
+            if taken.contains(&s) {
+                continue;
+            }
+            taken.push(s);
+        }
         let idx = b.new_item(ItemKey::Implant(i as u32), *imp, Kind::Implant, Loc::Char, &format!("/implants/{i}"))?;
         b.m(idx).owned = false;
         b.m(idx).req_index = Some(i);
     }
+    taken.clear();
     for (i, bo) in req.boosters.iter().enumerate() {
+        if let Some(s) = slot_of(bo.type_id, 1087) {
+            if taken.contains(&s) {
+                continue;
+            }
+            taken.push(s);
+        }
         let idx = b.new_item(ItemKey::Booster(i as u32), bo.type_id, Kind::Booster, Loc::Char, &format!("/boosters/{i}"))?;
         b.m(idx).owned = false;
         b.m(idx).booster_side_effects = bo.side_effects.clone();

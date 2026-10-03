@@ -35,7 +35,8 @@ fn parse_mutations(ds: &Dataset, text: &str) -> Result<(std::collections::HashMa
         let e = t.find(']').unwrap();
         let n: u32 = t[1..e].parse().unwrap();
         let base_name = t[e + 1..].trim();
-        let base = ds.type_by_name(base_name).ok_or(format!("unknown mutated base '{base_name}'"))?;
+        // Pyfa ignores the header's base name: the item line referencing [N] names the base (set in `parse`)
+        let base = ds.type_by_name(base_name).unwrap_or(0);
         let mut m = Mutation { base_type_id: base, mutaplasmid_type_id: None, attributes: Default::default() };
         i += 1;
         while i < lines.len() && !is_head(lines[i]) {
@@ -103,13 +104,15 @@ pub fn parse(ds: &Dataset, text: &str) -> Result<FitRequest, String> {
         if line.starts_with("[Empty") {
             continue;
         }
+        // "Name, Charge /offline [N]": the mutation reference comes last
+        let (line, mref) = mut_ref(line);
         let (line, offline) = match line.strip_suffix("/OFFLINE").or_else(|| line.strip_suffix("/offline")) {
             Some(l) => (l.trim(), true),
             None => (line, false),
         };
-        let (line, mref) = mut_ref(line);
         let mutation = match mref {
-            Some(n) => Some(muts.get(&n).cloned().ok_or(format!("mutation [{n}] not defined"))?),
+            // a reference without a block gives the plain base item (Pyfa)
+            Some(n) => muts.get(&n).cloned(),
             None => None,
         };
         // "Name xN" => drone / fighter / cargo
@@ -117,7 +120,9 @@ pub fn parse(ds: &Dataset, text: &str) -> Result<FitRequest, String> {
             if let Ok(n) = line[pos + 2..].trim().parse::<u32>() {
                 let name = line[..pos].trim();
                 let Some(mut tid) = ds.type_by_name(name) else { return Err(format!("unknown item '{name}'")) };
-                if let Some(m) = &mutation {
+                let mut mutation = mutation.clone();
+                if let Some(m) = &mut mutation {
+                    m.base_type_id = tid;
                     tid = mutated_type(ds, m);
                 }
                 let t = &ds.types[&tid];
@@ -133,7 +138,9 @@ pub fn parse(ds: &Dataset, text: &str) -> Result<FitRequest, String> {
         let name = parts.next().unwrap().trim();
         let charge = parts.next().map(|s| s.trim());
         let Some(mut tid) = ds.type_by_name(name) else { return Err(format!("unknown item '{name}'")) };
-        if let Some(m) = &mutation {
+        let mut mutation = mutation;
+        if let Some(m) = &mut mutation {
+            m.base_type_id = tid;
             tid = mutated_type(ds, m);
         }
         let t = &ds.types[&tid];
@@ -173,6 +180,47 @@ pub fn parse(ds: &Dataset, text: &str) -> Result<FitRequest, String> {
         }
     }
     Ok(req)
+}
+
+/// implants/boosters after the slot rule: a later entry for an occupied slot is dropped (CONTRACT-MUTATED §3.1)
+fn first_per_slot(ds: &Dataset, ids: impl Iterator<Item = u32>, slot_attr: u32) -> Vec<u32> {
+    let mut seen: Vec<u64> = Vec::new();
+    ids.filter(|t| match ds.types.get(t).and_then(|ti| ti.attr(slot_attr)) {
+        Some(s) if seen.contains(&s.to_bits()) => false,
+        Some(s) => {
+            seen.push(s.to_bits());
+            true
+        }
+        None => true,
+    })
+    .collect()
+}
+
+/// Pyfa `fullName` of a mutated item: "<mutaplasmid short name> <base name>" (the short name keeps the grade only,
+/// or grade + kind for drone mutaplasmids, with "Glorified " written "Gl. "); the resulting type's name when the
+/// short name equals the mutaplasmid's own name.
+fn mutated_full_name(ds: &Dataset, m: &Mutation, resulting: u32) -> String {
+    let nm = |id: u32| ds.types.get(&id).map(|t| t.name.replace("Caustic", "Tachyon")).unwrap_or_default();
+    let Some(mid) = m.mutaplasmid_type_id else { return nm(resulting) };
+    let full = nm(mid);
+    let mut short = full.clone();
+    for kw in ["Decayed", "Glorified Decayed", "Gravid", "Glorified Gravid", "Unstable", "Glorified Unstable", "Radical", "Glorified Radical"] {
+        if short.starts_with(&format!("{kw} ")) {
+            short = kw.to_string();
+        }
+    }
+    // "<grade> <size> Drone <kind> Mutaplasmid" (grade may be "Glorified X")
+    let w: Vec<&str> = short.split(' ').collect();
+    let g = if w.first() == Some(&"Glorified") { 2 } else { 1 };
+    if w.len() == g + 4 && w[g + 1] == "Drone" && w[g + 3] == "Mutaplasmid" && w.iter().all(|x| !x.is_empty()) {
+        short = format!("{} {}", w[..g].join(" "), w[g + 2]);
+    }
+    let short = short.replace("Glorified ", "Gl. ");
+    if short != full {
+        format!("{short} {}", nm(m.base_type_id))
+    } else {
+        nm(resulting)
+    }
 }
 
 /// Python `repr(float)` of Pyfa's `floatUnerr(v)` (7 significant digits kept), as Pyfa prints mutated values.
@@ -296,7 +344,7 @@ pub fn export_with(ds: &Dataset, req: &FitRequest, name: &str, ship_attr: &dyn F
     let dmut = |d: &DroneReq| d.mutation.as_ref().map(|m| m.mutaplasmid_type_id.is_some()).unwrap_or(false);
     drones.sort_by_cached_key(|d| {
         let mg = ds.types.get(&dbase(d)).and_then(|t| t.market_group);
-        let full = if dmut(d) { ds.types.get(&d.type_id).map(|t| t.name.clone()).unwrap_or_default() } else { n(d.type_id) };
+        let full = if dmut(d) { mutated_full_name(ds, d.mutation.as_ref().unwrap(), d.type_id) } else { n(d.type_id) };
         (drone_order(mg), dmut(d), full)
     });
     let mut dl: Vec<String> = Vec::new();
@@ -334,12 +382,12 @@ pub fn export_with(ds: &Dataset, req: &FitRequest, name: &str, ship_attr: &dyn F
 
     // Section 3: implants (by implantness), boosters (by boosterness)
     let mut charsec: Vec<String> = Vec::new();
-    let mut imps: Vec<u32> = req.implants.clone();
+    let mut imps: Vec<u32> = first_per_slot(ds, req.implants.iter().copied(), 331);
     imps.sort_by(|a, b| attr(*a, "implantness").partial_cmp(&attr(*b, "implantness")).unwrap());
     if !imps.is_empty() {
         charsec.push(imps.iter().map(|i| n(*i)).collect::<Vec<_>>().join("\n"));
     }
-    let mut boos: Vec<u32> = req.boosters.iter().map(|b| b.type_id).collect();
+    let mut boos: Vec<u32> = first_per_slot(ds, req.boosters.iter().map(|b| b.type_id), 1087);
     boos.sort_by(|a, b| attr(*a, "boosterness").partial_cmp(&attr(*b, "boosterness")).unwrap());
     if !boos.is_empty() {
         charsec.push(boos.iter().map(|i| n(*i)).collect::<Vec<_>>().join("\n"));
@@ -365,10 +413,10 @@ pub fn export_with(ds: &Dataset, req: &FitRequest, name: &str, ship_attr: &dyn F
             .iter()
             .enumerate()
             .map(|(k, m)| {
-                let mut kv: Vec<(String, f64)> = m
-                    .attributes
-                    .iter()
-                    .map(|(a, v)| (a.parse::<u32>().ok().and_then(|id| ds.attrs.get(&id)).map(|x| x.name.clone()).unwrap_or(a.clone()), *v))
+                // Pyfa prints the validated mutator values (CONTRACT-MUTATED §4)
+                let mut kv: Vec<(String, f64)> = crate::spec::mutated_values(ds, m)
+                    .into_iter()
+                    .map(|(a, v)| (ds.attrs.get(&a).map(|x| x.name.clone()).unwrap_or(a.to_string()), v))
                     .collect();
                 kv.sort_by(|a, b| a.0.cmp(&b.0));
                 let attrs = kv.iter().map(|(a, v)| format!("{a} {}", py_float(*v))).collect::<Vec<_>>().join(", ");
