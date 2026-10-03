@@ -58,8 +58,48 @@ pub fn type_attr_ids(ix: usize) -> &'static [u16] {
     &TA_ID[t.attrs as usize..t.attrs as usize + t.n_attrs as usize]
 }
 /// Base (unmodified) attribute value of a type.
+const TA_CACHE_N: usize = 4096;
+thread_local! {
+    /// direct-mapped (type, attr) -> index into VALS (u32::MAX = absent) cache; the data is static, so entries never go stale
+    static TA_KEY: [std::cell::Cell<u64>; TA_CACHE_N] = const { [const { std::cell::Cell::new(u64::MAX) }; TA_CACHE_N] };
+    static TA_VI: [std::cell::Cell<u32>; TA_CACHE_N] = const { [const { std::cell::Cell::new(0) }; TA_CACHE_N] };
+}
+
 #[inline]
 pub fn type_attr(ix: usize, attr: u16) -> Option<f64> {
+    let key = ((ix as u64) << 16) | attr as u64;
+    let h = ((key.wrapping_mul(0x9E37_79B9_7F4A_7C15)) >> 52) as usize & (TA_CACHE_N - 1);
+    let vi = TA_KEY.with(|k| {
+        if k[h].get() == key {
+            Some(TA_VI.with(|v| v[h].get()))
+        } else {
+            None
+        }
+    });
+    let vi = match vi {
+        Some(v) => v,
+        None => {
+            let v = type_attr_vi(ix, attr);
+            TA_KEY.with(|k| k[h].set(key));
+            TA_VI.with(|c| c[h].set(v));
+            v
+        }
+    };
+    if vi == u32::MAX { None } else { Some(VALS[vi as usize]) }
+}
+
+fn type_attr_vi(ix: usize, attr: u16) -> u32 {
+    let t = &TYPES[ix];
+    let s = t.attrs as usize;
+    let ids = &TA_ID[s..s + t.n_attrs as usize];
+    match ids.binary_search(&attr) {
+        Ok(k) => TA_VAL[s + k] as u32,
+        Err(_) => u32::MAX,
+    }
+}
+
+#[allow(dead_code)]
+fn type_attr_uncached(ix: usize, attr: u16) -> Option<f64> {
     let t = &TYPES[ix];
     let s = t.attrs as usize;
     let ids = &TA_ID[s..s + t.n_attrs as usize];
