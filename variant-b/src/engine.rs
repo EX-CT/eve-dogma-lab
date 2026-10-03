@@ -1549,15 +1549,38 @@ impl<'a> Fit<'a> {
         let mut meta: Vec<NodeMeta> = Vec::with_capacity(total_nodes);
         let mut node_of_mod: Vec<u32> = Vec::with_capacity(sorted.len());
         let mut last: Option<(u32, u32)> = None;
+        // attrs ascend within an item, so the base lookup walks patch / type_attrs with cursors
+        // (same result as base_opt, without two binary searches per node)
+        let (mut pi, mut ti) = (0usize, 0usize);
         for r in &sorted {
             if last != Some((r.item, r.attr)) {
+                if last.map(|l| l.0) != Some(r.item) {
+                    pi = 0;
+                    ti = 0;
+                }
                 last = Some((r.item, r.attr));
                 let nid = meta.len() as u32;
                 let it = &mut self.items[r.item as usize];
                 it.nodes.push((r.attr, nid)); // sorted because order is sorted by attr within item
                 let am = prep.meta(r.attr);
+                let base = {
+                    let p = &it.patch;
+                    while pi < p.len() && p[pi].0 < r.attr {
+                        pi += 1;
+                    }
+                    if pi < p.len() && p[pi].0 == r.attr {
+                        p[pi].1
+                    } else {
+                        let t = it.type_attrs;
+                        while ti < t.len() && t[ti].0 < r.attr {
+                            ti += 1;
+                        }
+                        if ti < t.len() && t[ti].0 == r.attr { t[ti].1 } else { am.default }
+                    }
+                };
+                debug_assert_eq!(base.to_bits(), it.base_opt(r.attr).unwrap_or(am.default).to_bits());
                 meta.push(NodeMeta {
-                    base: it.base_opt(r.attr).unwrap_or(am.default),
+                    base,
                     high_is_good: am.high_is_good,
                     round2: am.round2,
                     min: None,
