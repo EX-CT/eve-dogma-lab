@@ -19,8 +19,8 @@ test("stacking penalty: the second-strongest multiplier counts ~86.9 %", () => {
   assert.ok(Math.abs(m - 0.5 * (1 - 0.5 * 0.8691199806)) < 1e-6, String(m));
 });
 
-test("graph registry lists all nine graphs", () => {
-  assert.deepEqual(Object.keys(graphs()).sort(), ["application_profile", "capacitor", "damage", "ewar", "lock_time", "mobility", "remote_reps", "shield_regen", "warp_time"]);
+test("graph registry lists all ten graphs", () => {
+  assert.deepEqual(Object.keys(graphs()).sort(), ["application_profile", "capacitor", "damage", "ecm_burst", "ewar", "lock_time", "mobility", "remote_reps", "shield_regen", "warp_time"]);
 });
 
 test("unknown graph / axis errors", () => {
@@ -35,6 +35,19 @@ test("validation order and empty x", () => {
   const r = evaluate({ graph: "damage", fit: {}, x: { axis: "distance_m", values: [] }, y: ["dps", "volley"] } as any, {} as any);
   assert.deepEqual(r.x, []);
   assert.deepEqual(r.series, { dps: [], volley: [] });
+});
+
+test("ecm_burst: lock time and src_damage loop", () => {
+  const prim: any = { source: { items: [], ship: { attrs: { signatureRadius: 100 } }, stats: { offense: { total: { weapon_dps: 100, drone_dps: 50, fighter_dps: 0 } }, defense: { ehp: { total: 3000 } } } } };
+  const lock = 40000 / 700 / Math.asinh(100) ** 2;
+  const r = evaluate({ graph: "ecm_burst", fit: {}, x: { axis: "tgt_scan_res_mm", values: [700, 0.5] }, y: ["tgt_lock_time_s", "tgt_lock_uptime_s", "src_damage"] } as any, prim);
+  assert.ok(Math.abs(r.series.tgt_lock_time_s[0]! - lock) < 1e-9);
+  assert.equal(r.series.tgt_lock_time_s[1], null);
+  const up = 30 - lock - 1;
+  const alive1 = 30 - up + Math.min(up, 3000 / 200); // dies in the first cycle (rem < 0 stops the loop)
+  const dmg = alive1 * 100 + (alive1 - 3) * 50;
+  assert.ok(Math.abs(r.series.src_damage[0]! - dmg) < 1e-6, `${r.series.src_damage[0]} vs ${dmg}`);
+  assert.throws(() => evaluate({ graph: "ecm_burst", fit: {}, x: { axis: "tgt_dps", values: [1] }, y: ["tgt_lock_time_s"] } as any, prim), /not defined/);
 });
 
 test("golden: evaluator output for stored primitives is unchanged", () => {
