@@ -4,7 +4,7 @@ import { damageGraph } from "./damage.js";
 import type { GraphRequest, Primitives } from "./types.js";
 import { GraphError } from "./types.js";
 
-interface Variant { type_id: number; name: string; meta_group?: number; meta_level?: number; source: { items: any[]; stats: any } }
+interface Variant { type_id: number; name: string; meta_group?: number; meta_level?: number; source: { items: any[]; offense: any } }
 
 /** quality tiers: t1 = Tech I charges; navy = Tech I + faction; all = everything the module can load */
 function inTier(v: Variant, tier: string): boolean {
@@ -53,7 +53,9 @@ export function applicationProfile(req: GraphRequest, p: Primitives): Record<str
   const dreq: GraphRequest = { ...req, graph: "damage", y: req.y, settings: { ...(req.settings ?? {}), _targetGrid: targetGrid(ch, tier) } as any };
   for (const v of ch?.variants ?? []) {
     if (!inTier(v, tier)) continue;
-    const vp: Primitives = { ...p, source: { ...p.source, items: v.source.items, stats: v.source.stats } };
+    // the variant carries only what the charge changes: the dominant modules and the offense stats
+    const items = p.source.items.map((it) => (it.kind === "module" && only.has(it.index as number) ? v.source.items.find((x) => x.index === it.index) ?? it : it));
+    const vp: Primitives = { ...p, source: { ...p.source, items, stats: { ...p.source.stats, offense: v.source.offense } } };
     const r = damageGraph(dreq, vp, only);
     for (const y of req.y) {
       for (let i = 0; i < n; i++) {

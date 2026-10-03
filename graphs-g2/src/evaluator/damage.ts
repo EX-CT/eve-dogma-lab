@@ -457,10 +457,11 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
 
   const resMul = settings.ignore_resists ? [1, 1, 1, 1] : tgt.resists.map((r) => 1 - r);
   const dmgOf = (v: number[]) => v.reduce((s, x, i) => s + x * resMul[i], 0);
+  const tMax = req.x.axis === "time_s" ? Math.max(0, ...req.x.values.filter((v) => v <= 2500)) : (prm.time_s ?? 0);
   const schedules = new Map<Dealer, TimeState>();
   const sched = (d: Dealer) => {
     let s = schedules.get(d);
-    if (!s) schedules.set(d, (s = dealerSchedule(d, src)));
+    if (!s) schedules.set(d, (s = dealerSchedule(d, src, tMax)));
     return s;
   };
 

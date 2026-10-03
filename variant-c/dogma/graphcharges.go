@@ -109,7 +109,24 @@ func chargeVariants(ds *Dataset, req FitRequest) obj {
 		}
 		vf.Release()
 		ct := ds.typ(cid)
-		v := obj{"type_id": cid, "name": ct.Name, "group": ct.Group, "source": obj{"items": p["items"], "stats": p["stats"]}}
+		// only what changes with the charge: the dominant group's module primitives and the offense stats
+		inGroup := map[int]bool{}
+		for _, i := range idx {
+			inGroup[i] = true
+		}
+		its := []any{}
+		for _, x := range p["items"].([]any) {
+			if o, ok := x.(obj); ok && o["kind"] == "module" {
+				if k, ok := o["index"].(int); ok && inGroup[k] {
+					its = append(its, o)
+				}
+			}
+		}
+		var off any
+		if st, ok := p["stats"].(obj); ok {
+			off = st["offense"]
+		}
+		v := obj{"type_id": cid, "name": ct.Name, "group": ct.Group, "source": obj{"items": its, "offense": off}}
 		if ct.MetaGroup != nil {
 			v["meta_group"] = *ct.MetaGroup
 		}

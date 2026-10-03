@@ -7,7 +7,9 @@ export interface TimeState {
   at(t: number): { dps: number[]; volley: number[]; total: number[] };
 }
 
-export function dealerSchedule(d: Dealer, _p: FitPrim): TimeState {
+/** tMax: the latest time that will be queried (events after it are not built). */
+export function dealerSchedule(d: Dealer, _p: FitPrim, tMax = 2500): TimeState {
+  const end = Math.min(2500, tMax) + 1e-6;
   const it = d.item;
   const cyc = it.cycle;
   // events: [time s, volley vector, dps vector (for the cycle that starts here)]
@@ -20,7 +22,7 @@ export function dealerSchedule(d: Dealer, _p: FitPrim): TimeState {
     const sub = (it.attrs.doomsdayDamageCycleTime ?? 0) / 1000;
     const n = sub > 0 ? Math.max(Math.floor(floatUnerr((it.attrs.doomsdayDamageDuration ?? 0) / 1000 / sub)), 0) : 1;
     const ticks: number[] = [];
-    for (let c = 0; c <= 2500 && period > 0; c += period) for (let k = 0; k < n; k++) ticks.push(c + warn + k * sub);
+    for (let c = 0; c <= end && period > 0; c += period) for (let k = 0; k < n; k++) ticks.push(c + warn + k * sub);
     return {
       at(t: number) {
         const tu = floatUnerr(t);
@@ -42,7 +44,7 @@ export function dealerSchedule(d: Dealer, _p: FitPrim): TimeState {
     let n = 0;
     let shot = 0;
     let spoolN = 0;
-    while (t <= 2500 + 1e-9 && n < 200000) {
+    while (t <= end && n < 200000) {
       const mult = 1 + Math.min(step * spoolN, maxB);
       const vol = unspooled.map((v) => v * mult);
       let len = full;
@@ -61,7 +63,7 @@ export function dealerSchedule(d: Dealer, _p: FitPrim): TimeState {
     const cycS = d.volley.some((v) => v > 0) && d.dps.some((v) => v > 0) ? d.volley[d.dps.findIndex((v) => v > 0)] / d.dps[d.dps.findIndex((v) => v > 0)] : 0;
     let t = 0;
     let n = 0;
-    while (cycS > 0 && t <= 2500 + 1e-9 && n < 200000) {
+    while (cycS > 0 && t <= end && n < 200000) {
       ev.push({ t, volley: d.volley, dps: d.dps });
       t += cycS;
       n++;

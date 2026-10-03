@@ -1,0 +1,5 @@
+#!/bin/sh
+# The variant-c engine compiled to WebAssembly (GOOS=js GOARCH=wasm), run under Node with Go's wasm_exec shim.
+# Build: (cd ../variant-c && GOOS=js GOARCH=wasm go build -trimpath -o bin/eve-dogma.wasm ./cmd/eve-dogma-go)
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+exec node "$(go env GOROOT)/lib/wasm/wasm_exec_node.js" "$DIR/../variant-c/bin/eve-dogma.wasm" "$@"
