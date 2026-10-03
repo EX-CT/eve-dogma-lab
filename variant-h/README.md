@@ -42,9 +42,19 @@ In the browser there is no file mapping and no derived cache: the dataset is par
 Node), then each calc takes about 1.8 ms. The native build uses mimalloc and the mmapped cache; WebAssembly uses the
 default allocator.
 
+## Known differences from Variant A (unscored)
+
+- Module state: a requested state the module cannot take (`active` without an active effect, `overheated` without an
+  overload effect) is kept as requested, as in A. With every module of a bench fit set to `overheated`, 34 of the 326
+  fits differ from A in capacitor-simulation details only (`capacitor.depletes_in_s`, `stable_percent`,
+  `eve_stable_percent`, `sim_iterations`). The two simulators step differently once overheat changes cycle times.
+  These fields are not scored (coordinator ruling, 2026-10-03); all scored values match.
+- Malformed JSON is reported as `BAD_JSON` (contract code). A currently reports `BAD_REQUEST`.
+
 ## License
 
-LGPL-3.0-or-later (`LICENSE`, plus `LICENSE.GPL-3.0`, which it incorporates), following the EX-CT engine policy in
+LGPL-3.0-or-later (`LICENSE`, plus `LICENSE.GPL-3.0`, which it incorporates; the same texts are at the branch root
+as `LICENSE` and `COPYING`), following the EX-CT engine policy in
 `eve-fit-docs/LICENSING.md`. Variant H is a clean-room implementation from CCP data and public formulas; Pyfa was
 used only as a black-box test oracle, and no Pyfa code is included. EVE data is © CCP Games and used under the CCP
 developer license; this project is not affiliated with CCP.
