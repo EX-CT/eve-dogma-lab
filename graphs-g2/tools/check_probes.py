@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Replay extra oracle probes (testdata/app-probes.jsonl: GraphRequest + Pyfa graph-oracle result per line,
-mostly application_profile around web ranges, tiers and random fits) through ./bin/graph-batch.
+"""Replay extra oracle probes (testdata/oracle-probes.jsonl: GraphRequest + Pyfa graph-oracle result per line,
+application_profile around web ranges/tiers plus random application_profile and damage requests on every corpus fit) through ./bin/graph-batch.
 Usage: tools/check_probes.py [--dataset D]   Tolerance as in the bench: max(1e-3, 1e-4*|want|)."""
 import json, subprocess, sys, os
 here = os.path.dirname(os.path.abspath(__file__))
 D = sys.argv[sys.argv.index("--dataset") + 1] if "--dataset" in sys.argv else os.environ.get("EVE_DOGMA_DATASET", "/workspace/exct-eve/data/dataset-3569502.json.gz")
-rows = [json.loads(l) for l in open(os.path.join(here, "../testdata/app-probes.jsonl"))]
+rows = [json.loads(l) for l in open(os.path.join(here, "../testdata/oracle-probes.jsonl"))]
 out = subprocess.run([os.path.join(here, "../bin/graph-batch"), "--dataset", D], input="".join(json.dumps(r["request"]) + "\n" for r in rows),
                      capture_output=True, text=True, check=True).stdout.splitlines()
 tot = bad = 0

@@ -272,8 +272,9 @@ export function applicationFactor(d: Dealer, g: Geometry, settings: any, dcr: nu
       }
       const mf = missileFactor(d.eR, d.eV, d.drf, g.tgtSig, g.tgtSpeed);
       if (atTarget) return mf;
-      const surf = dist === null ? null : g.atkRadius + dist;
-      const rf = d.kind === "fighter_attack" ? rangeFactor(d.optimal, d.falloff, surf, false) : surf === null || surf <= d.optimal ? 1 : 0;
+      // fighters left at the attacker's centre: range is measured from the fighter's surface (like drones)
+      const surf = dist === null ? null : g.atkRadius + dist - (d.item.attrs.radius ?? 0);
+      const rf = d.kind === "fighter_attack" ? rangeFactor(d.optimal, d.falloff, surf, true) : surf === null || surf <= d.optimal ? 1 : 0;
       return rf * mf;
     }
   }
