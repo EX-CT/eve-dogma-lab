@@ -1,3 +1,3 @@
-corpus: 111 requests, 1843 points; evaluator-only 67688 points/s, 4077 requests/s
-dense damage/distance 500 points (): 0.681 ms per request (evaluator only)
-dense application_profile 500 points: 58.11 ms per request (50 charges)
+corpus: 111 requests, 1843 points; evaluator-only 38123 points/s, 2296 requests/s
+dense damage/distance 500 points (): 0.538 ms per request (evaluator only)
+dense application_profile 500 points: 26.73 ms per request (50 charges)

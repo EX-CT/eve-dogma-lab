@@ -51,7 +51,7 @@ export function applicationProfile(req: GraphRequest, p: Primitives): Record<str
     out[y] = req.x.values.map((x) => (x < 0 ? null : 0));
     out[`${y}_charge_type_id`] = req.x.values.map(() => null);
   }
-  const dreq: GraphRequest = { ...req, graph: "damage", y: req.y, settings: { ...(req.settings ?? {}), ignore_lock_range: true, _app: true, _targetGrid: targetGrid(ch, tier) } as any };
+  const dreq: GraphRequest = { ...req, graph: "damage", y: req.y, settings: { ...(req.settings ?? {}), ignore_lock_range: true, _app: true, _targetGrid: targetGrid(ch, tier), _ptCache: new Map() } as any };
   for (const v of ch?.variants ?? []) {
     if (!inTier(v, tier)) continue;
     // the variant carries only what the charge changes: the dominant modules and the offense stats

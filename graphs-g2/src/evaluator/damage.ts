@@ -381,6 +381,33 @@ export function projectors(p: FitPrim): Projector[] {
   return out;
 }
 
+/**
+ * Identical weapons (same application inputs and cycle) are evaluated once: their dps / volley vectors add up and
+ * every application factor and schedule is linear in them.
+ */
+function mergeDealers(ds: Dealer[]): Dealer[] {
+  const out: Dealer[] = [];
+  const byKey = new Map<string, Dealer>();
+  for (const d of ds) {
+    if (d.kind !== "turret" && d.kind !== "missile" && d.kind !== "drone") {
+      out.push(d);
+      continue;
+    }
+    const a = d.item.attrs;
+    const key = JSON.stringify([d.kind, d.item.kind, d.mobile, d.speed, d.sig, d.optimal, d.falloff, d.tracking, d.optimalSig, d.eR, d.eV, d.drf,
+      d.rangeLow, d.rangeHigh, d.rangeChance, d.fof, d.item.cycle, a.damageMultiplierBonusPerCycle, a.damageMultiplierBonusMax, a.radius]);
+    const m = byKey.get(key);
+    if (!m) {
+      const c = { ...d, dps: d.dps.slice(), volley: d.volley.slice() };
+      byKey.set(key, c);
+      out.push(c);
+    } else {
+      for (let i = 0; i < 4; i++) (m.dps[i] += d.dps[i]), (m.volley[i] += d.volley[i]);
+    }
+  }
+  return out;
+}
+
 export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> | null = null): Record<string, (number | null)[]> {
   const settings = { ignore_resists: true, apply_projected: true, ignore_lock_range: true, ignore_drone_control_range: false, mobile_drone_mode: "auto", ...(req.settings ?? {}) };
   const prm = req.params ?? {};
@@ -393,6 +420,7 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
       return mb > 0 ? { ...d, dps: d.dps.map((v) => v / (1 + mb)), volley: d.volley.map((v) => v / (1 + mb)) } : d;
     });
   }
+  ds = mergeDealers(ds);
   const tgt = targetModel(req, p);
   const projs = settings.apply_projected ? projectors(src) : [];
   const dcr = src.stats.drones?.control_range_m ?? Infinity;
@@ -473,17 +501,24 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
     return s;
   };
 
+  // target geometry per x does not depend on the source's charges: application_profile shares it across variants
+  const ptCache: Map<number, ReturnType<typeof point>> | undefined = (settings as any)._ptCache;
+  const pointC = (x: number) => {
+    if (!ptCache) return point(x);
+    if (!ptCache.has(x)) ptCache.set(x, point(x));
+    return ptCache.get(x)!;
+  };
   const out: Record<string, (number | null)[]> = {};
   for (const y of req.y) out[y] = [];
   for (const x of req.x.values) {
-    let pt = point(x);
+    let pt = pointC(x);
     // application_profile: the target's speed / signature after projected effects is sampled on a distance grid
     // and linearly interpolated between grid nodes (observed Pyfa behaviour, see DESIGN.md)
     const grid: number = (settings as any)._targetGrid ?? 0;
     if (pt !== null && grid > 0 && req.x.axis === "distance_m" && x % grid !== 0) {
       const lo = Math.floor(x / grid) * grid;
-      const a = point(lo);
-      const b = point(lo + grid);
+      const a = pointC(lo);
+      const b = pointC(lo + grid);
       if (a && b) {
         const t = (x - lo) / grid;
         pt = { ...pt, tgtSpeed: a.tgtSpeed + (b.tgtSpeed - a.tgtSpeed) * t, sig: a.sig + (b.sig - a.sig) * t };
