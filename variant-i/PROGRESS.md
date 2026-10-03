@@ -102,3 +102,16 @@ database per request (INC_OK, FRESH_OK); EFT export 326/326; deterministic outpu
   - `overheat_order_tengu`: per-module overheat order. A hardener reads `overloadHardeningBonus` before a Defensive
     subsystem listed after it has boosted it.
 - No code has been ported yet. This was parked when I was reassigned to the mutated-modules suite.
+
+## 2026-10-03 ~09:15 CST: mutated items (CONTRACT-MUTATED 0.1, bench branch `mutated-suite`)
+- 349c6fd: reference implementation of the mutated-suite contract.
+  - Mutator validation as in Pyfa: the start value is the base type's value; the range uses 3-decimal-rounded
+    multipliers; base 0 gives 0; attributes the mutaplasmid does not list are ignored.
+  - Implant/booster slot rule: the first entry per slot wins.
+  - Effect 2791 skill override (Missile Launcher Operation).
+  - EFT `[Mutated]` export prints validated values and orders drones by Pyfa's full name.
+  - EFT import: the item-line base wins, a missing reference gives a plain item, and `/offline` may come before `[N]`.
+- Mutated suite: 93/93 cases (6,184 values), EFT export 93/93, EFT import 99/99.
+- Bench 1.8.0: still 326/326 with byte-identical batch output (corpus x5), INC_OK and FRESH_OK, EFT export 326/326,
+  deterministic. The official 08:18 row measured 9a4844a. 349c6fd adds no new optimisation; it adds a per-request
+  slot check over implants and boosters.
