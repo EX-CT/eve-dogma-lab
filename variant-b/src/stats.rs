@@ -989,6 +989,10 @@ impl<'a> Fit<'a> {
         let (a_mgf, a_mtf, a_mgo, a_mga) =
             (crate::attr_id!(ds, "maxGroupFitted"), crate::attr_id!(ds, "maxTypeFitted"), crate::attr_id!(ds, "maxGroupOnline"), crate::attr_id!(ds, "maxGroupActive"));
         let (a_rig, a_csize) = (crate::attr_id!(ds, "rigSize"), crate::attr_id!(ds, "chargeSize"));
+        // canFitShip* attribute ids in ascending order (true = group restriction), merged against each
+        // module's sorted attribute list below instead of one binary search per id
+        let mut fit_ids: Vec<(u32, bool)> = groups_attrs.iter().map(|&a| (a, true)).chain(types_attrs.iter().map(|&a| (a, false))).collect();
+        fit_ids.sort_unstable();
         let mut fitted_group: crate::hash::FxHashMap<u32, u32> = Default::default();
         let mut fitted_type: crate::hash::FxHashMap<u32, u32> = Default::default();
         let mut active_group: crate::hash::FxHashMap<u32, u32> = Default::default();
@@ -1001,9 +1005,28 @@ impl<'a> Fit<'a> {
             if it.slot.is_none() {
                 push("NOT_FITTABLE", format!("{name} is not a fittable module"), idx);
             }
-            let gr: Vec<u32> = groups_attrs.iter().filter_map(|a| mt.attr(*a)).map(|v| v as u32).filter(|v| *v != 0).collect();
-            let ty: Vec<u32> = types_attrs.iter().filter_map(|a| mt.attr(*a)).map(|v| v as u32).filter(|v| *v != 0).collect();
-            if (!gr.is_empty() || !ty.is_empty()) && !gr.contains(&ship_t.group) && !ty.contains(&ship_t.id) {
+            // restricted = some nonzero canFitShip* value; allowed = one of them names the ship's group / type
+            let (mut restricted, mut allowed) = (false, false);
+            if let Some(&(first, _)) = fit_ids.first() {
+                let at = &mt.attrs;
+                let mut p = at.partition_point(|x| x.0 < first);
+                for &(id, is_group) in &fit_ids {
+                    while p < at.len() && at[p].0 < id {
+                        p += 1;
+                    }
+                    if p == at.len() {
+                        break;
+                    }
+                    if at[p].0 == id {
+                        let v = at[p].1 as u32;
+                        if v != 0 {
+                            restricted = true;
+                            allowed |= if is_group { v == ship_t.group } else { v == ship_t.id };
+                        }
+                    }
+                }
+            }
+            if restricted && !allowed {
                 push("SHIP_RESTRICTION", format!("{name} cannot be fitted to {}", ship_t.name), idx);
             }
             if it.slot == Some(Slot::Rig) {
@@ -1040,8 +1063,8 @@ impl<'a> Fit<'a> {
             }
             if let Some(c) = it.charge {
                 let ct = &ds.types[&self.items[c].type_id];
-                let cg: Vec<u32> = vids.charge_group.iter().filter_map(|&a| mt.attr(a)).map(|v| v as u32).filter(|v| *v != 0).collect();
-                if !cg.contains(&ct.group) {
+                let cg_ok = vids.charge_group.iter().filter_map(|&a| mt.attr(a)).any(|v| v as u32 != 0 && v as u32 == ct.group);
+                if !cg_ok {
                     push("CHARGE_GROUP", format!("{} cannot be loaded into {name}", ct.name), idx);
                 }
                 let ms = mt.attr(a_csize);
