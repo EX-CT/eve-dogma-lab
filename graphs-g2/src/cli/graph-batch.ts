@@ -5,12 +5,7 @@
 // Usage: graph-batch --engine <bin> --dataset <path> [--eval-only primitives.jsonl] [--dump-primitives file]
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { evaluate, GraphError, validate } from "../evaluator/index.js";
-
-function arg(n: string): string | undefined {
-  const i = process.argv.indexOf(n);
-  return i >= 0 ? process.argv[i + 1] : undefined;
-}
+import { arg, defaultEngine, errObj, finish, precheck } from "./common.js";
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -33,24 +28,20 @@ function primitives(engine: string, dataset: string, lines: string[]): Promise<s
   });
 }
 
-function errLine(e: any): string {
-  if (e instanceof GraphError) return JSON.stringify({ error: { code: e.code, message: e.message, path: e.path } });
-  return JSON.stringify({ error: { code: "INTERNAL", message: String(e?.message ?? e), path: "" } });
-}
-
 async function main() {
-  const engine = arg("--engine") ?? new URL("../../../variant-c/bin/eve-dogma-go", import.meta.url).pathname;
+  const engine = arg("--engine") ?? defaultEngine();
   const dataset = arg("--dataset") ?? process.env.EVE_DOGMA_DATASET ?? "";
   const lines = (await readStdin()).split("\n").filter((l) => l.trim().length);
   // contract validation runs before the engine (the first failing rule wins; UNKNOWN_TYPE comes from the engine)
-  const early: (string | null)[] = lines.map((l) => {
+  const reqs: any[] = [];
+  const early: (string | null)[] = lines.map((l, i) => {
     try {
-      validate(JSON.parse(l));
-      return null;
+      reqs[i] = JSON.parse(l);
     } catch (e) {
-      if (e instanceof SyntaxError) return JSON.stringify({ error: { code: "BAD_REQUEST", message: `invalid JSON: ${e.message}`, path: "" } });
-      return errLine(e);
+      return JSON.stringify(errObj(e));
     }
+    const e = precheck(reqs[i]);
+    return e ? JSON.stringify(e) : null;
   });
   const toEngine = lines.map((l, i) => (early[i] === null ? l : "{}"));
   const evalOnly = arg("--eval-only");
@@ -63,17 +54,7 @@ async function main() {
       out.push(early[i]!);
       continue;
     }
-    try {
-      const req = JSON.parse(lines[i]);
-      const prim = JSON.parse(prims[i]);
-      if (prim.error) {
-        out.push(JSON.stringify({ error: prim.error }));
-        continue;
-      }
-      out.push(JSON.stringify(evaluate(req, prim)));
-    } catch (e) {
-      out.push(errLine(e));
-    }
+    out.push(JSON.stringify(finish(reqs[i], prims[i])));
   }
   process.stdout.write(out.join("\n") + "\n");
 }

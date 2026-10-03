@@ -1,0 +1,5 @@
+#!/bin/sh
+# serve-stdio for the bench: engine (Go) + portable evaluator (TypeScript, compiled to dist/)
+# G2_ENGINE overrides the primitives engine (e.g. bin/eve-dogma-wasm: the same engine compiled to WebAssembly).
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+exec node "$DIR/dist/cli/serve-stdio.js" --engine "${G2_ENGINE:-$DIR/../variant-c/bin/eve-dogma-go}" "$@"
