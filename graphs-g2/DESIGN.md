@@ -82,16 +82,16 @@ fit* with the correct stacking penalty (Pyfa's "extended" attributes) without th
 LGPL-3.0-or-later (see `../LICENSE`). Written from CONTRACT-GRAPHS.md, public EVE formulas and black-box
 observation of the Pyfa oracle; no Pyfa (GPL) graph code was copied or translated.
 
-## Perf (box, Node 20/22, Go 1.24)
+## Perf (shared box, Node 20, Go 1.24; numbers vary ±30 % with box load)
 
 | metric | value |
 |---|---|
 | corpus via `graph-batch` (111 requests, 1843 points; engine + evaluator, incl. process start) | 0.94 s |
 | engine `graph-primitives` for the corpus (incl. dataset load) | 0.55 s |
 | evaluator only, replaying cached primitives (`--eval-only`) | 0.33 s incl. Node start |
-| evaluator only, in-process (`bench/perf.mjs`) | ~47 k points/s, ~2.8 k requests/s |
-| dense interactive: `damage` vs distance, 500 points, evaluator only | 0.64 ms |
-| dense `application_profile`, 500 points, 50 charges | 67 ms |
+| evaluator only, in-process (`bench/perf.mjs`) | ~58 k points/s, ~3.5 k requests/s (time-axis schedules and capsim dominate) |
+| dense interactive: `damage` vs distance, 500 points, evaluator only | ~0.5 ms |
+| dense `application_profile`, 500 points, 50 charges | ~14 ms (identical weapons merged, target geometry shared across charges) |
 | cold start + one dense damage request (engine + Node) | ~190 ms |
 | primitives JSON size | median 41 KB per request; application_profile up to 1.1 MB (one module set per charge) |
 | WASM engine (`GOOS=js GOARCH=wasm`, 11.6 MB) + evaluator, whole corpus | 111/111, 8.0 s (WASM start + dataset load per batch) |
