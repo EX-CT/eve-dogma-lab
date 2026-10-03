@@ -187,6 +187,16 @@ impl<'a> Fit<'a> {
     }
 
     fn raw_cycle_ms(&self, i: usize, id: &Ids) -> f64 {
+        let c = self.cyc.borrow()[i];
+        if !c.is_nan() {
+            return c;
+        }
+        let v = self.raw_cycle_ms_eval(i, id);
+        self.cyc.borrow_mut()[i] = v;
+        v
+    }
+
+    fn raw_cycle_ms_eval(&self, i: usize, id: &Ids) -> f64 {
         let mut v: f64 = self.get(i, id.speed).max(self.get(i, id.duration));
         for a in id.dur_extra {
             if a != 0 {

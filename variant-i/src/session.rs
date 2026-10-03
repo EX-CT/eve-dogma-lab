@@ -89,6 +89,8 @@ pub struct Fit<'a> {
     pub vcache: std::cell::RefCell<FxHashMap<u64, f64>>,
     /// engine-side attribute evaluation cache for this view
     pub ecache: &'a std::cell::RefCell<engine::VCache>,
+    /// per item: raw cycle time (NaN = not yet computed)
+    pub cyc: std::cell::RefCell<Vec<f64>>,
     pub capmemo: &'a std::cell::RefCell<FxHashMap<Vec<u64>, crate::capsim::CapResult>>,
     /// layer maps 1..=layer, fetched once per view
     pub layers: Vec<&'a Arc<engine::LayerMap>>,
@@ -293,7 +295,7 @@ impl Session {
         let items: Vec<Arc<ItemSpec>> = built.items.clone();
         let layer = engine::plan(db, fit).final_layer;
         let layers: Vec<&Arc<engine::LayerMap>> = (1..=layer).map(|l| engine::layer_mods(db, fit, engine::LKey::new(db, l))).collect();
-        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special, vcache: std::cell::RefCell::new(FxHashMap::with_capacity_and_hasher(1024, Default::default())), ecache: &self.ecache, capmemo: &self.capmemo, layers, imods: std::cell::RefCell::new(vec![None; n]) })
+        Ok(Fit { ds, db, fit, items, slot_of, ship: 0, char: 1.min(n - 1), warnings, is_structure: built.is_structure, layer, proj_special, vcache: std::cell::RefCell::new(FxHashMap::with_capacity_and_hasher(1024, Default::default())), ecache: &self.ecache, capmemo: &self.capmemo, layers, imods: std::cell::RefCell::new(vec![None; n]), cyc: std::cell::RefCell::new(vec![f64::NAN; n]) })
     }
 
     fn load(&mut self, req: &FitRequest, b: &spec::Built, offers: Vec<(u32, F)>) -> FitIn {
