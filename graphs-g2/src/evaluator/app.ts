@@ -51,11 +51,12 @@ export function applicationProfile(req: GraphRequest, p: Primitives): Record<str
     out[y] = req.x.values.map((x) => (x < 0 ? null : 0));
     out[`${y}_charge_type_id`] = req.x.values.map(() => null);
   }
-  const dreq: GraphRequest = { ...req, graph: "damage", y: req.y, settings: { ...(req.settings ?? {}), ignore_lock_range: true, _app: true, _targetGrid: targetGrid(ch, tier), _ptCache: new Map() } as any };
+  const dreq: GraphRequest = { ...req, graph: "damage", y: req.y, settings: { ...(req.settings ?? {}), ignore_lock_range: true, _app: true, _targetGrid: targetGrid(ch, tier), _ptCache: new Map(), _ctx: {} } as any };
   for (const v of ch?.variants ?? []) {
     if (!inTier(v, tier)) continue;
     // the variant carries only what the charge changes: the dominant modules and the offense stats
-    const items = p.source.items.map((it) => (it.kind === "module" && only.has(it.index as number) ? v.source.items.find((x) => x.index === it.index) ?? it : it));
+    const vIdx = new Map<number, any>(v.source.items.map((x: any) => [x.index, x]));
+    const items = p.source.items.map((it) => (it.kind === "module" && only.has(it.index as number) ? vIdx.get(it.index as number) ?? it : it));
     const vp: Primitives = { ...p, source: { ...p.source, items, stats: { ...p.source.stats, offense: v.source.offense } } };
     const r = damageGraph(dreq, vp, only);
     for (const y of req.y) {

@@ -63,9 +63,11 @@ export function dealers(p: FitPrim): Dealer[] {
     kind, item: it, dps: [0, 0, 0, 0], volley: [0, 0, 0, 0], count: 1, mobile: false, speed: 0, sig: 0, optimal: 0, falloff: 0, tracking: 0, optimalSig: 0,
     eR: 0, eV: 0, drf: 1, rangeLow: 0, rangeHigh: 0, rangeChance: 0, fof: false,
   });
+  const modByIdx = new Map<number, ItemPrim>();
+  for (const x of p.items) if (x.kind === "module" && x.index !== null) modByIdx.set(x.index, x);
   let d0Bomb: { flight: number; blast: number } | null = null;
   for (const w of st.weapons ?? []) {
-    const it = p.items.find((x) => x.kind === "module" && x.index === w.module_index);
+    const it = modByIdx.get(w.module_index);
     if (!it) continue;
     const a = it.attrs;
     const eff = it.effects;
@@ -394,8 +396,10 @@ function mergeDealers(ds: Dealer[]): Dealer[] {
       continue;
     }
     const a = d.item.attrs;
-    const key = JSON.stringify([d.kind, d.item.kind, d.mobile, d.speed, d.sig, d.optimal, d.falloff, d.tracking, d.optimalSig, d.eR, d.eV, d.drf,
-      d.rangeLow, d.rangeHigh, d.rangeChance, d.fof, d.item.cycle, a.damageMultiplierBonusPerCycle, a.damageMultiplierBonusMax, a.radius]);
+    const c = d.item.cycle;
+    const key = [d.kind, d.item.kind, d.mobile, d.speed, d.sig, d.optimal, d.falloff, d.tracking, d.optimalSig, d.eR, d.eV, d.drf,
+      d.rangeLow, d.rangeHigh, d.rangeChance, d.fof, c?.raw_ms, c?.reactivation_ms, c?.reload_ms, c?.shots, c?.avg_ms,
+      a.damageMultiplierBonusPerCycle, a.damageMultiplierBonusMax, a.radius].join("|");
     const m = byKey.get(key);
     if (!m) {
       const c = { ...d, dps: d.dps.slice(), volley: d.volley.slice() };
@@ -421,8 +425,10 @@ export function damageGraph(req: GraphRequest, p: Primitives, only: Set<number> 
     });
   }
   ds = mergeDealers(ds);
-  const tgt = targetModel(req, p);
-  const projs = settings.apply_projected ? projectors(src) : [];
+  // application_profile: target model and projectors are the same for every charge variant (shared context)
+  const ctx: any = (settings as any)._ctx;
+  const tgt: TargetModel = ctx ? (ctx.tgt ??= targetModel(req, p)) : targetModel(req, p);
+  const projs = !settings.apply_projected ? [] : ctx ? (ctx.projs ??= projectors(src)) : projectors(src);
   const dcr = src.stats.drones?.control_range_m ?? Infinity;
   const lockRange = src.stats.targeting?.max_range_m ?? Infinity;
   const atkMax = src.stats.navigation.max_velocity;
