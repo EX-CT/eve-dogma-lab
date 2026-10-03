@@ -84,3 +84,18 @@ fn injector_extends_cap_life() {
     let (ta, tb) = (a.depletes_in_s.unwrap(), b.depletes_in_s.unwrap_or(f64::INFINITY));
     assert!(tb > ta, "{ta} vs {tb}");
 }
+
+#[test]
+fn gcd_basics() {
+    assert_eq!(gcd(12, 18), 6);
+    assert_eq!(gcd(7, 0), 7);
+    assert_eq!(gcd(1, 1_000_003), 1);
+}
+
+#[test]
+fn overflowing_cycle_lcm_falls_back_to_window() {
+    // two coprime huge durations: their LCM overflows u64 (saturates) and the simulation must still finish
+    let d = |dur: f64| Drain { duration: dur, cap_need: 1.0, clip_size: 0, reload_ms: 0.0, is_injector: false, disable_stagger: false };
+    let r = simulate(1000.0, 100_000.0, &[d(4_294_967_291.0), d(4_294_967_279.0)], 1.0, false, false, 60_000.0);
+    assert!(r.t_s.is_finite());
+}

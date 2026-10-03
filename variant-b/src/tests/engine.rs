@@ -35,3 +35,41 @@ fn skill_range_returns_all_entries_of_one_skill() {
     skill_range(&v, 7, &mut out);
     assert_eq!(out, [70]);
 }
+
+#[test]
+fn penalize_empty_list_is_identity() {
+    let mut v = 3.0;
+    penalize(&mut v, &mut []);
+    assert_eq!(v, 3.0);
+}
+
+#[test]
+fn penalize_first_factor_is_full_strength() {
+    let mut v = 100.0;
+    penalize(&mut v, &mut [1.25]);
+    assert!((v - 125.0).abs() < 1e-12);
+}
+
+#[test]
+fn penalize_second_factor_uses_stacking_curve() {
+    // second strongest modifier is scaled by exp(-1/7.1289) ~ 0.8691 (the EVE stacking curve)
+    let mut v = 1.0;
+    penalize(&mut v, &mut [1.1, 1.1]);
+    let want = 1.1 * (1.0 + 0.1 * (-1.0f64 / 7.1289).exp());
+    assert!((v - want).abs() < 1e-12, "{v} vs {want}");
+}
+
+#[test]
+fn penalize_orders_by_strength_not_input_order() {
+    let (mut a, mut b) = (10.0, 10.0);
+    penalize(&mut a, &mut [1.05, 1.3, 1.15]);
+    penalize(&mut b, &mut [1.3, 1.15, 1.05]);
+    assert_eq!(a.to_bits(), b.to_bits());
+}
+
+#[test]
+fn penalize_reductions_compound_below_one() {
+    let mut v = 1.0;
+    penalize(&mut v, &mut [0.5, 0.5]);
+    assert!(v < 0.5 && v > 0.25, "{v}");
+}
