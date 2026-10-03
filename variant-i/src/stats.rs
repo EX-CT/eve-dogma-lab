@@ -1016,17 +1016,37 @@ impl<'a> Fit<'a> {
         }
         let have_of = |s: u32| have.binary_search_by_key(&s, |x| x.0).map(|i| have[i].1).unwrap_or(0.0);
         let mut missing: Vec<(u32, f64, u32)> = Vec::new();
+        let req_ids = vc.req_skill.iter().chain(vc.req_level.iter()).copied().filter(|x| *x != 0);
+        let mut req_bits = vec![0u64; req_ids.clone().max().unwrap_or(0) as usize / 64 + 1];
+        for x in req_ids {
+            req_bits[x as usize / 64] |= 1u64 << (x % 64);
+        }
         for it in &self.items {
             if !matches!(it.kind, Kind::Ship | Kind::Module | Kind::Charge | Kind::Drone | Kind::Fighter | Kind::Implant | Kind::Booster) {
                 continue;
             }
             let t = &ds.types[&it.type_id];
-            for (sa, la) in vc.req_skill.iter().zip(vc.req_level.iter()) {
-                let s = t.attr(*sa).unwrap_or(0.0) as u32;
+            // one pass over the type's attributes for requiredSkillN / requiredSkillNLevel (first match each)
+            let mut sk: [Option<f64>; 6] = [None; 6];
+            let mut lv: [Option<f64>; 6] = [None; 6];
+            for &(a, v) in &t.attrs {
+                if (a as usize) < 64 * req_bits.len() && req_bits[a as usize / 64] & (1u64 << (a % 64)) != 0 {
+                    for k in 0..6 {
+                        if vc.req_skill[k] == a && sk[k].is_none() {
+                            sk[k] = Some(v);
+                        }
+                        if vc.req_level[k] == a && lv[k].is_none() {
+                            lv[k] = Some(v);
+                        }
+                    }
+                }
+            }
+            for k in 0..6 {
+                let s = sk[k].unwrap_or(0.0) as u32;
                 if s == 0 {
                     continue;
                 }
-                let need = t.attr(*la).unwrap_or(1.0);
+                let need = lv[k].unwrap_or(1.0);
                 if have_of(s) < need && !missing.iter().any(|m| m.0 == s && m.1 >= need) {
                     missing.push((s, need, it.type_id));
                 }
