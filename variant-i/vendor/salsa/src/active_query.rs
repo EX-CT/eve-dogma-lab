@@ -404,7 +404,7 @@ impl QueryStack {
         let completion = active_query.prepare_completion(iteration, false);
         // variant-i patch: a frame that once held a very wide query keeps that capacity, and every
         // later drain memsets the whole table. Keep frames small.
-        if active_query.input_outputs.capacity() > 64 {
+        if active_query.input_outputs.capacity() > 512 {
             let wide = std::mem::take(&mut active_query.input_outputs);
             return completion.finish(wide.into_iter());
         }

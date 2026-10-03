@@ -128,3 +128,10 @@ database per request (INC_OK, FRESH_OK); EFT export 326/326; deterministic outpu
 - Bench 1.9.0: 331/331 (22,046/22,046 values), deterministic. The scorecard is in `bench/bench-1.9.0/scorecard.md`.
 - Bench 1.8.0: 326/326 (21,051/21,051 values), byte-identical batch output (corpus x5), INC_OK and FRESH_OK,
   EFT export 326/326. Mutated suite: 93/93, EFT export 93/93, EFT import 99/99.
+
+## 2026-10-03 ~10:56 CST: speed step 1
+- `panic = "abort"` (no catch_unwind anywhere in the engine; salsa only catches for cancellation, which
+  never happens single-threaded) and a salsa frame-keep threshold of 512 instead of 64 (I tried 64, 256, 512 and 4096).
+- Callgrind for corpus x5: 4.617G -> 4.502G Ir (-2.5%). Wall time for corpus x5 was about 3-4% faster. Dev bench: 2077 fits/s.
+- Gates: 1.8.0 326/326 with byte-identical batch output, INC_OK and FRESH_OK, EFT 326/326. 1.9.0 331/331.
+  Mutated suite 93/93, EFT export 93/93, EFT import 99/99.
