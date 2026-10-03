@@ -294,7 +294,8 @@ func GraphPrimitives(ds *Dataset, line []byte) obj {
 	if gr.Graph == "application_profile" {
 		out["charges"] = chargeVariants(ds, req)
 	}
-	if gr.Target != nil && len(gr.Target.Fit) > 0 && string(gr.Target.Fit) != "null" {
+	usesTarget := gr.Graph == "damage" || gr.Graph == "application_profile" || gr.Graph == "ewar" || gr.Graph == "remote_reps"
+	if usesTarget && gr.Target != nil && len(gr.Target.Fit) > 0 && string(gr.Target.Fit) != "null" {
 		var treq FitRequest
 		if err := DecodeRequest(gr.Target.Fit, &treq); err != nil {
 			return errObj(err)

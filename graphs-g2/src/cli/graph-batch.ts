@@ -5,7 +5,7 @@
 // Usage: graph-batch --engine <bin> --dataset <path> [--eval-only primitives.jsonl] [--dump-primitives file]
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { evaluate, GraphError } from "../evaluator/index.js";
+import { evaluate, GraphError, validate } from "../evaluator/index.js";
 
 function arg(n: string): string | undefined {
   const i = process.argv.indexOf(n);
@@ -42,12 +42,27 @@ async function main() {
   const engine = arg("--engine") ?? new URL("../../../variant-c/bin/eve-dogma-go", import.meta.url).pathname;
   const dataset = arg("--dataset") ?? process.env.EVE_DOGMA_DATASET ?? "";
   const lines = (await readStdin()).split("\n").filter((l) => l.trim().length);
+  // contract validation runs before the engine (the first failing rule wins; UNKNOWN_TYPE comes from the engine)
+  const early: (string | null)[] = lines.map((l) => {
+    try {
+      validate(JSON.parse(l));
+      return null;
+    } catch (e) {
+      if (e instanceof SyntaxError) return JSON.stringify({ error: { code: "BAD_REQUEST", message: `invalid JSON: ${e.message}`, path: "" } });
+      return errLine(e);
+    }
+  });
+  const toEngine = lines.map((l, i) => (early[i] === null ? l : "{}"));
   const evalOnly = arg("--eval-only");
-  const prims = evalOnly ? readFileSync(evalOnly, "utf8").split("\n").filter((l) => l.length) : await primitives(engine, dataset, lines);
+  const prims = evalOnly ? readFileSync(evalOnly, "utf8").split("\n").filter((l) => l.length) : await primitives(engine, dataset, toEngine);
   const dump = arg("--dump-primitives");
   if (dump) writeFileSync(dump, prims.join("\n") + "\n");
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
+    if (early[i] !== null) {
+      out.push(early[i]!);
+      continue;
+    }
     try {
       const req = JSON.parse(lines[i]);
       const prim = JSON.parse(prims[i]);
