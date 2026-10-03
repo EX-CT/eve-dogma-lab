@@ -58,7 +58,22 @@ export function ewarSources(p: Primitives): Src[] {
 }
 
 export function ewar(req: GraphRequest, p: Primitives): Record<string, (number | null)[]> {
-  const resist = req.params?.resist ?? 0;
+  const explicit = req.params?.resist;
+  const T = req.target?.fit && p.target ? p.target.normal.ship.attrs : null;
+  const RES_ATTR: Record<string, string> = {
+    neut_gj_s: "energyWarfareResistance", web_pct: "stasisWebifierResistance", ecm_strength: "ECMResistance",
+    damp_lock_range_pct: "sensorDampenerResistance", td_optimal_pct: "weaponDisruptionResistance",
+    gd_range_pct: "weaponDisruptionResistance", tp_sig_pct: "targetPainterResistance",
+  };
+  const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+  const resistFor = (y: string) => {
+    if (explicit !== undefined && explicit !== null) return clamp01(explicit);
+    if (!T) return 0;
+    const v = T[RES_ATTR[y]];
+    return clamp01(1 - (v === undefined || v === 0 ? 1 : v));
+  };
+  const immune = T !== null && (T.disallowOffensiveModifiers ?? 0) > 0;
+  let resist = 0;
   const settings = req.settings ?? {};
   const ignoreDcr = settings.ignore_drone_control_range ?? false;
   const dcr = p.source.stats.drones?.control_range_m ?? Infinity;
@@ -81,8 +96,10 @@ export function ewar(req: GraphRequest, p: Primitives): Record<string, (number |
     return stackMultiply(l);
   };
   for (const y of req.y) {
+    resist = resistFor(y);
     out[y] = req.x.values.map((d) => {
       if (d < 0) return null;
+      if (immune && y !== "neut_gj_s") return 0;
       switch (y) {
         case "neut_gj_s": {
           let sum = 0;

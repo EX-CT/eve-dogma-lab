@@ -101,11 +101,15 @@ export function remoteReps(req: GraphRequest, p: Primitives): Record<string, (nu
     if (t !== null && total === null) total = 0;
     return { rps, total };
   };
+  // target fit (0.2): remoteRepairImpedance scales the repair; disallowAssistance blocks it
+  let imp = 1;
+  const T = req.target?.fit && p.target ? p.target.normal.ship.attrs : null;
+  if (T) imp = (T.disallowAssistance ?? 0) > 0 ? 0 : T.remoteRepairImpedance === undefined || T.remoteRepairImpedance === 0 ? 1 : T.remoteRepairImpedance;
   const out: Record<string, (number | null)[]> = {};
   for (const y of req.y) {
     out[y] = req.x.values.map((x) => {
       let d: number | null = prm.distance_m ?? null;
-      let t: number | null = prm.time_s ?? null;
+      let t: number | null = prm.time_s === undefined || prm.time_s === null ? null : Math.min(2500, Math.max(0, prm.time_s));
       if (req.x.axis === "distance_m") {
         if (x < 0) return null;
         d = x;
@@ -114,8 +118,8 @@ export function remoteReps(req: GraphRequest, p: Primitives): Record<string, (nu
         t = x;
       }
       const r = at(d, t);
-      if (y === "rps") return r.rps;
-      if (y === "total") return t === null ? null : r.total;
+      if (y === "rps") return r.rps * imp;
+      if (y === "total") return t === null ? null : (r.total ?? 0) * imp;
       return null;
     });
   }
